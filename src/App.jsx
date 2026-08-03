@@ -1,5 +1,23 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
 
+function extraerJSON(txt) {
+  if (!txt || !txt.trim()) throw new Error("la IA devolvió una respuesta vacía");
+  let s = txt.trim();
+  const a = s.indexOf("{"); const b = s.lastIndexOf("}");
+  if (a >= 0 && b > a) s = s.slice(a, b + 1);
+  try { return JSON.parse(s); } catch (e) {
+    let f = s.replace(/,\s*$/, "");
+    const oc = (f.match(/\[/g) || []).length, cc = (f.match(/\]/g) || []).length;
+    const oo = (f.match(/{/g) || []).length, co = (f.match(/}/g) || []).length;
+    f += "]".repeat(Math.max(0, oc - cc)) + "}".repeat(Math.max(0, oo - co));
+    try { return JSON.parse(f); } catch (e2) {
+      console.error("Respuesta IA no parseable:", txt);
+      throw new Error("formato inesperado de la IA. Empieza con: " + s.slice(0, 160));
+    }
+  }
+}
+
+
 /* ================================================================
    ADMIN · IMPORTACIONES — INNOVACIÓN SOLAR
    Catálogo con promedio ponderado histórico + ciclo de vida del
@@ -2238,9 +2256,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfPed } }];
       if (pdfCot) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfCot } });
       content.push({ type: "text", text: PROMPT_EXTRACCION });
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 1000, messages: [{ role: "user", content }] });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 8000, messages: [{ role: "user", content }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
-      const p = JSON.parse(txt);
+      const p = extraerJSON(txt);
 
       setPed((old) => ({ ...old, numero: p.numero || old.numero, fecha: p.fecha || old.fecha, tc: p.tc || old.tc, aduana: p.aduana || "", proveedorExt: p.proveedorExt || old.proveedorExt }));
 
@@ -2694,9 +2712,9 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
   const leerImagen = async (b64) => {
     setEstado("leyendo"); setDetectado(null);
     try {
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 400, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }, { type: "text", text: PROMPT }] }] });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 1500, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }, { type: "text", text: PROMPT }] }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
-      const p = JSON.parse(txt);
+      const p = extraerJSON(txt);
       if (p.error || (!p.sku && !p.modelo)) { setFlash("rojo"); setEstado("error"); setTimeout(() => setFlash(null), 600); return; }
       const desc = catalogo[p.sku]?.descripcion || p.modelo || "Modelo no reconocido";
       setDetectado({ sku: p.sku || "", descripcion: desc, cantidad: +p.cantidad || 1, serie: p.serie || "" });
@@ -2759,9 +2777,9 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
     try {
       const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
       const prompt = `Es una orden de compra o pedimento de importación. Extrae los renglones de mercancía y responde SOLO JSON compacto: {"items":[{"sku":"","modelo":"","cantidad":0}]}. Empata cada renglón con el catálogo:\n${skuList}\nUsa el SKU del catálogo que corresponda; si ninguno, "".`;
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 800, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
-      const p = JSON.parse(txt);
+      const p = extraerJSON(txt);
       (p.items || []).forEach((it) => agregarItem({ sku: it.sku || "", descripcion: catalogo[it.sku]?.descripcion || it.modelo || "Modelo", cantidad: +it.cantidad || 1 }));
       clank(); setFlash("verde"); setTimeout(() => setFlash(null), 500);
       setAviso({ t: "ok", m: `Documento leído: ${(p.items || []).length} renglones agregados a la lista.` });
@@ -2934,7 +2952,7 @@ function Respaldo({ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, s
     if (!file) return;
     try {
       const txt = await file.text();
-      const d = JSON.parse(txt);
+      const d = extraerJSON(txt);
       if (d.catalogo) saveCatalogo(d.catalogo);
       if (d.fletes) saveFletes(d.fletes);
       if (d.pedimentos) savePedimentos(d.pedimentos);
