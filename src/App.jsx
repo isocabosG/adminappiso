@@ -2244,6 +2244,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
   const [pdfPed, setPdfPed] = useState(null);
   const [pdfCot, setPdfCot] = useState(null);
+  const [pdfFacturas, setPdfFacturas] = useState([]);   // facturas del proveedor (varias)
   const [extrayendo, setExtrayendo] = useState(false);
   const [errExtrac, setErrExtrac] = useState(null);
   const [extraido, setExtraido] = useState(false);
@@ -2276,8 +2277,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     const conCant = partidas.filter((p) => +p.cantidad > 0 && (p.desc || "").trim());
     if (!conCant.length) return setErrExtrac("Captura al menos una partida con descripción y cantidad antes de asignar SKUs.");
     const cats = new Set(conCant.map((p) => p.categoria));
-    let cands = Object.entries(catalogo).filter(([, a]) => cats.has(a.categoria)).map(([sku, a]) => ({ sku, desc: a.descripcion }));
-    if (!cands.length) cands = Object.entries(catalogo).map(([sku, a]) => ({ sku, desc: a.descripcion }));
+    let cands = Object.entries(catalogo).filter(([, a]) => cats.has(a.categoria)).map(([sku, a]) => ({ sku, desc: a.descripcion, costo: Math.round(a.costoVigente || 0) }));
+    if (!cands.length) cands = Object.entries(catalogo).map(([sku, a]) => ({ sku, desc: a.descripcion, costo: Math.round(a.costoVigente || 0) }));
     // Si hay demasiados candidatos, deja los más relevantes por palabras clave (tope de tokens)
     if (cands.length > 400) {
       const kw = conCant.map((p) => (p.desc || "").toLowerCase()).join(" ");
@@ -2287,9 +2288,12 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     }
     setEmpatando(true); setErrExtrac(null);
     try {
-      const lista = conCant.map((p, i) => ({ i, desc: p.desc }));
-      const prompt = `Eres experto en catálogos de importación de equipo de energía solar y baterías. Te doy (A) PARTIDAS de un pedimento con su descripción aduanal y (B) un CATÁLOGO con SKU y descripción comercial. Para cada partida, encuentra el SKU del catálogo que corresponde al MISMO producto (fíjate en modelos y capacidades: "XTREME HV", "LV 1.0", "5KW", marcas, etc.).\nResponde SOLO JSON compacto, sin markdown:\n{"asignaciones":[{"i":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- i = índice de la partida (empieza en 0).\n- sku = el SKU del catálogo más probable, EXACTO como viene. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1 (1 = segurísimo).\n- alternativas = hasta 3 SKU candidatos alternos por si el usuario corrige.\nUsa únicamente SKU que existan en el catálogo. Solo el JSON.\n\nPARTIDAS:\n${JSON.stringify(lista)}\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 2000, messages: [{ role: "user", content: [{ type: "text", text: prompt }] }] });
+      // Costo unitario aprox de cada partida en MXN (FOB × TC) para desempatar por precio
+      const lista = conCant.map((p, i) => ({ i, desc: p.desc, cant: +p.cantidad || 0, costoUnitAproxMXN: Math.round((+p.fobUnit || 0) * tc) }));
+      const prompt = `Eres experto en catálogos de importación de equipo de energía solar y baterías. Identifica, para cada PARTIDA de un pedimento, el SKU del CATÁLOGO que corresponde al MISMO producto.\n\nTienes:\n(A) PARTIDAS del pedimento (descripción aduanal genérica + costo unitario aproximado en MXN).\n(B) CATÁLOGO con SKU, descripción comercial y su costo (MXN).\n(C) Si vienen adjuntas, las FACTURAS del proveedor (Renon): tráelas como fuente principal — ahí está el modelo/nombre real de cada equipo, que la descripción aduanal no dice. Cruza la factura con la partida por cantidad y precio.\n\nReglas de empate:\n- Fíjate en modelos y capacidades: "XTREME HV", "LV 1.0", "5KW", marcas, etc.\n- Usa el COSTO como desempate: el costoUnitAproxMXN de la partida debe parecerse al costo del SKU del catálogo. Si un candidato tiene un costo muy distinto, baja la confianza.\n- OJO: una partida puede ser un SISTEMA/kit (módulo de control + varias baterías). Si es así y existe un SKU que representa el sistema completo, elígelo; si no, escoge el más cercano y baja la confianza.\n\nResponde SOLO JSON compacto, sin markdown:\n{"asignaciones":[{"i":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- i = índice de la partida (empieza en 0).\n- sku = el SKU del catálogo más probable, EXACTO como viene. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1 (1 = segurísimo).\n- alternativas = hasta 3 SKU candidatos alternos por si el usuario corrige.\nUsa únicamente SKU que existan en el catálogo. Solo el JSON.\n\nPARTIDAS:\n${JSON.stringify(lista)}\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+      const mContent = pdfFacturas.map((b) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: b } }));
+      mContent.push({ type: "text", text: prompt });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 3000, messages: [{ role: "user", content: mContent }] });
       if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
       if (!txt) throw new Error("la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
@@ -2300,12 +2304,49 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
         const a = asg.find((x) => x.i === i);
         const ok = a && a.sku && catalogo[a.sku];
         if (ok && (a.confianza ?? 0) >= 0.8) { asignarSku(part.id, a.sku); autos++; }
-        else pend.push({ id: part.id, desc: part.desc, confianza: a?.confianza ?? 0, alternativas: (a?.alternativas || []).filter((s) => catalogo[s]), chosen: ok ? a.sku : "" });
+        else pend.push({ id: part.id, desc: part.desc, costoAprox: Math.round((+part.fobUnit || 0) * tc), confianza: a?.confianza ?? 0, alternativas: (a?.alternativas || []).filter((s) => catalogo[s]), chosen: ok ? a.sku : "" });
       });
       if (pend.length) setDudosos(pend);
       setEmpateMsg(`${autos} SKU asignado${autos === 1 ? "" : "s"} automáticamente${pend.length ? ` · ${pend.length} por confirmar` : " · todo listo"}.`);
     } catch (e) {
       setErrExtrac("No se pudieron asignar los SKU automáticamente: " + (e.message || e) + ". Puedes asignarlos a mano.");
+    }
+    setEmpatando(false);
+  };
+
+  // Desglosa las facturas del proveedor en un renglón POR LÍNEA de factura (los kits se
+  // abren en sus componentes: batería + módulo de control), cada uno empatado a un SKU.
+  // REEMPLAZA la lista de partidas por el desglose a nivel componente.
+  const desglosarPorFactura = async () => {
+    setEmpateMsg(null);
+    if (!pdfFacturas.length) return setErrExtrac("Sube al menos una factura del proveedor (sección de arriba) para desglosar.");
+    // Candidatos relevantes: baterías + controles/racks/sistemas Renon
+    const rel = (d) => /(renon|ecube|xtreme|xcellent|control|rack|m[oó]dulo|bater)/i.test(d || "");
+    const cands = Object.entries(catalogo).filter(([, a]) => a.categoria === "Batería" || rel(a.descripcion)).map(([sku, a]) => ({ sku, desc: a.descripcion, costo: Math.round(a.costoVigente || 0) }));
+    setEmpatando(true); setErrExtrac(null);
+    try {
+      const allLineas = [];
+      for (let k = 0; k < pdfFacturas.length; k++) {
+        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = código del proveedor (ej. R-EM096050-XTH01).\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata el modelo con un SKU del CATÁLOGO que sea el MISMO producto (batería, módulo/unidad de control, rack o sistema ECube). Fíjate en HV/LV, capacidad y usa el costo como apoyo (fobUnitUSD×tipoCambio ≈ costo del SKU). Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+        const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfFacturas[k] } }, { type: "text", text: prompt }];
+        const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
+        if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
+        const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
+        if (!txt) throw new Error("factura " + (k + 1) + ": la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
+        const res = extraerJSON(txt);
+        if (Array.isArray(res.lineas)) allLineas.push(...res.lineas);
+      }
+      if (!allLineas.length) throw new Error("no se encontraron renglones en las facturas.");
+      const nuevas = allLineas.map((l) => {
+        const skuOk = l.sku && catalogo[l.sku] ? l.sku : "";
+        return { id: uid(), sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
+      });
+      setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
+      const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
+      if (pend.length) setDudosos(pend);
+      setEmpateMsg(`${nuevas.length} renglón${nuevas.length === 1 ? "" : "es"} de factura · ${nuevas.length - pend.length} con SKU · ${pend.length} por confirmar.`);
+    } catch (e) {
+      setErrExtrac("No se pudo desglosar la factura: " + (e.message || e) + ". Puedes capturar los renglones a mano.");
     }
     setEmpatando(false);
   };
@@ -2378,17 +2419,18 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
               {dudosos.map((d, idx) => (
                 <div key={d.id} className="border border-stone-200 rounded-lg p-3">
                   <p className="text-[10px] uppercase tracking-widest text-stone-400">Partida · confianza IA {Math.round((d.confianza || 0) * 100)}%</p>
-                  <p className="text-sm mb-2">{d.desc}</p>
+                  <p className="text-sm mb-1">{d.desc}</p>
+                  <p className="text-[11px] text-stone-500 mb-2">Costo aprox. de esta partida: <span className="font-mono">${mx0(d.costoAprox)}</span> MXN/u</p>
                   <div className="flex items-center gap-2 flex-wrap">
                     <input list="skus" value={d.chosen} onChange={(e) => { const v = e.target.value.toUpperCase(); setDudosos((s) => s.map((x, j) => (j === idx ? { ...x, chosen: v } : x))); }} className={inp + " font-mono max-w-[220px]"} placeholder="Escribe o busca SKU" />
-                    {d.chosen && catalogo[d.chosen] && <span className="text-[11px] text-stone-600">{catalogo[d.chosen].descripcion}</span>}
+                    {d.chosen && catalogo[d.chosen] && <span className="text-[11px] text-stone-600">{catalogo[d.chosen].descripcion} · <span className="font-mono">${mx0(catalogo[d.chosen].costoVigente)}</span></span>}
                     {d.chosen && !catalogo[d.chosen] && <span className="text-[11px] text-red-600">SKU no está en el catálogo</span>}
                   </div>
                   {d.alternativas.length > 0 && (
                     <div className="mt-2 flex items-center gap-1.5 flex-wrap">
                       <span className="text-[10px] uppercase tracking-widest text-stone-400">Sugerencias:</span>
                       {d.alternativas.map((s) => (
-                        <button key={s} onClick={() => setDudosos((st) => st.map((x, j) => (j === idx ? { ...x, chosen: s } : x)))} className={`px-2 py-0.5 text-[11px] rounded border ${d.chosen === s ? "bg-teal-700 text-white border-teal-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>{s}</button>
+                        <button key={s} onClick={() => setDudosos((st) => st.map((x, j) => (j === idx ? { ...x, chosen: s } : x)))} className={`px-2 py-0.5 text-[11px] rounded border ${d.chosen === s ? "bg-teal-700 text-white border-teal-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>{s}{catalogo[s] ? ` · $${mx0(catalogo[s].costoVigente)}` : ""}</button>
                       ))}
                     </div>
                   )}
@@ -2423,6 +2465,13 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
               <input type="file" accept="application/pdf" onChange={async (e) => { const f = e.target.files?.[0]; if (f) { setPdfCot(await fileToB64(f)); setErrExtrac(null); } }}
                 className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-stone-900 file:text-white" />
               {pdfCot && <p className="mt-1 text-[11px] text-teal-700">✓ Cotización cargada</p>}
+            </div>
+            <div className="md:col-span-2">
+              <Lbl>Facturas del proveedor (PDF, opcional · varias)</Lbl>
+              <input type="file" accept="application/pdf" multiple onChange={async (e) => { const fs = Array.from(e.target.files || []); if (fs.length) { const b64s = await Promise.all(fs.map(fileToB64)); setPdfFacturas((s) => [...s, ...b64s]); setErrExtrac(null); } e.target.value = ""; }}
+                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-stone-900 file:text-white" />
+              {pdfFacturas.length > 0 && <p className="mt-1 text-[11px] text-teal-700">✓ {pdfFacturas.length} factura{pdfFacturas.length > 1 ? "s" : ""} cargada{pdfFacturas.length > 1 ? "s" : ""} <button onClick={() => setPdfFacturas([])} className="ml-1 text-stone-400 hover:text-red-600">(quitar)</button></p>}
+              <p className="mt-1 text-[10px] text-stone-400">Las facturas del proveedor (Renon) traen el modelo real de cada equipo — sirven para que la app empate mejor los SKU.</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -2473,7 +2522,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
         </div>
         <div className="p-3 flex items-center gap-4 flex-wrap">
           <button onClick={() => setPartidas((s) => [...s, { id: uid(), sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-teal-700">+ Agregar partida</button>
-          <button onClick={empatarSkus} disabled={empatando} className="text-xs font-medium text-teal-700 disabled:opacity-40">{empatando ? "Asignando SKUs…" : "🎯 Auto-asignar SKUs"}</button>
+          <button onClick={empatarSkus} disabled={empatando} className="text-xs font-medium text-teal-700 disabled:opacity-40">{empatando ? "Procesando…" : "🎯 Auto-asignar SKUs"}</button>
+          <button onClick={desglosarPorFactura} disabled={empatando || !pdfFacturas.length} className="text-xs font-medium text-teal-700 disabled:opacity-40" title={pdfFacturas.length ? "Reemplaza las partidas por el desglose real de las facturas (baterías + controles por separado)" : "Sube facturas del proveedor arriba para habilitar"}>{empatando ? "Procesando…" : "🧩 Desglosar por factura"}</button>
           {empateMsg && <span className="text-[11px] text-stone-500">{empateMsg}</span>}
         </div>
       </Section>
