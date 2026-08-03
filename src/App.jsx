@@ -48,13 +48,21 @@ const adivinaCategoria = (desc = "") => {
 const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes uno o dos PDFs: (1) un PEDIMENTO de importación y, si viene, (2) una COTIZACIÓN de la Agencia Aduanal Perezgrovas. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
 
 Esquema exacto:
-{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"igiMXN":0}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
+{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"igiMXN":0}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
 
 Reglas:
-- numero, fecha, tc, aduana, valor en aduana: del PEDIMENTO.
-- partidas: una por cada renglón del cuadro de partidas del pedimento. desc = descripción CORTA (máximo 40 caracteres, sin repetir texto); cantidad = piezas (UMT); fobUnitUSD = precio unitario en dólares (VAL.DOLARES de la partida / cantidad); igiMXN = importe de IGI de esa partida en pesos (0 si la tasa es 0%).
-- fleteInternacionalMXN = renglón FLETES del pedimento. iccMXN = OTROS INCREMENTABLES del pedimento. dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento.
-- honorariosMXN = "Total de Honorarios más Servicios Complementarios" de la cotización Perezgrovas. cruceSDTJusd = "Flete de San Diego a Tijuana" de la cotización, en dólares.
+- numero, fecha, aduana: del PEDIMENTO. tc = TIPO DE CAMBIO oficial del PEDIMENTO (NO el de la cotización, que suele ser distinto).
+- ESTRUCTURA DE CADA PARTIDA en el anexo del pedimento: cada renglón trae DOS líneas de números.
+   · Línea 1: [fracción] ... [CANTIDAD UMC = PIEZAS] [código UMT] [CANTIDAD UMT = KILOS] [país] [país] [IVA] [tasa] ... [IMPORTE IVA en pesos].
+   · Línea 2: [VAL. ADUANA en pesos]  [IMP. PRECIO PAGADO en pesos]  [PRECIO UNITARIO en pesos].
+- partidas: una por cada renglón. Para CADA partida:
+   · cantidad = CANTIDAD UMC = número de PIEZAS (la PRIMERA cantidad de la línea 1). NUNCA uses la CANTIDAD UMT: ESA ES EL PESO EN KILOS, no piezas ni precio.
+   · fobUnitUSD = PRECIO UNITARIO en pesos (línea 2) ÷ tc. Equivale a (IMP. PRECIO PAGADO ÷ tc ÷ piezas). NO es la cantidad UMT.
+   · pesoUnitKg = CANTIDAD UMT (los kilos de la línea 1) ÷ cantidad (piezas).
+   · igiMXN = importe de IGI de esa partida en pesos (0 si la tasa IGI es 0%).
+   · desc = descripción CORTA (máximo 40 caracteres, sin repetir texto).
+- fleteInternacionalMXN = renglón FLETES del pedimento — SIEMPRE EN PESOS, nunca en dólares. iccMXN = OTROS INCREMENTABLES del pedimento (pesos). dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento (pesos).
+- honorariosMXN = "Total de Honorarios más Servicios Complementarios" de la cotización Perezgrovas (en pesos). cruceSDTJusd = "Flete de San Diego a Tijuana" de la cotización, en DÓLARES (columna Dlls).
 - Responde solo el JSON.`;
 
 /* ---------- Semilla: costos vigentes hoy en Zoho (MXN, landed) ---------- */
@@ -2248,6 +2256,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
   const setInc = (match, campo, valor, estadoDoc) =>
     setIncs((s) => s.map((x) => (x.concepto.toLowerCase().includes(match) ? { ...x, [campo]: valor, ...(estadoDoc ? { estadoDoc } : {}) } : x)));
+  // Vuelca varios campos a la vez (p. ej. monto + moneda) al renglón que coincide
+  const setIncFull = (match, patch, estadoDoc) =>
+    setIncs((s) => s.map((x) => (x.concepto.toLowerCase().includes(match) ? { ...x, ...patch, ...(estadoDoc ? { estadoDoc } : {}) } : x)));
 
   const extraer = async () => {
     if (!pdfPed) return setErrExtrac("Sube al menos el PDF del pedimento.");
@@ -2265,16 +2276,16 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       setPed((old) => ({ ...old, numero: p.numero || old.numero, fecha: p.fecha || old.fecha, tc: p.tc || old.tc, aduana: p.aduana || "", proveedorExt: p.proveedorExt || old.proveedorExt }));
 
       if (Array.isArray(p.partidas) && p.partidas.length) {
-        setPartidas(p.partidas.map((x) => ({ id: uid(), sku: "", desc: x.desc || "", categoria: adivinaCategoria(x.desc), cantidad: x.cantidad || "", fobUnit: x.fobUnitUSD || "", pesoKg: "", _igi: x.igiMXN || 0 })));
+        setPartidas(p.partidas.map((x) => ({ id: uid(), sku: "", desc: x.desc || "", categoria: adivinaCategoria(x.desc), cantidad: x.cantidad || "", fobUnit: x.fobUnitUSD || "", pesoKg: x.pesoUnitKg || "", _igi: x.igiMXN || 0 })));
       }
 
-      // Volcar incrementables leídos a sus renglones
-      if (p.fleteInternacionalMXN != null) setInc("internacional", "monto", p.fleteInternacionalMXN, "final");
-      if (p.cruceSDTJusd != null) setInc("cruce", "monto", p.cruceSDTJusd, "final");
+      // Volcar incrementables leídos a sus renglones (el flete internacional y el ICC del pedimento SIEMPRE son pesos)
+      if (p.fleteInternacionalMXN != null) setIncFull("internacional", { monto: p.fleteInternacionalMXN, moneda: "MXN" }, "final");
+      if (p.cruceSDTJusd != null) setIncFull("cruce", { monto: p.cruceSDTJusd, moneda: "USD" }, "final");
       if (p.dtaMXN != null) setInc("dta", "monto", p.dtaMXN, "final");
       if (p.prvMXN != null) setInc("prevalidación", "monto", p.prvMXN, "final");
       if (p.ivaMXN != null) setInc("iva", "monto", p.ivaMXN, "final");
-      if (p.iccMXN != null) setInc("icc", "monto", p.iccMXN, "final");
+      if (p.iccMXN != null) setIncFull("icc", { monto: p.iccMXN, moneda: "MXN" }, "final");
       if (p.honorariosMXN != null) setInc("honorarios", "monto", p.honorariosMXN, p.honorariosMXN ? "cotizacion" : "estimado");
 
       // IGI manual por partida (se asigna tras recrear partidas)
