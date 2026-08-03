@@ -2233,6 +2233,35 @@ function prorratear(partidas, incrementables, tc) {
 }
 
 /* ---------- Nueva importación ---------- */
+// Buscador de SKU con autocompletado: filtra por SKU o descripción y muestra SKU · descripción · precio
+function SkuPicker({ value, onChange, catalogo, inp }) {
+  const [q, setQ] = useState(value || "");
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setQ(value || ""); }, [value]);
+  const ql = q.trim().toLowerCase();
+  const matches = ql
+    ? Object.entries(catalogo).filter(([sku, a]) => sku.toLowerCase().includes(ql) || (a.descripcion || "").toLowerCase().includes(ql)).slice(0, 15)
+    : [];
+  return (
+    <div className="relative max-w-[420px]">
+      <input value={q} onChange={(e) => { const v = e.target.value.toUpperCase(); setQ(v); setOpen(true); onChange(v); }} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 180)}
+        className={inp + " font-mono"} placeholder="Escribe SKU o descripción…" />
+      {open && matches.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-y-auto bg-white border border-stone-300 rounded-lg shadow-lg">
+          {matches.map(([sku, a]) => (
+            <button key={sku} onMouseDown={(e) => { e.preventDefault(); onChange(sku); setQ(sku); setOpen(false); }}
+              className="block w-full text-left px-3 py-1.5 hover:bg-teal-50 text-xs border-b border-stone-100 last:border-0">
+              <span className="font-mono font-semibold">{sku}</span>
+              <span className="text-stone-500"> · {a.descripcion}</span>
+              <span className="text-stone-700 font-mono"> · ${mx0(a.costoVigente)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [ped, setPed] = useState({ numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
   const [partidas, setPartidas] = useState([{ id: uid(), sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
@@ -2304,7 +2333,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
         const a = asg.find((x) => x.i === i);
         const ok = a && a.sku && catalogo[a.sku];
         if (ok && (a.confianza ?? 0) >= 0.8) { asignarSku(part.id, a.sku); autos++; }
-        else pend.push({ id: part.id, desc: part.desc, costoAprox: Math.round((+part.fobUnit || 0) * tc), confianza: a?.confianza ?? 0, alternativas: (a?.alternativas || []).filter((s) => catalogo[s]), chosen: ok ? a.sku : "" });
+        else pend.push({ id: part.id, desc: part.desc, cantidad: part.cantidad, costoAprox: Math.round((+part.fobUnit || 0) * tc), confianza: a?.confianza ?? 0, alternativas: (a?.alternativas || []).filter((s) => catalogo[s]), chosen: ok ? a.sku : "" });
       });
       if (pend.length) setDudosos(pend);
       setEmpateMsg(`${autos} SKU asignado${autos === 1 ? "" : "s"} automáticamente${pend.length ? ` · ${pend.length} por confirmar` : " · todo listo"}.`);
@@ -2342,7 +2371,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
         return { id: uid(), sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
       });
       setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
-      const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
+      const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, cantidad: p.cantidad, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
       if (pend.length) setDudosos(pend);
       setEmpateMsg(`${nuevas.length} renglón${nuevas.length === 1 ? "" : "es"} de factura · ${nuevas.length - pend.length} con SKU · ${pend.length} por confirmar.`);
     } catch (e) {
@@ -2420,11 +2449,10 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
                 <div key={d.id} className="border border-stone-200 rounded-lg p-3">
                   <p className="text-[10px] uppercase tracking-widest text-stone-400">Partida · confianza IA {Math.round((d.confianza || 0) * 100)}%</p>
                   <p className="text-sm mb-1">{d.desc}</p>
-                  <p className="text-[11px] text-stone-500 mb-2">Costo aprox. de esta partida: <span className="font-mono">${mx0(d.costoAprox)}</span> MXN/u</p>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <input list="skus" value={d.chosen} onChange={(e) => { const v = e.target.value.toUpperCase(); setDudosos((s) => s.map((x, j) => (j === idx ? { ...x, chosen: v } : x))); }} className={inp + " font-mono max-w-[220px]"} placeholder="Escribe o busca SKU" />
-                    {d.chosen && catalogo[d.chosen] && <span className="text-[11px] text-stone-600">{catalogo[d.chosen].descripcion} · <span className="font-mono">${mx0(catalogo[d.chosen].costoVigente)}</span></span>}
-                    {d.chosen && !catalogo[d.chosen] && <span className="text-[11px] text-red-600">SKU no está en el catálogo</span>}
+                  <p className="text-[11px] text-stone-500 mb-2">Cantidad: <span className="font-mono">{d.cantidad || "—"}</span> · Costo aprox. unitario: <span className="font-mono">${mx0(d.costoAprox)}</span> MXN</p>
+                  <div className="flex items-start gap-2 flex-wrap">
+                    <SkuPicker value={d.chosen} onChange={(v) => setDudosos((s) => s.map((x, j) => (j === idx ? { ...x, chosen: v } : x)))} catalogo={catalogo} inp={inp} />
+                    {d.chosen && !catalogo[d.chosen] && <span className="text-[11px] text-red-600 mt-2">SKU no está en el catálogo</span>}
                   </div>
                   {d.alternativas.length > 0 && (
                     <div className="mt-2 flex items-center gap-1.5 flex-wrap">
