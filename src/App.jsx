@@ -2267,7 +2267,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfPed } }];
       if (pdfCot) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfCot } });
       content.push({ type: "text", text: PROMPT_EXTRACCION });
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 5000, messages: [{ role: "user", content }] });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 16000, messages: [{ role: "user", content }] });
       if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
       if (!txt) throw new Error("la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
