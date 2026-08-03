@@ -52,7 +52,7 @@ Esquema exacto:
 
 Reglas:
 - numero, fecha, tc, aduana, valor en aduana: del PEDIMENTO.
-- partidas: una por cada renglón del cuadro de partidas del pedimento. desc = descripción; cantidad = piezas (UMT); fobUnitUSD = precio unitario en dólares (VAL.DOLARES de la partida / cantidad); igiMXN = importe de IGI de esa partida en pesos (0 si la tasa es 0%).
+- partidas: una por cada renglón del cuadro de partidas del pedimento. desc = descripción CORTA (máximo 40 caracteres, sin repetir texto); cantidad = piezas (UMT); fobUnitUSD = precio unitario en dólares (VAL.DOLARES de la partida / cantidad); igiMXN = importe de IGI de esa partida en pesos (0 si la tasa es 0%).
 - fleteInternacionalMXN = renglón FLETES del pedimento. iccMXN = OTROS INCREMENTABLES del pedimento. dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento.
 - honorariosMXN = "Total de Honorarios más Servicios Complementarios" de la cotización Perezgrovas. cruceSDTJusd = "Flete de San Diego a Tijuana" de la cotización, en dólares.
 - Responde solo el JSON.`;
@@ -2256,8 +2256,10 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfPed } }];
       if (pdfCot) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfCot } });
       content.push({ type: "text", text: PROMPT_EXTRACCION });
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 8000, messages: [{ role: "user", content }] });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 5000, messages: [{ role: "user", content }] });
+      if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
+      if (!txt) throw new Error("la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
       const p = extraerJSON(txt);
 
       setPed((old) => ({ ...old, numero: p.numero || old.numero, fecha: p.fecha || old.fecha, tc: p.tc || old.tc, aduana: p.aduana || "", proveedorExt: p.proveedorExt || old.proveedorExt }));
@@ -2777,7 +2779,7 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
     try {
       const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
       const prompt = `Es una orden de compra o pedimento de importación. Extrae los renglones de mercancía y responde SOLO JSON compacto: {"items":[{"sku":"","modelo":"","cantidad":0}]}. Empata cada renglón con el catálogo:\n${skuList}\nUsa el SKU del catálogo que corresponda; si ninguno, "".`;
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 3000, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
       const p = extraerJSON(txt);
       (p.items || []).forEach((it) => agregarItem({ sku: it.sku || "", descripcion: catalogo[it.sku]?.descripcion || it.modelo || "Modelo", cantidad: +it.cantidad || 1 }));
