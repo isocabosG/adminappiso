@@ -2238,12 +2238,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfPed } }];
       if (pdfCot) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfCot } });
       content.push({ type: "text", text: PROMPT_EXTRACCION });
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content }] }),
-      });
-      const data = await resp.json();
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 1000, messages: [{ role: "user", content }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
       const p = JSON.parse(txt);
 
@@ -2699,11 +2694,7 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
   const leerImagen = async (b64) => {
     setEstado("leyendo"); setDetectado(null);
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 400, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }, { type: "text", text: PROMPT }] }] }),
-      });
-      const data = await resp.json();
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 400, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }, { type: "text", text: PROMPT }] }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
       const p = JSON.parse(txt);
       if (p.error || (!p.sku && !p.modelo)) { setFlash("rojo"); setEstado("error"); setTimeout(() => setFlash(null), 600); return; }
@@ -2768,11 +2759,7 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
     try {
       const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
       const prompt = `Es una orden de compra o pedimento de importación. Extrae los renglones de mercancía y responde SOLO JSON compacto: {"items":[{"sku":"","modelo":"","cantidad":0}]}. Empata cada renglón con el catálogo:\n${skuList}\nUsa el SKU del catálogo que corresponda; si ninguno, "".`;
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 800, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] }),
-      });
-      const data = await resp.json();
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 800, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] });
       const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
       const p = JSON.parse(txt);
       (p.items || []).forEach((it) => agregarItem({ sku: it.sku || "", descripcion: catalogo[it.sku]?.descripcion || it.modelo || "Modelo", cantidad: +it.cantidad || 1 }));
