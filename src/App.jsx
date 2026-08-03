@@ -2248,6 +2248,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [errExtrac, setErrExtrac] = useState(null);
   const [extraido, setExtraido] = useState(false);
   const [adjuntos, setAdjuntos] = useState([]);
+  const [empatando, setEmpatando] = useState(false);
+  const [dudosos, setDudosos] = useState(null);   // null = modal cerrado; array = abierto
+  const [empateMsg, setEmpateMsg] = useState(null);
 
   const tc = +ped.tc || 0;
   const calc = useMemo(() => prorratear(partidas, incs, tc), [partidas, incs, tc]);
@@ -2259,6 +2262,53 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   // Vuelca varios campos a la vez (p. ej. monto + moneda) al renglón que coincide
   const setIncFull = (match, patch, estadoDoc) =>
     setIncs((s) => s.map((x) => (x.concepto.toLowerCase().includes(match) ? { ...x, ...patch, ...(estadoDoc ? { estadoDoc } : {}) } : x)));
+
+  // Asigna un SKU a una partida y jala su categoría del catálogo
+  const asignarSku = (partId, sku) => {
+    const known = catalogo[sku];
+    setPartidas((s) => s.map((x) => (x.id === partId ? { ...x, sku, ...(known ? { categoria: known.categoria } : {}) } : x)));
+  };
+
+  // Empata cada partida contra el catálogo (sincronizado de Books) usando IA.
+  // Los de alta confianza (>=0.8) se asignan solos; los dudosos abren el popup.
+  const empatarSkus = async () => {
+    setEmpateMsg(null);
+    const conCant = partidas.filter((p) => +p.cantidad > 0 && (p.desc || "").trim());
+    if (!conCant.length) return setErrExtrac("Captura al menos una partida con descripción y cantidad antes de asignar SKUs.");
+    const cats = new Set(conCant.map((p) => p.categoria));
+    let cands = Object.entries(catalogo).filter(([, a]) => cats.has(a.categoria)).map(([sku, a]) => ({ sku, desc: a.descripcion }));
+    if (!cands.length) cands = Object.entries(catalogo).map(([sku, a]) => ({ sku, desc: a.descripcion }));
+    // Si hay demasiados candidatos, deja los más relevantes por palabras clave (tope de tokens)
+    if (cands.length > 400) {
+      const kw = conCant.map((p) => (p.desc || "").toLowerCase()).join(" ");
+      const tokens = [...new Set(kw.split(/[^a-z0-9]+/i).filter((t) => t.length > 3))];
+      const score = (d) => tokens.reduce((a, t) => a + ((d || "").toLowerCase().includes(t) ? 1 : 0), 0);
+      cands = cands.sort((a, b) => score(b.desc) - score(a.desc)).slice(0, 400);
+    }
+    setEmpatando(true); setErrExtrac(null);
+    try {
+      const lista = conCant.map((p, i) => ({ i, desc: p.desc }));
+      const prompt = `Eres experto en catálogos de importación de equipo de energía solar y baterías. Te doy (A) PARTIDAS de un pedimento con su descripción aduanal y (B) un CATÁLOGO con SKU y descripción comercial. Para cada partida, encuentra el SKU del catálogo que corresponde al MISMO producto (fíjate en modelos y capacidades: "XTREME HV", "LV 1.0", "5KW", marcas, etc.).\nResponde SOLO JSON compacto, sin markdown:\n{"asignaciones":[{"i":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- i = índice de la partida (empieza en 0).\n- sku = el SKU del catálogo más probable, EXACTO como viene. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1 (1 = segurísimo).\n- alternativas = hasta 3 SKU candidatos alternos por si el usuario corrige.\nUsa únicamente SKU que existan en el catálogo. Solo el JSON.\n\nPARTIDAS:\n${JSON.stringify(lista)}\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 2000, messages: [{ role: "user", content: [{ type: "text", text: prompt }] }] });
+      if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
+      const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
+      if (!txt) throw new Error("la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
+      const res = extraerJSON(txt);
+      const asg = Array.isArray(res.asignaciones) ? res.asignaciones : [];
+      const pend = []; let autos = 0;
+      conCant.forEach((part, i) => {
+        const a = asg.find((x) => x.i === i);
+        const ok = a && a.sku && catalogo[a.sku];
+        if (ok && (a.confianza ?? 0) >= 0.8) { asignarSku(part.id, a.sku); autos++; }
+        else pend.push({ id: part.id, desc: part.desc, confianza: a?.confianza ?? 0, alternativas: (a?.alternativas || []).filter((s) => catalogo[s]), chosen: ok ? a.sku : "" });
+      });
+      if (pend.length) setDudosos(pend);
+      setEmpateMsg(`${autos} SKU asignado${autos === 1 ? "" : "s"} automáticamente${pend.length ? ` · ${pend.length} por confirmar` : " · todo listo"}.`);
+    } catch (e) {
+      setErrExtrac("No se pudieron asignar los SKU automáticamente: " + (e.message || e) + ". Puedes asignarlos a mano.");
+    }
+    setEmpatando(false);
+  };
 
   const extraer = async () => {
     if (!pdfPed) return setErrExtrac("Sube al menos el PDF del pedimento.");
@@ -2319,6 +2369,40 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
   return (
     <div className="space-y-4">
+      {dudosos && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setDudosos(null)}>
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-1">Confirma los SKU dudosos</h3>
+            <p className="text-xs text-stone-500 mb-4">La app asignó sola los que tuvo claros. Estos necesitan tu confirmación — revisa o corrige el SKU de cada uno. Escribe para buscar en tu catálogo.</p>
+            <div className="space-y-3">
+              {dudosos.map((d, idx) => (
+                <div key={d.id} className="border border-stone-200 rounded-lg p-3">
+                  <p className="text-[10px] uppercase tracking-widest text-stone-400">Partida · confianza IA {Math.round((d.confianza || 0) * 100)}%</p>
+                  <p className="text-sm mb-2">{d.desc}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input list="skus" value={d.chosen} onChange={(e) => { const v = e.target.value.toUpperCase(); setDudosos((s) => s.map((x, j) => (j === idx ? { ...x, chosen: v } : x))); }} className={inp + " font-mono max-w-[220px]"} placeholder="Escribe o busca SKU" />
+                    {d.chosen && catalogo[d.chosen] && <span className="text-[11px] text-stone-600">{catalogo[d.chosen].descripcion}</span>}
+                    {d.chosen && !catalogo[d.chosen] && <span className="text-[11px] text-red-600">SKU no está en el catálogo</span>}
+                  </div>
+                  {d.alternativas.length > 0 && (
+                    <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] uppercase tracking-widest text-stone-400">Sugerencias:</span>
+                      {d.alternativas.map((s) => (
+                        <button key={s} onClick={() => setDudosos((st) => st.map((x, j) => (j === idx ? { ...x, chosen: s } : x)))} className={`px-2 py-0.5 text-[11px] rounded border ${d.chosen === s ? "bg-teal-700 text-white border-teal-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>{s}</button>
+                      ))}
+                    </div>
+                  )}
+                  {!d.chosen && <p className="mt-1 text-[11px] text-amber-700">La IA no encontró un SKU claro. Búscalo tú.</p>}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setDudosos(null)} className="px-3 py-2 text-xs text-stone-500 hover:text-stone-800">Cancelar</button>
+              <button onClick={() => { dudosos.forEach((d) => { if (d.chosen && catalogo[d.chosen]) asignarSku(d.id, d.chosen); }); setDudosos(null); }} className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">Aplicar SKUs</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">Nueva importación</h2>
         <button onClick={onCancel} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
@@ -2387,7 +2471,11 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           </table>
           <datalist id="skus">{Object.keys(catalogo).map((s) => <option key={s} value={s} />)}</datalist>
         </div>
-        <div className="p-3"><button onClick={() => setPartidas((s) => [...s, { id: uid(), sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-teal-700">+ Agregar partida</button></div>
+        <div className="p-3 flex items-center gap-4 flex-wrap">
+          <button onClick={() => setPartidas((s) => [...s, { id: uid(), sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-teal-700">+ Agregar partida</button>
+          <button onClick={empatarSkus} disabled={empatando} className="text-xs font-medium text-teal-700 disabled:opacity-40">{empatando ? "Asignando SKUs…" : "🎯 Auto-asignar SKUs"}</button>
+          {empateMsg && <span className="text-[11px] text-stone-500">{empateMsg}</span>}
+        </div>
       </Section>
 
       {mixto && (
