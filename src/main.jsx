@@ -15,4 +15,12 @@ window.aiExtract = async (payload) => {
   return data
 }
 
+// Helper de lectura a Zoho Books (órdenes de compra). Va a la Edge Function 'zoho-books'.
+window.zohoBooks = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('zoho-books', { body: payload })
+  if (error) throw error
+  if (data && data.error) throw new Error(data.error)
+  return data
+}
+
 createRoot(document.getElementById('root')).render(<Root />)
