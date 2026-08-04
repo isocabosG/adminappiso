@@ -46,12 +46,14 @@ Deno.serve(async (req) => {
 
     const token = await getAccessToken();
 
-    let path;
-    if (action === "list_purchase_orders") path = "/purchaseorders";
-    else if (action === "ping") path = "/organizations"; // prueba de conexión
+    const { purchaseorder_id, ...restParams } = params;
+    let path, qsParams;
+    if (action === "list_purchase_orders") { path = "/purchaseorders"; qsParams = params; }
+    else if (action === "get_purchase_order") { path = `/purchaseorders/${purchaseorder_id}`; qsParams = restParams; } // trae line_items (SKU + cantidad)
+    else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 
-    const qs = new URLSearchParams({ organization_id: org, ...params });
+    const qs = new URLSearchParams({ organization_id: org, ...qsParams });
     const r = await fetch(`${API}${path}?${qs}`, {
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
     });

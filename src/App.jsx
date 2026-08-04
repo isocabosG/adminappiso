@@ -2483,27 +2483,43 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     if (typeof window.zohoBooks !== "function") return setOcMsg("La conexión a Books no está disponible en esta versión.");
     setBuscandoOC(true); setOcMsg("Buscando órdenes de compra en Books…");
     try {
-      const data = await window.zohoBooks({ action: "list_purchase_orders", params: { vendor_name_contains: "RENON", filter_by: "Status.All", per_page: "200", sort_column: "date", sort_order: "D" } });
-      const pos = (data.purchaseorders || []).map((po) => ({ num: po.purchaseorder_number, total: +po.total || 0, qty: +po.total_ordered_quantity || 0 }));
+      const data = await window.zohoBooks({ action: "list_purchase_orders", params: { vendor_name_contains: "RENON", filter_by: "Status.All", per_page: "100", sort_column: "date", sort_order: "D" } });
+      const pos = (data.purchaseorders || []).map((po) => ({ id: po.purchaseorder_id, num: po.purchaseorder_number, total: +po.total || 0 }));
       if (!pos.length) { setOcMsg("Books no devolvió órdenes de compra de Renon."); setBuscandoOC(false); return; }
-      const usadas = new Set(); const cuadrados = new Set(); let cuadradas = 0;
       const grupos = [...gruposFactura].sort((a, b) => b.fobUSD - a.fobUSD);
-      // Pase 1: cantidad de piezas EXACTA (desempata por cercanía de monto)
+      // SKU -> cantidad de cada factura
+      const skusGrupo = {};
+      grupos.forEach((g) => { const m = {}; partidas.forEach((p) => { if (g.ids.includes(p.id) && p.sku) m[p.sku.toUpperCase()] = (m[p.sku.toUpperCase()] || 0) + (+p.cantidad || 0); }); skusGrupo[g.factura] = m; });
+      // Acota candidatos por monto (±50% de alguna factura) para limitar las llamadas de detalle
+      const montos = grupos.map((g) => g.fobUSD).filter(Boolean);
+      const relevante = (t) => !montos.length || montos.some((a) => Math.abs(t - a) / a <= 0.5);
+      const candPOs = pos.filter((po) => relevante(po.total)).slice(0, 30);
+      setOcMsg(`Leyendo los renglones de ${candPOs.length} órdenes candidatas…`);
+      // Trae los renglones (SKU + cantidad) de cada PO candidata
+      const detalle = [];
+      for (const po of candPOs) {
+        try {
+          const d = await window.zohoBooks({ action: "get_purchase_order", params: { purchaseorder_id: po.id } });
+          const items = (d.purchaseorder?.line_items || []).map((li) => ({ sku: (li.sku || "").toUpperCase(), qty: +li.quantity || 0 }));
+          detalle.push({ ...po, items });
+        } catch (_) { /* ignora PO que no se pueda leer */ }
+      }
+      // Cuadra cada factura con la PO cuyos renglones (SKU + cantidad) coincidan mejor
+      const usadas = new Set(); let cuadradas = 0;
       grupos.forEach((g) => {
-        const cand = pos.filter((po) => !usadas.has(po.num) && po.qty === g.qty);
-        if (!cand.length) return;
-        cand.sort((a, b) => Math.abs(a.total - g.fobUSD) - Math.abs(b.total - g.fobUSD));
-        usadas.add(cand[0].num); setOcGrupo(g.ids, cand[0].num); cuadrados.add(g.factura); cuadradas++;
+        const m = skusGrupo[g.factura]; const skus = Object.keys(m);
+        if (!skus.length) return;
+        let best = null, bestScore = 0, bestAmt = Infinity;
+        detalle.filter((po) => !usadas.has(po.num)).forEach((po) => {
+          let score = 0;
+          skus.forEach((sku) => { const it = po.items.find((x) => x.sku === sku); if (it && it.qty === m[sku]) score += 2; else if (it) score += 1; });
+          if (skus.every((sku) => po.items.some((x) => x.sku === sku && x.qty === m[sku]))) score += 5; // contiene TODOS los SKU con su cantidad exacta
+          const amt = g.fobUSD ? Math.abs(po.total - g.fobUSD) : 0;
+          if (score > bestScore || (score === bestScore && amt < bestAmt)) { bestScore = score; best = po; bestAmt = amt; }
+        });
+        if (best && bestScore >= 2) { usadas.add(best.num); setOcGrupo(g.ids, best.num); cuadradas++; }
       });
-      // Pase 2: para las que faltaron, por MONTO cercano (±15%)
-      grupos.forEach((g) => {
-        if (cuadrados.has(g.factura) || !g.fobUSD) return;
-        const cand = pos.filter((po) => !usadas.has(po.num) && Math.abs(po.total - g.fobUSD) / g.fobUSD <= 0.15);
-        if (!cand.length) return;
-        cand.sort((a, b) => Math.abs(a.total - g.fobUSD) - Math.abs(b.total - g.fobUSD));
-        usadas.add(cand[0].num); setOcGrupo(g.ids, cand[0].num); cuadrados.add(g.factura); cuadradas++;
-      });
-      setOcMsg(`${cuadradas} de ${gruposFactura.length} facturas cuadradas con su OC. Revisa/ajusta las que falten (busca por proveedor + cantidad + monto).`);
+      setOcMsg(`${cuadradas} de ${gruposFactura.length} facturas cuadradas por SKU + cantidad. Revisa/ajusta las que falten a mano.`);
     } catch (e) {
       setOcMsg("No se pudo leer Books: " + (e.message || e));
     }
@@ -2660,18 +2676,19 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
       <Section n="2" t="Mercancía — valor FOB" r={`FOB $${mx0(calc.totV)} · ${mx0(calc.totP)} kg`}>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px]">
+          <table className="w-full min-w-[860px]">
             <thead className="bg-stone-50 border-y border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
-              <th className="text-left px-2 py-2">SKU</th><th className="text-left px-2 py-2">Descripción</th><th className="text-left px-2 py-2">Tipo</th>
+              <th className="text-left px-2 py-2">SKU</th><th className="text-left px-2 py-2">Desc. en pedimento</th><th className="text-left px-2 py-2">Desc. en Books</th><th className="text-left px-2 py-2">Tipo</th>
               <th className="text-right px-2 py-2">Cant.</th><th className="text-right px-2 py-2">FOB u. USD</th><th className="text-right px-2 py-2">Peso u. kg</th><th></th>
             </tr></thead>
             <tbody>
               {partidas.map((p) => (
                 <tr key={p.id} className="border-b border-stone-100">
                   <td className="px-2 py-1.5 w-32">
-                    <input list="skus" className={inp + " font-mono"} value={p.sku} onChange={(e) => { const v = e.target.value.toUpperCase(); const known = catalogo[v]; upd(setPartidas)(p.id, "sku", v); if (known) { upd(setPartidas)(p.id, "desc", known.descripcion); upd(setPartidas)(p.id, "categoria", known.categoria); } }} />
+                    <input list="skus" className={inp + " font-mono"} value={p.sku} onChange={(e) => { const v = e.target.value.toUpperCase(); const known = catalogo[v]; upd(setPartidas)(p.id, "sku", v); if (known) { upd(setPartidas)(p.id, "categoria", known.categoria); } }} />
                   </td>
                   <td className="px-2 py-1.5"><input className={inp} value={p.desc} onChange={(e) => upd(setPartidas)(p.id, "desc", e.target.value)} /></td>
+                  <td className="px-2 py-1.5 text-xs text-stone-500 max-w-[200px] truncate">{catalogo[p.sku]?.descripcion || <span className="text-stone-300">—</span>}</td>
                   <td className="px-2 py-1.5 w-28"><select className={inp} value={p.categoria} onChange={(e) => upd(setPartidas)(p.id, "categoria", e.target.value)}>{CATS.map((c) => <option key={c}>{c}</option>)}</select></td>
                   <td className="px-2 py-1.5 w-20"><input type="number" className={inp + " font-mono text-right"} value={p.cantidad} onChange={(e) => upd(setPartidas)(p.id, "cantidad", e.target.value)} /></td>
                   <td className="px-2 py-1.5 w-28"><input type="number" step="0.01" className={inp + " font-mono text-right"} value={p.fobUnit} onChange={(e) => upd(setPartidas)(p.id, "fobUnit", e.target.value)} /></td>
@@ -2814,7 +2831,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
               const vig = catalogo[l.sku]?.costoVigente;
               return (
                 <div key={l.id} className="p-4 flex flex-wrap items-baseline justify-between gap-2">
-                  <div><span className="font-mono text-sm font-semibold">{l.sku}</span><span className="ml-2 text-xs text-stone-500">{l.desc}</span></div>
+                  <div><span className="font-mono text-sm font-semibold">{l.sku}</span><span className="ml-2 text-xs text-stone-500">{catalogo[l.sku]?.descripcion || l.desc}</span></div>
                   <div className="text-right font-mono text-xs text-stone-500">
                     {vig != null && <span className="mr-4">Zoho hoy ${mx(vig)}</span>}
                     <span className="text-sm font-semibold text-amber-700">landed ${mx(l.unit)}</span>
@@ -2833,6 +2850,43 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
       <Section n="5" t="Prorrateo detallado (vista equipo)" r="Costo landed por SKU · exportable">
         <ProrrateoDetalle pedNumero={ped.numero} lineas={calc.lineas} incs={incs} tc={tc} catalogo={catalogo} setPartidas={setPartidas} />
+      </Section>
+
+      <Section n="6" t="Resumen de la importación" r="Totales de lo gastado">
+        {(() => {
+          const fobUSD = calc.lineas.reduce((a, l) => a + (+l.fobUnit || 0) * l.cant, 0);
+          const incsRes = incs.map((c) => ({ concepto: c.concepto, mxn: c.metodo === "manual" ? Object.values(c.manual || {}).reduce((a, b) => a + (+b || 0), 0) : (c.moneda === "USD" ? (+c.monto || 0) * tc : (+c.monto || 0)), cap: c.capitaliza })).filter((x) => x.mxn > 0);
+          const capMXN = incsRes.filter((x) => x.cap).reduce((a, b) => a + b.mxn, 0);
+          const noCapMXN = incsRes.filter((x) => !x.cap).reduce((a, b) => a + b.mxn, 0);
+          const landed = calc.lineas.reduce((a, l) => a + l.total, 0);
+          const kpi = (t, v) => (<div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">{t}</p><p className="text-sm font-semibold font-mono mt-0.5">{v}</p></div>);
+          return (
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {kpi("Artículos (pzas)", mx0(calc.totC))}
+                {kpi("Renglones / SKU", calc.lineas.length)}
+                {kpi("Equipos FOB (USD)", "$" + mx0(fobUSD))}
+                {kpi("Equipos FOB (MXN)", "$" + mx0(calc.totV))}
+                {kpi("Incrementables (capitalizan)", "$" + mx0(capMXN))}
+                {kpi("IVA acreditable", "$" + mx0(noCapMXN))}
+                {kpi("Costo landed total (MXN)", "$" + mx0(landed))}
+                {kpi("OC que amparan", ocsAmparan.length || "—")}
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Desglose de lo gastado (MXN)</p>
+                <table className="w-full text-xs">
+                  <tbody>
+                    <tr className="border-b border-stone-100"><td className="py-1">Equipos (FOB)</td><td className="text-right font-mono">${mx0(calc.totV)}</td><td className="pl-3 text-stone-400">equipos</td></tr>
+                    {incsRes.map((x) => (<tr key={x.concepto} className="border-b border-stone-100"><td className="py-1">{x.concepto}</td><td className="text-right font-mono">${mx0(x.mxn)}</td><td className="pl-3 text-stone-400">{x.cap ? "capitaliza" : "acreditable"}</td></tr>))}
+                    <tr className="border-t-2 border-stone-200 font-semibold"><td className="py-1.5">Costo landed total (equipos + capitalizables)</td><td className="text-right font-mono">${mx0(landed)}</td><td className="pl-3 text-stone-400">MXN</td></tr>
+                    <tr className="font-semibold"><td className="py-1">Desembolso total (landed + IVA)</td><td className="text-right font-mono">${mx0(landed + noCapMXN)}</td><td className="pl-3 text-stone-400">MXN</td></tr>
+                  </tbody>
+                </table>
+                {ocsAmparan.length > 0 && <p className="mt-2 text-[11px] text-stone-500">OC que amparan: <span className="font-mono">{ocsAmparan.join(", ")}</span></p>}
+              </div>
+            </div>
+          );
+        })()}
       </Section>
     </div>
   );
