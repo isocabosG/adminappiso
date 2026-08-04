@@ -45,6 +45,18 @@ const adivinaCategoria = (desc = "") => {
   return "Otro";
 };
 
+// Empate determinístico de modelos Renon conocidos → SKU, por el código Mark&No de la factura.
+// XTH = Extreme HV, XTL = Extreme LV, XC = Xcellent, EC060 = ECube 60. EM/MC distinguen batería vs módulo de control.
+function matchRenonSku(modelo, desc) {
+  const s = ((modelo || "") + " " + (desc || "")).toUpperCase();
+  const esControl = /\bMC\d|CONTROL BOX|UNIDAD DE CONTROL|POWER CONTROL|M[ÓO]DULO DE CONTROL/.test(s);
+  if (/XTH/.test(s)) return esControl ? "MC050" : "BREHV5KW";
+  if (/XTL/.test(s)) return esControl ? "MC300" : "BRELV5KW";
+  if (/XC-?0?16|XCELLENT/.test(s)) return "BREP16KW";
+  if (/EC-?0?60|ECUBE\s*60|ECUBE60/.test(s)) return "ECUBE60";
+  return null;
+}
+
 const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes uno o dos PDFs: (1) un PEDIMENTO de importación y, si viene, (2) una COTIZACIÓN de la Agencia Aduanal Perezgrovas. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
 
 Esquema exacto:
@@ -2421,7 +2433,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     try {
       const allLineas = [];
       for (let k = 0; k < pdfFacturas.length; k++) {
-        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = código del proveedor (ej. R-EM096050-XTH01).\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata el modelo con un SKU del CATÁLOGO que sea el MISMO producto (batería, módulo/unidad de control, rack o sistema ECube). Fíjate en HV/LV, capacidad y usa el costo como apoyo (fobUnitUSD×tipoCambio ≈ costo del SKU). Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = OBLIGATORIO: el código de la columna "Mark & No" del renglón, que empieza con R- (ej. R-EM096050-XTH01, R-MC050-XTH01, R-XC016161-H-US, R-EC060LCB02-US). NO uses la descripción genérica ("energy storage system", "lithium ion batteries") como modelo — usa SIEMPRE ese código R-.\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata por el código de modelo Y por costo (fobUnitUSD×17.37 debe parecerse al costo del SKU): XTH=batería Extreme HV / XTL=batería Extreme LV / MC…-XTH=control HV / MC…-XTL=control LV / XC016=Xcellent / EC060=ECube 60. Si el costo de un candidato es MUY distinto al fobUnitUSD×17.37, NO lo elijas. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos ordenados por cercanía de costo. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
         const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfFacturas[k] } }, { type: "text", text: prompt }];
         const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
         if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
@@ -2433,8 +2445,11 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       }
       if (!allLineas.length) throw new Error("no se encontraron renglones en las facturas.");
       const nuevas = allLineas.map((l) => {
-        const skuOk = l.sku && catalogo[l.sku] ? l.sku : "";
-        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
+        // Empate determinístico por código de modelo Renon; si no, lo que dijo la IA
+        const forzado = matchRenonSku(l.modelo, l.desc);
+        const skuOk = forzado && catalogo[forzado] ? forzado : (l.sku && catalogo[l.sku] ? l.sku : "");
+        const conf = forzado ? 0.96 : (l.confianza ?? 0);
+        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: conf, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
       });
       setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
       const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, cantidad: p.cantidad, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
