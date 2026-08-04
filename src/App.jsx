@@ -2632,7 +2632,12 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
       <Section n="0" t="Cargar PDFs (llenado automático)">
         <div className="p-4 space-y-3">
-          <p className="text-xs text-stone-500">Sube el pedimento y, si la tienes, la cotización de Perezgrovas. La app extrae los datos y llena el formulario para que solo lo revises. El flete Tijuana→Cabo y cualquier extra los capturas tú abajo.</p>
+          <div className="text-xs text-stone-600 bg-teal-50/60 border border-teal-200 rounded-lg p-3 space-y-1.5">
+            <p className="font-semibold text-teal-800">Cómo capturar esta importación</p>
+            <p><span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-700 text-white text-[10px] font-bold mr-1.5">1</span>Carga el pedimento, la cotización y las facturas tal como están.</p>
+            <p><span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-700 text-white text-[10px] font-bold mr-1.5">2</span>Presiona <strong>“Extraer artículos del pedimento”</strong> y luego <strong>“🧩 Desglosar por factura”</strong>.</p>
+            <p><span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-700 text-white text-[10px] font-bold mr-1.5">3</span>En <strong>Órdenes de compra</strong> dale <strong>“Auto‑buscar OC”</strong>, confírmala y edita que la OC sea la correcta. <em>¡Confiamos en ti!</em> 🙌</p>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <Lbl>Pedimento (PDF)</Lbl>
@@ -2657,7 +2662,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           <div className="flex items-center gap-3">
             <button onClick={extraer} disabled={!pdfPed || extrayendo}
               className="px-4 py-2 bg-teal-700 text-white text-sm font-medium rounded hover:bg-teal-800 disabled:opacity-40">
-              {extrayendo ? "Leyendo PDF…" : "Extraer datos"}
+              {extrayendo ? "Leyendo PDF…" : "Extraer artículos del pedimento"}
             </button>
             {extraido && !errExtrac && <span className="text-xs text-teal-700">✓ Datos extraídos. Revísalos abajo antes de guardar.</span>}
           </div>
