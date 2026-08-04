@@ -2358,6 +2358,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [empateMsg, setEmpateMsg] = useState(null);
   const [buscandoOC, setBuscandoOC] = useState(false);
   const [ocMsg, setOcMsg] = useState(null);
+  const [guiaEmbarque, setGuiaEmbarque] = useState("");   // no. de contenedor/guía del embarque (identifica esta importación)
+  const [pendPOs, setPendPOs] = useState([]);             // OC de Renon pendientes por surtir (para el datalist)
 
   const tc = +ped.tc || 0;
   const calc = useMemo(() => prorratear(partidas, incs, tc), [partidas, incs, tc]);
@@ -2432,8 +2434,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     setEmpatando(true); setErrExtrac(null);
     try {
       const allLineas = [];
+      let guiaDetectada = "";
       for (let k = 0; k < pdfFacturas.length; k++) {
-        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = OBLIGATORIO: el código de la columna "Mark & No" del renglón, que empieza con R- (ej. R-EM096050-XTH01, R-MC050-XTH01, R-XC016161-H-US, R-EC060LCB02-US). NO uses la descripción genérica ("energy storage system", "lithium ion batteries") como modelo — usa SIEMPRE ese código R-.\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata por el código de modelo Y por costo (fobUnitUSD×17.37 debe parecerse al costo del SKU): XTH=batería Extreme HV / XTL=batería Extreme LV / MC…-XTH=control HV / MC…-XTL=control LV / XC016=Xcellent / EC060=ECube 60. Si el costo de un candidato es MUY distinto al fobUnitUSD×17.37, NO lo elijas. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos ordenados por cercanía de costo. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","guia":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- guia = el número de contenedor / marca de embarque (columna "Marks&Ctn.No." o similar, ej. EMCUUH3864), si aparece; si no, "".\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = OBLIGATORIO: el código de la columna "Mark & No" del renglón, que empieza con R- (ej. R-EM096050-XTH01, R-MC050-XTH01, R-XC016161-H-US, R-EC060LCB02-US). NO uses la descripción genérica ("energy storage system", "lithium ion batteries") como modelo — usa SIEMPRE ese código R-.\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata por el código de modelo Y por costo (fobUnitUSD×17.37 debe parecerse al costo del SKU): XTH=batería Extreme HV / XTL=batería Extreme LV / MC…-XTH=control HV / MC…-XTL=control LV / XC016=Xcellent / EC060=ECube 60. Si el costo de un candidato es MUY distinto al fobUnitUSD×17.37, NO lo elijas. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos ordenados por cercanía de costo. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
         const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfFacturas[k] } }, { type: "text", text: prompt }];
         const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
         if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
@@ -2441,8 +2444,10 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
         if (!txt) throw new Error("factura " + (k + 1) + ": la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
         const res = extraerJSON(txt);
         const fact = (res.factura || "").trim() || `Factura ${k + 1}`;
+        if (!guiaDetectada && (res.guia || "").trim()) guiaDetectada = (res.guia || "").trim();
         if (Array.isArray(res.lineas)) res.lineas.forEach((l) => allLineas.push({ ...l, _factura: fact }));
       }
+      if (guiaDetectada) setGuiaEmbarque(guiaDetectada);
       if (!allLineas.length) throw new Error("no se encontraron renglones en las facturas.");
       const nuevas = allLineas.map((l) => {
         // Empate determinístico por código de modelo Renon; si no, lo que dijo la IA
@@ -2477,49 +2482,43 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
   const setOcGrupo = (ids, oc) => setPartidas((s) => s.map((x) => (ids.includes(x.id) ? { ...x, oc } : x)));
 
-  // Auto-cuadra cada factura con su orden de compra de Zoho Books (por cantidad + monto)
+  // Busca las OC de Renon PENDIENTES POR SURTIR y propone una (estimada) por factura.
+  // El admin confirma/cambia a mano — no se fuerza el cuadre, solo se sugiere.
   const buscarOCs = async () => {
     if (!gruposFactura.length) return setOcMsg("Primero desglosa por factura para tener los renglones agrupados.");
     if (typeof window.zohoBooks !== "function") return setOcMsg("La conexión a Books no está disponible en esta versión.");
-    setBuscandoOC(true); setOcMsg("Buscando órdenes de compra en Books…");
+    setBuscandoOC(true); setOcMsg("Buscando OC de Renon pendientes por surtir…");
     try {
       const data = await window.zohoBooks({ action: "list_purchase_orders", params: { vendor_name_contains: "RENON", filter_by: "Status.All", per_page: "100", sort_column: "date", sort_order: "D" } });
-      const pos = (data.purchaseorders || []).map((po) => ({ id: po.purchaseorder_id, num: po.purchaseorder_number, total: +po.total || 0 }));
-      if (!pos.length) { setOcMsg("Books no devolvió órdenes de compra de Renon."); setBuscandoOC(false); return; }
-      const grupos = [...gruposFactura].sort((a, b) => b.fobUSD - a.fobUSD);
+      // Solo las PENDIENTES POR SURTIR (algo por recibir), del proveedor
+      const pend = (data.purchaseorders || []).filter((po) => (+po.quantity_yet_to_receive || 0) > 0 || (po.received_status && po.received_status !== "received")).map((po) => ({ id: po.purchaseorder_id, num: po.purchaseorder_number, guia: (po.cf_numero_de_gu_a_frontera || "").toUpperCase() }));
+      setPendPOs(pend.map((p) => p.num));
+      if (!pend.length) { setOcMsg("No hay OC de Renon pendientes por surtir. Captura la OC a mano."); setBuscandoOC(false); return; }
       // SKU -> cantidad de cada factura
+      const grupos = [...gruposFactura].sort((a, b) => b.fobUSD - a.fobUSD);
       const skusGrupo = {};
       grupos.forEach((g) => { const m = {}; partidas.forEach((p) => { if (g.ids.includes(p.id) && p.sku) m[p.sku.toUpperCase()] = (m[p.sku.toUpperCase()] || 0) + (+p.cantidad || 0); }); skusGrupo[g.factura] = m; });
-      // Acota candidatos por monto (±50% de alguna factura) para limitar las llamadas de detalle
-      const montos = grupos.map((g) => g.fobUSD).filter(Boolean);
-      const relevante = (t) => !montos.length || montos.some((a) => Math.abs(t - a) / a <= 0.5);
-      const candPOs = pos.filter((po) => relevante(po.total)).slice(0, 30);
-      setOcMsg(`Leyendo los renglones de ${candPOs.length} órdenes candidatas…`);
-      // Trae los renglones (SKU + cantidad) de cada PO candidata
-      const detalle = [];
-      for (const po of candPOs) {
-        try {
-          const d = await window.zohoBooks({ action: "get_purchase_order", params: { purchaseorder_id: po.id } });
-          const items = (d.purchaseorder?.line_items || []).map((li) => ({ sku: (li.sku || "").toUpperCase(), qty: +li.quantity || 0 }));
-          detalle.push({ ...po, items });
-        } catch (_) { /* ignora PO que no se pueda leer */ }
-      }
-      // Cuadra cada factura con la PO cuyos renglones (SKU + cantidad) coincidan mejor
-      const usadas = new Set(); let cuadradas = 0;
-      grupos.forEach((g) => {
+      // Lee los renglones de las OC pendientes (cache), para pre-sugerir por SKU/guía
+      const detalle = {};
+      const lineasDe = async (po) => { if (detalle[po.id]) return detalle[po.id]; try { const d = await window.zohoBooks({ action: "get_purchase_order", params: { purchaseorder_id: po.id } }); detalle[po.id] = (d.purchaseorder?.line_items || []).map((li) => ({ sku: (li.sku || "").toUpperCase(), qty: +li.quantity || 0 })); } catch (_) { detalle[po.id] = []; } return detalle[po.id]; };
+      const gg = (guiaEmbarque || "").toUpperCase();
+      const usadas = new Set(); let sugeridas = 0;
+      for (const g of grupos) {
         const m = skusGrupo[g.factura]; const skus = Object.keys(m);
-        if (!skus.length) return;
-        let best = null, bestScore = 0, bestAmt = Infinity;
-        detalle.filter((po) => !usadas.has(po.num)).forEach((po) => {
+        if (!skus.length) continue;
+        let best = null, bestScore = 0;
+        for (const po of pend.filter((x) => !usadas.has(x.num))) {
+          const items = await lineasDe(po);
           let score = 0;
-          skus.forEach((sku) => { const it = po.items.find((x) => x.sku === sku); if (it && it.qty === m[sku]) score += 2; else if (it) score += 1; });
-          if (skus.every((sku) => po.items.some((x) => x.sku === sku && x.qty === m[sku]))) score += 5; // contiene TODOS los SKU con su cantidad exacta
-          const amt = g.fobUSD ? Math.abs(po.total - g.fobUSD) : 0;
-          if (score > bestScore || (score === bestScore && amt < bestAmt)) { bestScore = score; best = po; bestAmt = amt; }
-        });
-        if (best && bestScore >= 2) { usadas.add(best.num); setOcGrupo(g.ids, best.num); cuadradas++; }
-      });
-      setOcMsg(`${cuadradas} de ${gruposFactura.length} facturas cuadradas por SKU + cantidad. Revisa/ajusta las que falten a mano.`);
+          // surtido parcial: basta que el SKU esté en la OC con cantidad ordenada >= la de la factura
+          skus.forEach((sku) => { const it = items.find((x) => x.sku === sku); if (it) score += (m[sku] <= it.qty ? 2 : 1); });
+          if (skus.every((sku) => items.some((x) => x.sku === sku))) score += 5; // la OC contiene TODOS los equipos de la factura
+          if (gg && po.guia && po.guia.includes(gg)) score += 10;               // misma guía/contenedor = esta importación
+          if (score > bestScore) { bestScore = score; best = po; }
+        }
+        if (best && bestScore >= 2) { usadas.add(best.num); setOcGrupo(g.ids, best.num); sugeridas++; }
+      }
+      setOcMsg(`${pend.length} OC de Renon pendientes por surtir · ${sugeridas} propuestas (estimadas${gg ? " por guía/equipos" : " por equipos"}). Confírmalas o cámbialas a mano.`);
     } catch (e) {
       setOcMsg("No se pudo leer Books: " + (e.message || e));
     }
@@ -2586,7 +2585,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     onSave({ id: uid(), ...ped, ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
   };
 
-  const mixto = new Set(calc.lineas.map((l) => l.categoria)).size > 1;
+  // Embarque mixto solo importa si HAY IGI que capturar (categorías con IGI distinto)
+  const hayIGI = incs.some((c) => /igi/i.test(c.concepto) && ((+c.monto || 0) > 0 || Object.values(c.manual || {}).some((v) => +v > 0)));
+  const mixto = hayIGI && new Set(calc.lineas.map((l) => l.categoria)).size > 1;
 
   return (
     <div className="space-y-4">
@@ -2737,12 +2738,13 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] uppercase tracking-widest text-stone-400">OC</span>
-                    <input value={g.oc} onChange={(e) => setOcGrupo(g.ids, e.target.value)} placeholder="PO-…" className={inp + " font-mono max-w-[160px]"} />
+                    <input list="pendpos" value={g.oc} onChange={(e) => setOcGrupo(g.ids, e.target.value.toUpperCase())} placeholder="PO-…" className={inp + " font-mono max-w-[180px]"} />
                   </div>
                 </div>
               ))}
+              <datalist id="pendpos">{pendPOs.map((n) => <option key={n} value={n} />)}</datalist>
             </div>
-            <p className="text-[10px] text-stone-400">La OC se busca por proveedor + cantidad de piezas + monto, y se copia a todos los SKU de esa factura (aparece también en el prorrateo detallado).</p>
+            <p className="text-[10px] text-stone-400">El botón trae las OC de Renon <strong>pendientes por surtir</strong> y propone una por factura (estimada, por equipos/guía). <strong>Confírmala o cámbiala a mano</strong> — al escribir en el campo aparecen las OC pendientes para elegir. Se copia a todos los SKU de esa factura.</p>
           </div>
         </Section>
       )}
