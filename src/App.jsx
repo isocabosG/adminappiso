@@ -2909,6 +2909,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
 function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimentos, setAviso, onBack, onEdit }) {
   const st = estadoPedimento(ped);
   const [confirmandoEdit, setConfirmandoEdit] = useState(false);
+  const [confirmandoCerrar, setConfirmandoCerrar] = useState(false);
   const calc = useMemo(() => prorratear(ped.partidas, ped.incrementables, ped.tc), [ped]);
 
   const setEstadoDoc = (incId, val) => {
@@ -3002,7 +3003,17 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
         {!ped.cerrado && (
           <div className="p-4 border-t border-stone-200">
             {st === "listo" ? (
-              <button onClick={cerrar} className="px-4 py-2 bg-teal-700 text-white text-sm font-medium rounded hover:bg-teal-800">Cerrar y calcular nuevo promedio</button>
+              confirmandoCerrar ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded p-2">⚠ <strong>¡AGUAS!</strong> Al cerrar se calcula el nuevo promedio landed de cada SKU y se actualizan los costos del catálogo. <strong>No se deshace fácil.</strong> Ciérralo solo si los montos ya son finales y estás seguro.</p>
+                  <div className="flex gap-2">
+                    <button onClick={cerrar} className="px-4 py-2 bg-teal-700 text-white text-sm font-medium rounded hover:bg-teal-800">Sí, cerrar y calcular</button>
+                    <button onClick={() => setConfirmandoCerrar(false)} className="px-4 py-2 border border-stone-300 text-sm rounded hover:bg-stone-50">Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmandoCerrar(true)} className="px-4 py-2 bg-teal-700 text-white text-sm font-medium rounded hover:bg-teal-800">Cerrar y calcular nuevo promedio</button>
+              )
             ) : (
               <p className="text-xs text-stone-500">Faltan facturas finales. Marca todos los incrementables como <strong>Factura final</strong> para poder cerrar.</p>
             )}
