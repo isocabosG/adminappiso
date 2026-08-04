@@ -2486,18 +2486,24 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       const data = await window.zohoBooks({ action: "list_purchase_orders", params: { vendor_name_contains: "RENON", filter_by: "Status.All", per_page: "200", sort_column: "date", sort_order: "D" } });
       const pos = (data.purchaseorders || []).map((po) => ({ num: po.purchaseorder_number, total: +po.total || 0, qty: +po.total_ordered_quantity || 0 }));
       if (!pos.length) { setOcMsg("Books no devolvió órdenes de compra de Renon."); setBuscandoOC(false); return; }
-      const usadas = new Set(); let cuadradas = 0;
-      // Prioriza empate exacto por cantidad de piezas; desempata por cercanía de monto
-      [...gruposFactura].sort((a, b) => b.fobUSD - a.fobUSD).forEach((g) => {
+      const usadas = new Set(); const cuadrados = new Set(); let cuadradas = 0;
+      const grupos = [...gruposFactura].sort((a, b) => b.fobUSD - a.fobUSD);
+      // Pase 1: cantidad de piezas EXACTA (desempata por cercanía de monto)
+      grupos.forEach((g) => {
         const cand = pos.filter((po) => !usadas.has(po.num) && po.qty === g.qty);
         if (!cand.length) return;
         cand.sort((a, b) => Math.abs(a.total - g.fobUSD) - Math.abs(b.total - g.fobUSD));
-        const best = cand[0];
-        usadas.add(best.num);
-        setOcGrupo(g.ids, best.num);
-        cuadradas++;
+        usadas.add(cand[0].num); setOcGrupo(g.ids, cand[0].num); cuadrados.add(g.factura); cuadradas++;
       });
-      setOcMsg(`${cuadradas} de ${gruposFactura.length} facturas cuadradas con su OC (por cantidad de piezas). Revisa y ajusta las que falten.`);
+      // Pase 2: para las que faltaron, por MONTO cercano (±15%)
+      grupos.forEach((g) => {
+        if (cuadrados.has(g.factura) || !g.fobUSD) return;
+        const cand = pos.filter((po) => !usadas.has(po.num) && Math.abs(po.total - g.fobUSD) / g.fobUSD <= 0.15);
+        if (!cand.length) return;
+        cand.sort((a, b) => Math.abs(a.total - g.fobUSD) - Math.abs(b.total - g.fobUSD));
+        usadas.add(cand[0].num); setOcGrupo(g.ids, cand[0].num); cuadrados.add(g.factura); cuadradas++;
+      });
+      setOcMsg(`${cuadradas} de ${gruposFactura.length} facturas cuadradas con su OC. Revisa/ajusta las que falten (busca por proveedor + cantidad + monto).`);
     } catch (e) {
       setOcMsg("No se pudo leer Books: " + (e.message || e));
     }
@@ -2554,9 +2560,14 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     setExtrayendo(false);
   };
 
+  // OCs que amparan la importación (únicas, de todos los renglones)
+  const ocsAmparan = [...new Set(partidas.map((p) => (p.oc || "").trim()).filter(Boolean))];
+  // Falta OC si hay facturas agrupadas sin OC, o si no hay ninguna OC capturada
+  const faltanOC = gruposFactura.length ? gruposFactura.some((g) => !(g.oc || "").trim()) : ocsAmparan.length === 0;
+
   const guardar = () => {
-    if (!ped.numero.trim() || !tc || !calc.lineas.length) return;
-    onSave({ id: uid(), ...ped, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
+    if (!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC) return;
+    onSave({ id: uid(), ...ped, ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
   };
 
   const mixto = new Set(calc.lineas.map((l) => l.categoria)).size > 1;
@@ -2643,7 +2654,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           <Field l="Número"><input className={inp + " font-mono"} value={ped.numero} onChange={(e) => setPed({ ...ped, numero: e.target.value })} placeholder="26 40 3965 …" /></Field>
           <Field l="Fecha de pago"><input type="date" className={inp} value={ped.fecha} onChange={(e) => setPed({ ...ped, fecha: e.target.value })} /></Field>
           <Field l="Tipo de cambio"><input type="number" step="0.0001" className={inp + " font-mono"} value={ped.tc} onChange={(e) => setPed({ ...ped, tc: e.target.value })} placeholder="17.4030" /></Field>
-          <Field l="OC en Zoho"><input className={inp + " font-mono"} value={ped.ocZoho} onChange={(e) => setPed({ ...ped, ocZoho: e.target.value })} placeholder="PO-00123" /></Field>
+          <Field l="OC(s) en Zoho que amparan"><input className={inp + " font-mono bg-stone-50 text-stone-600"} value={ocsAmparan.join(", ")} readOnly placeholder="Se cargan en la sección 2b (una por factura)" /></Field>
         </div>
       </Section>
 
@@ -2814,8 +2825,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           </div>
         )}
         <div className="p-4 border-t border-stone-200 flex gap-2">
-          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">Guardar como provisional</button>
+          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">Guardar como provisional</button>
           <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
+          {faltanOC && <span className="text-xs text-amber-700">⚠ Falta capturar la OC de cada factura (sección 2b) antes de guardar.</span>}
         </div>
       </Section>
 
