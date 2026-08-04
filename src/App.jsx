@@ -2262,9 +2262,71 @@ function SkuPicker({ value, onChange, catalogo, inp }) {
   );
 }
 
+// Vista de prorrateo detallado por SKU (formato del Excel del equipo) + exporte CSV
+const csvCell = (v) => { const s = String(v ?? ""); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+function ProrrateoDetalle({ pedNumero, lineas, incs, tc, catalogo, setPartidas, proyecto = "MATERIAL PARA PROYECTOS" }) {
+  const cols = incs.filter((c) => c.capitaliza && c.concepto).map((c) => c.concepto);
+  const abrev = (c) => c.replace(/Flete internacional origen → San Diego/i, "FLETE CA-SD").replace(/Cruce San Diego → Tijuana/i, "CRUCE SD-TJ").replace(/Flete Tijuana → Los Cabos/i, "FLETE TJ-CSL").replace(/Cuenta de Gastos Americana \(ICC\)/i, "OTROS INCREM").replace(/Honorarios \+ servicios agente/i, "HON ADU").replace(/Prevalidación/i, "PRV").replace(/de importación/i, "");
+  const rows = lineas.map((l) => {
+    const fobUSD = (+l.fobUnit || 0) * l.cant;
+    const cslUSD = tc ? l.unit / tc : 0;
+    return { l, fobUSD, cslMXN: l.unit, cslUSD, difUSD: cslUSD - (+l.fobUnit || 0), pct: (+l.fobUnit || 0) ? (cslUSD - (+l.fobUnit || 0)) / (+l.fobUnit || 0) : 0 };
+  });
+  const exportar = () => {
+    const head = ["NO. ORDEN", "CANT", "SKU", "ARTICULO", "EXW USD", "FOB USD", "IMPORTE MXN", ...cols.map(abrev), "TOTAL MXN", "COSTO CSL MXN", "COSTO CSL USD", "DIFERENCIA USD", "%", "PROYECTO"];
+    const out = [head.map(csvCell).join(",")];
+    rows.forEach(({ l, fobUSD, cslMXN, cslUSD, difUSD, pct }) => {
+      out.push([l.oc || "", l.cant, l.sku, catalogo[l.sku]?.descripcion || l.desc, (+l.fobUnit || 0).toFixed(2), fobUSD.toFixed(2), l.fobMXN.toFixed(2), ...cols.map((c) => (l.asig[c] || 0).toFixed(2)), l.total.toFixed(2), cslMXN.toFixed(2), cslUSD.toFixed(2), difUSD.toFixed(2), (pct * 100).toFixed(2) + "%", proyecto].map(csvCell).join(","));
+    });
+    const blob = new Blob(["﻿" + out.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `Prorrateo ${pedNumero || "pedimento"}.csv`; a.click(); URL.revokeObjectURL(url);
+  };
+  if (!lineas.length) return <p className="p-4 text-xs text-stone-500">Asigna SKU y cantidades a las partidas para ver el prorrateo detallado.</p>;
+  const th = "px-2 py-1.5 text-[10px] uppercase tracking-wide text-stone-500 whitespace-nowrap";
+  const td = "px-2 py-1 font-mono text-right whitespace-nowrap";
+  return (
+    <div>
+      <div className="flex items-center justify-between px-3 py-2">
+        <p className="text-[11px] text-stone-500">Costo landed prorrateado por SKU (por valor FOB). El IVA no capitaliza. Edita la OC de cada renglón.</p>
+        <button onClick={exportar} className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">Exportar CSV</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[1100px] w-full text-xs">
+          <thead className="bg-stone-50 border-y border-stone-200"><tr>
+            <th className={th + " text-left"}>OC</th><th className={th + " text-right"}>Cant</th><th className={th + " text-left"}>SKU</th><th className={th + " text-left"}>Artículo</th>
+            <th className={th + " text-right"}>EXW USD</th><th className={th + " text-right"}>FOB USD</th><th className={th + " text-right"}>Importe MXN</th>
+            {cols.map((c) => <th key={c} className={th + " text-right"}>{abrev(c)}</th>)}
+            <th className={th + " text-right"}>Total MXN</th><th className={th + " text-right bg-teal-50"}>CSL MXN</th><th className={th + " text-right bg-teal-50"}>CSL USD</th><th className={th + " text-right"}>Dif USD</th><th className={th + " text-right"}>%</th>
+          </tr></thead>
+          <tbody>
+            {rows.map(({ l, fobUSD, cslMXN, cslUSD, difUSD, pct }) => (
+              <tr key={l.id} className="border-b border-stone-100">
+                <td className="px-2 py-1 w-20"><input value={l.oc || ""} onChange={(e) => setPartidas((s) => s.map((x) => (x.id === l.id ? { ...x, oc: e.target.value } : x)))} className="w-16 px-1 py-0.5 text-xs font-mono border border-stone-200 rounded" placeholder="—" /></td>
+                <td className={td}>{l.cant}</td>
+                <td className="px-2 py-1 font-mono text-left">{l.sku}</td>
+                <td className="px-2 py-1 text-left text-stone-600 max-w-[220px] truncate">{catalogo[l.sku]?.descripcion || l.desc}</td>
+                <td className={td}>{mx(+l.fobUnit || 0)}</td>
+                <td className={td}>{mx(fobUSD)}</td>
+                <td className={td}>{mx0(l.fobMXN)}</td>
+                {cols.map((c) => <td key={c} className={td + " text-stone-500"}>{mx0(l.asig[c] || 0)}</td>)}
+                <td className={td + " font-semibold"}>{mx0(l.total)}</td>
+                <td className={td + " bg-teal-50/50 font-semibold"}>{mx0(cslMXN)}</td>
+                <td className={td + " bg-teal-50/50"}>{mx(cslUSD)}</td>
+                <td className={td + " text-stone-500"}>{mx(difUSD)}</td>
+                <td className={td + " text-stone-500"}>{(pct * 100).toFixed(1)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [ped, setPed] = useState({ numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
-  const [partidas, setPartidas] = useState([{ id: uid(), sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
+  const [partidas, setPartidas] = useState([{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
   const [incs, setIncs] = useState(() => [
     ...fletes.filter((f) => f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: f.moneda === "USD" ? "peso" : "peso", capitaliza: true, estadoDoc: f.tarifa ? "estimado" : "estimado", manual: {} })),
     ...CONCEPTOS_FIJOS.map((c) => ({ id: uid(), ...c, monto: "", estadoDoc: "estimado", manual: {} })),
@@ -2368,7 +2430,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       if (!allLineas.length) throw new Error("no se encontraron renglones en las facturas.");
       const nuevas = allLineas.map((l) => {
         const skuOk = l.sku && catalogo[l.sku] ? l.sku : "";
-        return { id: uid(), sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
+        return { id: uid(), oc: "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
       });
       setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
       const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, cantidad: p.cantidad, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
@@ -2549,7 +2611,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           <datalist id="skus">{Object.keys(catalogo).map((s) => <option key={s} value={s} />)}</datalist>
         </div>
         <div className="p-3 flex items-center gap-4 flex-wrap">
-          <button onClick={() => setPartidas((s) => [...s, { id: uid(), sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-teal-700">+ Agregar partida</button>
+          <button onClick={() => setPartidas((s) => [...s, { id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-teal-700">+ Agregar partida</button>
           <button onClick={empatarSkus} disabled={empatando} className="text-xs font-medium text-teal-700 disabled:opacity-40">{empatando ? "Procesando…" : "🎯 Auto-asignar SKUs"}</button>
           <button onClick={desglosarPorFactura} disabled={empatando || !pdfFacturas.length} className="text-xs font-medium text-teal-700 disabled:opacity-40" title={pdfFacturas.length ? "Reemplaza las partidas por el desglose real de las facturas (baterías + controles por separado)" : "Sube facturas del proveedor arriba para habilitar"}>{empatando ? "Procesando…" : "🧩 Desglosar por factura"}</button>
           {empateMsg && <span className="text-[11px] text-stone-500">{empateMsg}</span>}
@@ -2654,6 +2716,10 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">Guardar como provisional</button>
           <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
         </div>
+      </Section>
+
+      <Section n="5" t="Prorrateo detallado (vista equipo)" r="Costo landed por SKU · exportable">
+        <ProrrateoDetalle pedNumero={ped.numero} lineas={calc.lineas} incs={incs} tc={tc} catalogo={catalogo} setPartidas={setPartidas} />
       </Section>
     </div>
   );
