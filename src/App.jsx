@@ -2344,6 +2344,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [empatando, setEmpatando] = useState(false);
   const [dudosos, setDudosos] = useState(null);   // null = modal cerrado; array = abierto
   const [empateMsg, setEmpateMsg] = useState(null);
+  const [buscandoOC, setBuscandoOC] = useState(false);
+  const [ocMsg, setOcMsg] = useState(null);
 
   const tc = +ped.tc || 0;
   const calc = useMemo(() => prorratear(partidas, incs, tc), [partidas, incs, tc]);
@@ -2419,19 +2421,20 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
     try {
       const allLineas = [];
       for (let k = 0; k < pdfFacturas.length; k++) {
-        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = código del proveedor (ej. R-EM096050-XTH01).\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata el modelo con un SKU del CATÁLOGO que sea el MISMO producto (batería, módulo/unidad de control, rack o sistema ECube). Fíjate en HV/LV, capacidad y usa el costo como apoyo (fobUnitUSD×tipoCambio ≈ costo del SKU). Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = código del proveedor (ej. R-EM096050-XTH01).\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata el modelo con un SKU del CATÁLOGO que sea el MISMO producto (batería, módulo/unidad de control, rack o sistema ECube). Fíjate en HV/LV, capacidad y usa el costo como apoyo (fobUnitUSD×tipoCambio ≈ costo del SKU). Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
         const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfFacturas[k] } }, { type: "text", text: prompt }];
         const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
         if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
         const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
         if (!txt) throw new Error("factura " + (k + 1) + ": la IA no devolvió texto (motivo: " + (data.stop_reason || "desconocido") + ")");
         const res = extraerJSON(txt);
-        if (Array.isArray(res.lineas)) allLineas.push(...res.lineas);
+        const fact = (res.factura || "").trim() || `Factura ${k + 1}`;
+        if (Array.isArray(res.lineas)) res.lineas.forEach((l) => allLineas.push({ ...l, _factura: fact }));
       }
       if (!allLineas.length) throw new Error("no se encontraron renglones en las facturas.");
       const nuevas = allLineas.map((l) => {
         const skuOk = l.sku && catalogo[l.sku] ? l.sku : "";
-        return { id: uid(), oc: "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
+        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: l.confianza ?? 0, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
       });
       setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
       const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, cantidad: p.cantidad, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
@@ -2441,6 +2444,49 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
       setErrExtrac("No se pudo desglosar la factura: " + (e.message || e) + ". Puedes capturar los renglones a mano.");
     }
     setEmpatando(false);
+  };
+
+  // Agrupa los renglones por factura (para ligar cada factura a su orden de compra)
+  const gruposFactura = useMemo(() => {
+    const m = {};
+    partidas.forEach((p) => {
+      if (!p.factura) return;
+      if (!m[p.factura]) m[p.factura] = { factura: p.factura, qty: 0, fobUSD: 0, oc: "", ids: [] };
+      m[p.factura].qty += +p.cantidad || 0;
+      m[p.factura].fobUSD += (+p.fobUnit || 0) * (+p.cantidad || 0);
+      m[p.factura].ids.push(p.id);
+      if (p.oc) m[p.factura].oc = p.oc;
+    });
+    return Object.values(m);
+  }, [partidas]);
+
+  const setOcGrupo = (ids, oc) => setPartidas((s) => s.map((x) => (ids.includes(x.id) ? { ...x, oc } : x)));
+
+  // Auto-cuadra cada factura con su orden de compra de Zoho Books (por cantidad + monto)
+  const buscarOCs = async () => {
+    if (!gruposFactura.length) return setOcMsg("Primero desglosa por factura para tener los renglones agrupados.");
+    if (typeof window.zohoBooks !== "function") return setOcMsg("La conexión a Books no está disponible en esta versión.");
+    setBuscandoOC(true); setOcMsg("Buscando órdenes de compra en Books…");
+    try {
+      const data = await window.zohoBooks({ action: "list_purchase_orders", params: { vendor_name_contains: "RENON", filter_by: "Status.All", per_page: "200", sort_column: "date", sort_order: "D" } });
+      const pos = (data.purchaseorders || []).map((po) => ({ num: po.purchaseorder_number, total: +po.total || 0, qty: +po.total_ordered_quantity || 0 }));
+      if (!pos.length) { setOcMsg("Books no devolvió órdenes de compra de Renon."); setBuscandoOC(false); return; }
+      const usadas = new Set(); let cuadradas = 0;
+      // Prioriza empate exacto por cantidad de piezas; desempata por cercanía de monto
+      [...gruposFactura].sort((a, b) => b.fobUSD - a.fobUSD).forEach((g) => {
+        const cand = pos.filter((po) => !usadas.has(po.num) && po.qty === g.qty);
+        if (!cand.length) return;
+        cand.sort((a, b) => Math.abs(a.total - g.fobUSD) - Math.abs(b.total - g.fobUSD));
+        const best = cand[0];
+        usadas.add(best.num);
+        setOcGrupo(g.ids, best.num);
+        cuadradas++;
+      });
+      setOcMsg(`${cuadradas} de ${gruposFactura.length} facturas cuadradas con su OC (por cantidad de piezas). Revisa y ajusta las que falten.`);
+    } catch (e) {
+      setOcMsg("No se pudo leer Books: " + (e.message || e));
+    }
+    setBuscandoOC(false);
   };
 
   const extraer = async () => {
@@ -2628,6 +2674,35 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           {empateMsg && <p className="text-[11px] text-teal-700 font-medium">{empateMsg}</p>}
         </div>
       </Section>
+
+      {gruposFactura.length > 0 && (
+        <Section n="2b" t="Órdenes de compra (Books)" r={`${gruposFactura.length} factura${gruposFactura.length > 1 ? "s" : ""}`}>
+          <div className="p-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-3 justify-between">
+              <div className="text-[11px] text-stone-500">
+                Pedimento <b className="font-mono text-stone-700">{ped.numero || "—"}</b> · {ped.fecha || "—"} · TC <b className="font-mono text-stone-700">{tc || "—"}</b> · {gruposFactura.length} factura{gruposFactura.length > 1 ? "s" : ""}
+              </div>
+              <button onClick={buscarOCs} disabled={buscandoOC} className="px-4 py-2 bg-teal-700 text-white text-xs font-semibold rounded-lg hover:bg-teal-800 disabled:opacity-40">{buscandoOC ? "Buscando…" : "🔎 Auto-buscar OC en Books"}</button>
+            </div>
+            {ocMsg && <p className="text-[11px] text-stone-600">{ocMsg}</p>}
+            <div className="divide-y divide-stone-100 border border-stone-200 rounded-lg">
+              {gruposFactura.map((g) => (
+                <div key={g.factura} className="flex flex-wrap items-center justify-between gap-2 p-3">
+                  <div className="text-xs">
+                    <span className="font-mono font-semibold">{g.factura}</span>
+                    <span className="ml-3 text-stone-500">{g.qty} pzas · ${mx0(g.fobUSD)} USD</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-widest text-stone-400">OC</span>
+                    <input value={g.oc} onChange={(e) => setOcGrupo(g.ids, e.target.value)} placeholder="PO-…" className={inp + " font-mono max-w-[160px]"} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-stone-400">La OC se busca por proveedor + cantidad de piezas + monto, y se copia a todos los SKU de esa factura (aparece también en el prorrateo detallado).</p>
+          </div>
+        </Section>
+      )}
 
       {mixto && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 text-xs text-amber-900">
