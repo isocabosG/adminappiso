@@ -2611,11 +2611,21 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           </table>
           <datalist id="skus">{Object.keys(catalogo).map((s) => <option key={s} value={s} />)}</datalist>
         </div>
-        <div className="p-3 flex items-center gap-4 flex-wrap">
-          <button onClick={() => setPartidas((s) => [...s, { id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-teal-700">+ Agregar partida</button>
-          <button onClick={empatarSkus} disabled={empatando} className="text-xs font-medium text-teal-700 disabled:opacity-40">{empatando ? "Procesando…" : "🎯 Auto-asignar SKUs"}</button>
-          <button onClick={desglosarPorFactura} disabled={empatando || !pdfFacturas.length} className="text-xs font-medium text-teal-700 disabled:opacity-40" title={pdfFacturas.length ? "Reemplaza las partidas por el desglose real de las facturas (baterías + controles por separado)" : "Sube facturas del proveedor arriba para habilitar"}>{empatando ? "Procesando…" : "🧩 Desglosar por factura"}</button>
-          {empateMsg && <span className="text-[11px] text-stone-500">{empateMsg}</span>}
+        <div className="p-4 space-y-2 border-t border-stone-200 bg-stone-50/60">
+          <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={desglosarPorFactura} disabled={empatando || !pdfFacturas.length}
+              className="px-5 py-2.5 bg-teal-700 text-white text-sm font-semibold rounded-lg hover:bg-teal-800 disabled:opacity-40 shadow-sm"
+              title={pdfFacturas.length ? "Flujo normal: abre los kits en sus componentes usando las facturas" : "Sube facturas del proveedor arriba para habilitar"}>
+              {empatando ? "Procesando…" : "🧩 Desglosar por factura"}<span className="ml-1 text-teal-100 font-normal text-xs">· recomendado</span>
+            </button>
+            <button onClick={empatarSkus} disabled={empatando}
+              className="px-4 py-2.5 border border-stone-300 text-stone-700 text-sm font-medium rounded-lg hover:bg-white disabled:opacity-40">
+              {empatando ? "Procesando…" : "🎯 Auto-asignar SKUs"}
+            </button>
+            <button onClick={() => setPartidas((s) => [...s, { id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-stone-500 hover:text-stone-800">+ Agregar partida manual</button>
+          </div>
+          <p className="text-[11px] text-stone-500">Con facturas cargadas, usa <b>Desglosar por factura</b> (es el flujo normal: separa baterías y controles de cada sistema). <b>Auto‑asignar</b> es solo para captura sin factura.</p>
+          {empateMsg && <p className="text-[11px] text-teal-700 font-medium">{empateMsg}</p>}
         </div>
       </Section>
 
