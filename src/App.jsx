@@ -769,6 +769,7 @@ const CAT_ROWS = [
 ["DC8X8121","DUCTO CUADRADO 8X8 1219MM","Otro",4,2931.03,"4053294000029697353"],
 ["DG3005030","DUCTO CUADRADO GALVANIZADO CAL 20 300X50X30 ","Otro",1,11300.0,"4053294000021828109"],
 ["ECLITE60","ECUBE LITE 60KHW RENON","Batería",4,199134.2,"4053294000028633266"],
+["ECUBE60","ECUBE 60AP HV RENON","Batería",0,236443,"4053294000021607671"],
 ["EL1545C2","ELECTRODO CARBON ACTIVADO 15X45CMS CAL 2 AWG","Otro",13,1927.69,"4053294000002577838"],
 ["PREAIMP10","ESPATULA ACERO INOXIDABLE 10 PULG","Otro",3,253.0,"4053294000008195320"],
 ["EPOLIUR1","ESPUMA DE POLIURETANO","Otro",42,131.42,"4053294000002577857"],
@@ -1856,7 +1857,7 @@ const SEED_FLETES = [
 const CONCEPTOS_FIJOS = [
   { concepto: "DTA", metodo: "valor", moneda: "MXN", capitaliza: true, proveedor: "SAT (vía agente)" },
   { concepto: "IGI", metodo: "manual", moneda: "MXN", capitaliza: true, proveedor: "SAT (vía agente)" },
-  { concepto: "Prevalidación", metodo: "iguales", moneda: "MXN", capitaliza: true, proveedor: "SAT (vía agente)" },
+  { concepto: "Prevalidación", metodo: "valor", moneda: "MXN", capitaliza: true, proveedor: "SAT (vía agente)" },
   { concepto: "Honorarios + servicios agente", metodo: "valor", moneda: "MXN", capitaliza: true, proveedor: "Agencia Perezgrovas" },
   { concepto: "Cuenta de Gastos Americana (ICC)", metodo: "valor", moneda: "MXN", capitaliza: true, proveedor: "Agencia Perezgrovas" },
   { concepto: "IVA de importación", metodo: "valor", moneda: "MXN", capitaliza: false, proveedor: "SAT (vía agente)" },
@@ -2328,9 +2329,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [ped, setPed] = useState({ numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
   const [partidas, setPartidas] = useState([{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
   const [incs, setIncs] = useState(() => [
-    ...fletes.filter((f) => f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: f.moneda === "USD" ? "peso" : "peso", capitaliza: true, estadoDoc: f.tarifa ? "estimado" : "estimado", manual: {} })),
+    ...fletes.filter((f) => f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: "valor", capitaliza: true, estadoDoc: f.tarifa ? "estimado" : "estimado", manual: {} })),
     ...CONCEPTOS_FIJOS.map((c) => ({ id: uid(), ...c, monto: "", estadoDoc: "estimado", manual: {} })),
-    ...fletes.filter((f) => !f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: "peso", capitaliza: true, estadoDoc: "estimado", manual: {} })),
+    ...fletes.filter((f) => !f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: "valor", capitaliza: true, estadoDoc: "estimado", manual: {} })),
   ]);
 
   const [pdfPed, setPdfPed] = useState(null);
