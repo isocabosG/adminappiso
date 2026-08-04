@@ -2152,6 +2152,10 @@ function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fle
   const [modo, setModo] = useState("lista"); // lista | nueva | fletes | ped:<id>
   if (modo === "nueva")
     return <NuevaImportacion {...{ fletes, catalogo, onCancel: () => setModo("lista"), onSave: (p) => { savePedimentos([p, ...pedimentos]); setModo("lista"); setAviso({ t: "ok", m: `Pedimento ${p.numero} guardado como provisional.` }); } }} />;
+  if (modo.startsWith("editar:")) {
+    const pe = pedimentos.find((p) => p.id === modo.slice(7));
+    if (pe) return <NuevaImportacion {...{ fletes, catalogo, pedInicial: pe, onCancel: () => setModo("ped:" + pe.id), onSave: (p) => { savePedimentos(pedimentos.map((x) => (x.id === p.id ? p : x))); setModo("ped:" + p.id); setAviso({ t: "ok", m: `Importación ${p.numero} actualizada.` }); } }} />;
+  }
   if (modo === "fletes")
     return (
       <div className="space-y-4">
@@ -2162,7 +2166,7 @@ function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fle
 
   const ped = modo.startsWith("ped:") ? pedimentos.find((p) => p.id === modo.slice(4)) : null;
   if (ped)
-    return <DetallePedimento {...{ ped, catalogo, saveCatalogo, pedimentos, savePedimentos, setAviso, onBack: () => setModo("lista") }} />;
+    return <DetallePedimento {...{ ped, catalogo, saveCatalogo, pedimentos, savePedimentos, setAviso, onBack: () => setModo("lista"), onEdit: () => setModo("editar:" + ped.id) }} />;
 
   return (
     <div className="space-y-4">
@@ -2337,10 +2341,11 @@ function ProrrateoDetalle({ pedNumero, lineas, incs, tc, catalogo, setPartidas, 
   );
 }
 
-function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
-  const [ped, setPed] = useState({ numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
-  const [partidas, setPartidas] = useState([{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
-  const [incs, setIncs] = useState(() => [
+function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
+  const editando = !!pedInicial;
+  const [ped, setPed] = useState(pedInicial ? { numero: pedInicial.numero || "", fecha: pedInicial.fecha || hoy(), tc: String(pedInicial.tc || ""), proveedorExt: pedInicial.proveedorExt || "", ocZoho: pedInicial.ocZoho || "" } : { numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
+  const [partidas, setPartidas] = useState(pedInicial?.partidas?.length ? pedInicial.partidas.map((p) => ({ id: uid(), oc: p.oc || "", factura: p.factura || "", sku: p.sku || "", desc: p.desc || "", categoria: p.categoria || "Batería", cantidad: p.cantidad || "", fobUnit: p.fobUnit || "", pesoKg: p.pesoKg || "" })) : [{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
+  const [incs, setIncs] = useState(() => pedInicial?.incrementables?.length ? pedInicial.incrementables.map((i) => ({ ...i, id: uid(), manual: i.manual || {} })) : [
     ...fletes.filter((f) => f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: "valor", capitaliza: true, estadoDoc: f.tarifa ? "estimado" : "estimado", manual: {} })),
     ...CONCEPTOS_FIJOS.map((c) => ({ id: uid(), ...c, monto: "", estadoDoc: "estimado", manual: {} })),
     ...fletes.filter((f) => !f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: "valor", capitaliza: true, estadoDoc: "estimado", manual: {} })),
@@ -2352,7 +2357,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
   const [extrayendo, setExtrayendo] = useState(false);
   const [errExtrac, setErrExtrac] = useState(null);
   const [extraido, setExtraido] = useState(false);
-  const [adjuntos, setAdjuntos] = useState([]);
+  const [adjuntos, setAdjuntos] = useState(pedInicial?.adjuntos || []);
   const [empatando, setEmpatando] = useState(false);
   const [dudosos, setDudosos] = useState(null);   // null = modal cerrado; array = abierto
   const [empateMsg, setEmpateMsg] = useState(null);
@@ -2582,7 +2587,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 
   const guardar = () => {
     if (!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC) return;
-    onSave({ id: uid(), ...ped, ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
+    onSave({ id: pedInicial?.id || uid(), ...ped, ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
   };
 
   // Embarque mixto solo importa si HAY IGI que capturar (categorías con IGI distinto)
@@ -2626,7 +2631,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
         </div>
       )}
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Nueva importación</h2>
+        <h2 className="text-sm font-semibold">{editando ? "Editar importación" : "Nueva importación"}</h2>
         <button onClick={onCancel} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
       </div>
 
@@ -2849,7 +2854,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
           </div>
         )}
         <div className="p-4 border-t border-stone-200 flex gap-2">
-          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">Guardar como provisional</button>
+          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Guardar como provisional"}</button>
           <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
           {faltanOC && <span className="text-xs text-amber-700">⚠ Falta capturar la OC de cada factura (sección 2b) antes de guardar.</span>}
         </div>
@@ -2877,6 +2882,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
                 {kpi("Incrementables (capitalizan)", "$" + mx0(capMXN))}
                 {kpi("IVA acreditable", "$" + mx0(noCapMXN))}
                 {kpi("Costo landed total (MXN)", "$" + mx0(landed))}
+                {kpi("Costo landed total (USD)", tc ? "$" + mx0(landed / tc) : "—")}
                 {kpi("OC que amparan", ocsAmparan.length || "—")}
               </div>
               <div>
@@ -2885,8 +2891,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
                   <tbody>
                     <tr className="border-b border-stone-100"><td className="py-1">Equipos (FOB)</td><td className="text-right font-mono">${mx0(calc.totV)}</td><td className="pl-3 text-stone-400">equipos</td></tr>
                     {incsRes.map((x) => (<tr key={x.concepto} className="border-b border-stone-100"><td className="py-1">{x.concepto}</td><td className="text-right font-mono">${mx0(x.mxn)}</td><td className="pl-3 text-stone-400">{x.cap ? "capitaliza" : "acreditable"}</td></tr>))}
-                    <tr className="border-t-2 border-stone-200 font-semibold"><td className="py-1.5">Costo landed total (equipos + capitalizables)</td><td className="text-right font-mono">${mx0(landed)}</td><td className="pl-3 text-stone-400">MXN</td></tr>
-                    <tr className="font-semibold"><td className="py-1">Desembolso total (landed + IVA)</td><td className="text-right font-mono">${mx0(landed + noCapMXN)}</td><td className="pl-3 text-stone-400">MXN</td></tr>
+                    <tr className="border-t-2 border-stone-200 font-semibold"><td className="py-1.5">Costo landed total (equipos + capitalizables)</td><td className="text-right font-mono">${mx0(landed)}</td><td className="pl-3 text-stone-400">MXN{tc ? ` · $${mx0(landed / tc)} USD` : ""}</td></tr>
+                    <tr className="font-semibold"><td className="py-1">Desembolso total (landed + IVA)</td><td className="text-right font-mono">${mx0(landed + noCapMXN)}</td><td className="pl-3 text-stone-400">MXN{tc ? ` · $${mx0((landed + noCapMXN) / tc)} USD` : ""}</td></tr>
                   </tbody>
                 </table>
                 {ocsAmparan.length > 0 && <p className="mt-2 text-[11px] text-stone-500">OC que amparan: <span className="font-mono">{ocsAmparan.join(", ")}</span></p>}
@@ -2900,8 +2906,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave }) {
 }
 
 /* ---------- Detalle / cierre de pedimento ---------- */
-function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimentos, setAviso, onBack }) {
+function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimentos, setAviso, onBack, onEdit }) {
   const st = estadoPedimento(ped);
+  const [confirmandoEdit, setConfirmandoEdit] = useState(false);
   const calc = useMemo(() => prorratear(ped.partidas, ped.incrementables, ped.tc), [ped]);
 
   const setEstadoDoc = (incId, val) => {
@@ -2943,7 +2950,18 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3"><h2 className="text-sm font-semibold font-mono">{ped.numero}</h2><EstadoBadge estado={st} /></div>
-        <button onClick={onBack} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
+        <div className="flex items-center gap-2">
+          {!ped.cerrado && onEdit && (confirmandoEdit ? (
+            <span className="flex items-center gap-1.5 text-xs">
+              <span className="text-amber-700 font-medium">¿Seguro que quieres editar?</span>
+              <button onClick={onEdit} className="px-2 py-1 bg-amber-600 text-white rounded font-medium hover:bg-amber-700">Sí, editar</button>
+              <button onClick={() => setConfirmandoEdit(false)} className="px-2 py-1 border border-stone-300 rounded hover:bg-stone-50">No</button>
+            </span>
+          ) : (
+            <button onClick={() => setConfirmandoEdit(true)} className="px-3 py-1.5 border border-stone-300 text-stone-700 text-xs font-medium rounded hover:bg-stone-50">✏️ Editar</button>
+          ))}
+          <button onClick={onBack} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
+        </div>
       </div>
 
       <Section n="·" t="Facturas de incrementables">
