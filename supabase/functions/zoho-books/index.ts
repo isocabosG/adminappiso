@@ -46,10 +46,12 @@ Deno.serve(async (req) => {
 
     const token = await getAccessToken();
 
-    const { purchaseorder_id, ...restParams } = params;
-    let path, qsParams;
-    if (action === "list_purchase_orders") { path = "/purchaseorders"; qsParams = params; }
+    const { purchaseorder_id, salesorder_id, ...restParams } = params;
+    let path, qsParams = params;
+    if (action === "list_purchase_orders") { path = "/purchaseorders"; }
     else if (action === "get_purchase_order") { path = `/purchaseorders/${purchaseorder_id}`; qsParams = restParams; } // trae line_items (SKU + cantidad)
+    else if (action === "list_sales_orders") { path = "/salesorders"; } // proyectos
+    else if (action === "get_sales_order") { path = `/salesorders/${salesorder_id}`; qsParams = restParams; } // trae line_items, payments[], invoices[], cf_proyecto
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 
