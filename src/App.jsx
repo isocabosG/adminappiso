@@ -1930,6 +1930,7 @@ function App() {
   const [cuentas, setCuentas] = useState(null);
   const [operaciones, setOperaciones] = useState(null);
   const [tcFix, setTcFix] = useState(null);
+  const [proyData, setProyData] = useState(null);   // datos propios por proyecto: contratado override + pagos manuales
   const [aviso, setAviso] = useState(null);
 
   /* ---- carga inicial + semilla (blindada contra datos viejos) ---- */
@@ -1953,6 +1954,7 @@ function App() {
       setCuentas(await load("iso3-cuentas", SEED_CUENTAS));
       setOperaciones(await load("iso3-operaciones", []));
       setTcFix(await load("iso3-tcfix", 17.5));
+      setProyData(await load("iso3-proyectos", {}));
     })();
   }, []);
 
@@ -1970,8 +1972,9 @@ function App() {
   const saveCuentas = (c) => { setCuentas(c); persist("iso3-cuentas", c); };
   const saveOperaciones = (o) => { setOperaciones(o); persist("iso3-operaciones", o); };
   const saveTcFix = (t) => { setTcFix(t); persist("iso3-tcfix", t); };
+  const saveProyData = (d) => { setProyData(d); persist("iso3-proyectos", d); };
 
-  if (!catalogo || !fletes || !pedimentos || !cuentas || !operaciones || tcFix == null)
+  if (!catalogo || !fletes || !pedimentos || !cuentas || !operaciones || tcFix == null || !proyData)
     return <div className="min-h-screen bg-stone-100 flex items-center justify-center"><p className="font-mono text-sm text-stone-500">Cargando…</p></div>;
 
   const pendientes = Object.values(catalogo).filter((a) => a.promedioPendiente != null).length;
@@ -1985,7 +1988,7 @@ function App() {
             <p className="text-[10px] font-mono tracking-[0.2em] text-stone-400">INNOVACIÓN SOLAR</p>
           </div>
           <nav className="flex gap-1">
-            {[["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
+            {[["articulos", "Costos", pendientes], ["proyectos", "Proyectos", 0], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-stone-900" : "text-stone-300 hover:bg-stone-800"}`}>
                 {t}
@@ -2003,6 +2006,7 @@ function App() {
           </div>
         )}
         {vista === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
+        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso }} />}
         {vista === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
@@ -2148,6 +2152,199 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
 }
 
 /* ===================== TAB 2 · IMPORTACIONES ===================== */
+/* ---------- Dashboard de Proyectos (lee OV de Zoho, pagos propios + manuales, PDF bilingüe) ---------- */
+function encuentraInstalacion(so) {
+  const lis = so.line_items || [];
+  const inst = lis.find((l) => /suministro\s*e?\s*instalaci/i.test((l.name || "") + " " + (l.description || "")) || /^(inst|suminst|servinst)/i.test(l.sku || ""));
+  return inst || lis[0] || null;
+}
+
+function PagoBadge({ status }) {
+  const map = { paid: ["Pagado", "bg-teal-100 text-teal-800"], partially_paid: ["Parcial", "bg-amber-100 text-amber-800"], unpaid: ["Sin pago", "bg-stone-200 text-stone-600"] };
+  const [t, c] = map[status] || ["—", "bg-stone-100 text-stone-500"];
+  return <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${c}`}>{t}</span>;
+}
+
+function Proyectos({ proyData, saveProyData, setAviso }) {
+  const [modo, setModo] = useState("lista");
+  const [sos, setSos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [busca, setBusca] = useState("");
+  const [filtro, setFiltro] = useState("Status.All");
+  const noConn = typeof window.zohoBooks !== "function";
+
+  const cargar = async () => {
+    if (noConn) { setAviso({ t: "err", m: "La conexión a Zoho Books no está disponible en esta versión." }); return; }
+    setCargando(true);
+    try {
+      let all = [], page = 1, more = true;
+      while (more && page <= 8) {
+        const d = await window.zohoBooks({ action: "list_sales_orders", params: { per_page: "200", page: String(page), filter_by: filtro, sort_column: "date", sort_order: "D" } });
+        all.push(...(d.salesorders || []));
+        more = d.page_context?.has_more_page;
+        page++;
+      }
+      setSos(all);
+    } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
+    setCargando(false);
+  };
+  useEffect(() => { if (sos === null && !noConn) cargar(); }, []);
+  useEffect(() => { if (sos !== null) cargar(); }, [filtro]);
+
+  if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista") }} />;
+
+  const q = busca.trim().toLowerCase();
+  const rows = (sos || []).filter((s) => !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho, con tus propios números de pagos y saldo.</p></div>
+        <div className="flex items-center gap-2">
+          <select value={filtro} onChange={(e) => setFiltro(e.target.value)} className="px-2 py-1.5 text-xs border border-stone-300 rounded bg-white">
+            <option value="Status.All">Todos</option><option value="Status.Open">Abiertos</option><option value="Status.Invoiced">Facturados</option><option value="Status.PartiallyInvoiced">Parciales</option><option value="Status.Closed">Cerrados</option>
+          </select>
+          <button onClick={cargar} disabled={cargando} className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 disabled:opacity-40">{cargando ? "Cargando…" : "↻ Recargar"}</button>
+        </div>
+      </div>
+      <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por proyecto, OV o cliente…" className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded" />
+      {sos === null ? (
+        <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{cargando ? "Leyendo proyectos de Zoho…" : "Dale ↻ Recargar para traer los proyectos."}</div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
+          {rows.map((s) => {
+            const pagadoManual = (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
+            return (
+              <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)} className="w-full bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 hover:border-stone-400 text-left">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2"><span className="font-mono text-xs font-semibold">{s.salesorder_number}</span><PagoBadge status={s.paid_status} /></div>
+                  <p className="text-sm text-stone-700 truncate max-w-[380px]">{s.reference_number || s.customer_name}</p>
+                  <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
+                </div>
+                <div className="text-right font-mono text-xs">
+                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(s.total)}</span></p>
+                  <p className="text-stone-400">Saldo Zoho ${mx0(s.balance)}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
+  const [so, setSo] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [lang, setLang] = useState("es");
+  const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const d = await window.zohoBooks({ action: "get_sales_order", params: { salesorder_id: soId } });
+        setSo(d.salesorder || null);
+      } catch (e) { setAviso({ t: "err", m: "No se pudo leer el proyecto: " + (e.message || e) }); }
+      setCargando(false);
+    })();
+  }, [soId]);
+
+  const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded";
+  if (cargando) return <div className="p-10 text-center text-sm text-stone-500">Leyendo proyecto de Zoho…</div>;
+  if (!so) return <div className="space-y-3"><button onClick={onBack} className="text-xs text-stone-500">← Volver</button><p className="text-sm text-stone-500">No se pudo cargar el proyecto.</p></div>;
+
+  const datos = proyData[soId] || {};
+  const inst = encuentraInstalacion(so);
+  const contratadoBase = datos.contratado != null && datos.contratado !== "" ? +datos.contratado : (inst ? (+inst.item_total || 0) : (+so.sub_total || 0));
+  const conIva = contratadoBase * 1.16;
+  const pagosZoho = (so.payments || []).map((p) => ({ fecha: p.date, monto: +p.amount || 0, forma: p.payment_mode, ref: p.reference_number || "", cuenta: p.account_name || "", origen: "Zoho" }));
+  const pagosManual = (datos.pagos || []).map((p) => ({ ...p, monto: +p.monto || 0, origen: "Manual" }));
+  const pagos = [...pagosZoho, ...pagosManual].sort((a, b) => ((a.fecha || "") < (b.fecha || "") ? -1 : 1));
+  const totalPagado = pagos.reduce((a, b) => a + b.monto, 0);
+  const porPagar = conIva - totalPagado;
+
+  const setDatos = (patch) => saveProyData({ ...proyData, [soId]: { ...datos, ...patch } });
+  const agregarPago = () => {
+    if (!(+nuevoPago.monto > 0)) return;
+    setDatos({ pagos: [...(datos.pagos || []), { id: uid(), ...nuevoPago, monto: +nuevoPago.monto }] });
+    setNuevoPago({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
+  };
+  const quitarPago = (id) => setDatos({ pagos: (datos.pagos || []).filter((p) => p.id !== id) });
+
+  const generarPDF = () => {
+    const es = lang === "es";
+    const L = es ? { t: "Estado de Pagos del Proyecto", proj: "Proyecto", client: "Cliente", ov: "Orden de venta", date: "Fecha", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", due: "Total por pagar", pmode: "Forma", pref: "Referencia", psrc: "Origen", none: "Sin pagos registrados" } : { t: "Project Payment Status", proj: "Project", client: "Client", ov: "Sales order", date: "Date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", due: "Total due", pmode: "Method", pref: "Reference", psrc: "Source", none: "No payments recorded" };
+    const fmt = (n) => "$" + (isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00");
+    const filas = pagos.length ? pagos.map((p) => `<tr><td>${p.fecha || ""}</td><td style="text-align:right">${fmt(p.monto)}</td><td>${p.forma || ""}</td><td>${p.ref || ""}</td><td>${p.origen}</td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#888">${L.none}</td></tr>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${L.t}</title><style>body{font-family:-apple-system,Arial,sans-serif;color:#1a1d21;max-width:720px;margin:24px auto;padding:0 24px}h1{font-size:20px;border-bottom:2px solid #e8791a;padding-bottom:8px}.k{color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:12px 0 2px}.v{font-size:14px;font-weight:600}.box{background:#f7f8fa;border-radius:10px;padding:12px 16px;margin:12px 0}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left}th{font-size:11px;text-transform:uppercase;color:#6b7280}.tot{font-size:15px;font-weight:700}.due{color:#d93636}.row{display:flex;gap:32px}</style></head><body>
+<h1>${L.t}</h1><div class="k">INNOVACIÓN SOLAR</div>
+<p class="k">${L.proj}</p><p class="v">${so.reference_number || "—"}</p>
+<div class="row"><div><p class="k">${L.ov}</p><p class="v">${so.salesorder_number}</p></div><div><p class="k">${L.client}</p><p class="v">${so.customer_name || "—"}</p></div><div><p class="k">${L.date}</p><p class="v">${so.date || "—"}</p></div></div>
+<div class="box"><p class="k" style="margin-top:0">${L.contr}</p><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
+<p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${es ? "Monto" : "Amount"}</th><th>${L.pmode}</th><th>${L.pref}</th><th>${L.psrc}</th></tr></thead><tbody>${filas}</tbody></table>
+<div class="box" style="display:flex;justify-content:space-between"><span class="tot">${L.pays}</span><span class="tot">${fmt(totalPagado)}</span></div>
+<div class="box" style="display:flex;justify-content:space-between;background:#fdecec"><span class="tot due">${L.due}</span><span class="tot due">${fmt(porPagar)}</span></div>
+</body></html>`;
+    const w = window.open("", "_blank", "width=820,height=1000");
+    if (!w) { setAviso({ t: "err", m: "El navegador bloqueó la ventana. Permite pop-ups para generar el PDF." }); return; }
+    w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 500);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div><h2 className="text-sm font-semibold font-mono">{so.salesorder_number}</h2><p className="text-xs text-stone-500">{so.reference_number} · {so.customer_name}</p></div>
+        <button onClick={onBack} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
+      </div>
+
+      <Section n="1" t="Contratado (Suministro e instalación)">
+        <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Field l="Sin IVA (editable)"><input type="number" step="0.01" className={inp + " font-mono"} value={datos.contratado != null && datos.contratado !== "" ? datos.contratado : (inst ? inst.item_total : so.sub_total)} onChange={(e) => setDatos({ contratado: e.target.value })} /></Field>
+          <Field l="IVA 16%"><input className={inp + " font-mono bg-stone-50"} value={mx(conIva - contratadoBase)} readOnly /></Field>
+          <Field l="Con IVA"><input className={inp + " font-mono bg-stone-50 font-semibold"} value={mx(conIva)} readOnly /></Field>
+          <Field l="Concepto detectado"><input className={inp + " text-stone-500"} value={inst?.name || "—"} readOnly /></Field>
+        </div>
+        <p className="px-4 pb-3 text-[11px] text-stone-400">Se toma del renglón "Suministro e instalación" de la OV. Ajústalo si tu contrato dice otra cosa.</p>
+      </Section>
+
+      <Section n="2" t="Pagos aplicados" r={`$${mx0(totalPagado)}`}>
+        <div className="overflow-x-auto"><table className="w-full text-xs min-w-[560px]">
+          <thead className="bg-stone-50 border-y border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500"><th className="text-left px-3 py-2">Fecha</th><th className="text-right px-3 py-2">Monto</th><th className="text-left px-3 py-2">Forma</th><th className="text-left px-3 py-2">Referencia</th><th className="text-left px-3 py-2">Origen</th><th></th></tr></thead>
+          <tbody>{pagos.length === 0 ? <tr><td colSpan="6" className="text-center text-stone-400 py-4">Sin pagos aún.</td></tr> : pagos.map((p, i) => (
+            <tr key={p.id || i} className="border-b border-stone-100"><td className="px-3 py-1.5">{p.fecha}</td><td className="px-3 py-1.5 text-right font-mono">${mx(p.monto)}</td><td className="px-3 py-1.5">{p.forma}{p.cuenta ? ` · ${p.cuenta}` : ""}</td><td className="px-3 py-1.5">{p.ref}</td><td className="px-3 py-1.5"><span className={`text-[10px] px-1.5 py-0.5 rounded ${p.origen === "Zoho" ? "bg-blue-50 text-blue-700" : "bg-teal-50 text-teal-700"}`}>{p.origen}</span></td><td className="px-2">{p.origen === "Manual" && <button onClick={() => quitarPago(p.id)} className="text-stone-400 hover:text-red-600">×</button>}</td></tr>
+          ))}</tbody>
+        </table></div>
+        <div className="p-3 border-t border-stone-200 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
+          <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={nuevoPago.fecha} onChange={(e) => setNuevoPago({ ...nuevoPago, fecha: e.target.value })} /></div>
+          <div><Lbl>Monto</Lbl><input type="number" step="0.01" className={inp + " font-mono"} value={nuevoPago.monto} onChange={(e) => setNuevoPago({ ...nuevoPago, monto: e.target.value })} /></div>
+          <div><Lbl>Forma</Lbl><input className={inp} value={nuevoPago.forma} onChange={(e) => setNuevoPago({ ...nuevoPago, forma: e.target.value })} /></div>
+          <div><Lbl>Referencia</Lbl><input className={inp} value={nuevoPago.ref} onChange={(e) => setNuevoPago({ ...nuevoPago, ref: e.target.value })} /></div>
+          <button onClick={agregarPago} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">+ Agregar pago</button>
+        </div>
+        <p className="px-3 pb-3 text-[10px] text-stone-400">Los pagos "Zoho" se leen de la orden de venta; los "Manual" los agregas tú y se guardan en la app.</p>
+      </Section>
+
+      <Section n="3" t="Resumen y reporte">
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado con IVA</p><p className="text-sm font-semibold font-mono">${mx0(conIva)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Pagos aplicados</p><p className="text-sm font-semibold font-mono">${mx0(totalPagado)}</p></div>
+            <div className="bg-amber-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-amber-700">Total por pagar</p><p className="text-sm font-semibold font-mono text-amber-800">${mx0(porPagar)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Facturas</p><p className="text-sm font-semibold font-mono">{(so.invoices || []).length}</p></div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-stone-500">Idioma del PDF:</span>
+            <select value={lang} onChange={(e) => setLang(e.target.value)} className="px-2 py-1.5 text-xs border border-stone-300 rounded bg-white"><option value="es">Español</option><option value="en">English</option></select>
+            <button onClick={generarPDF} className="px-4 py-2 bg-stone-900 text-white text-xs font-semibold rounded hover:bg-stone-800">📄 Generar PDF — Project Payment Status</button>
+          </div>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
 function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }) {
   const [modo, setModo] = useState("lista"); // lista | nueva | fletes | ped:<id>
   if (modo === "nueva")
