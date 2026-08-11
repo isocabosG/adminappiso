@@ -1923,7 +1923,7 @@ export default function AdminImportaciones() {
 }
 
 function App() {
-  const [vista, setVista] = useState("articulos");
+  const [vista, setVista] = useState("proyectos");
   const [catalogo, setCatalogo] = useState(null);
   const [fletes, setFletes] = useState(null);
   const [pedimentos, setPedimentos] = useState(null);
@@ -1988,7 +1988,7 @@ function App() {
             <p className="text-[10px] font-mono tracking-[0.2em] text-stone-400">INNOVACIÓN SOLAR</p>
           </div>
           <nav className="flex gap-1">
-            {[["articulos", "Costos", pendientes], ["proyectos", "Proyectos", 0], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
+            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-stone-900" : "text-stone-300 hover:bg-stone-800"}`}>
                 {t}
