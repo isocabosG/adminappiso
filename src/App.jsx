@@ -2168,48 +2168,68 @@ function PagoBadge({ status }) {
 function Proyectos({ proyData, saveProyData, setAviso }) {
   const [modo, setModo] = useState("lista");
   const [sos, setSos] = useState(null);
+  const [fechaRefresh, setFechaRefresh] = useState("");
   const [cargando, setCargando] = useState(false);
   const [busca, setBusca] = useState("");
-  const [filtro, setFiltro] = useState("Status.All");
+  const [filtro, setFiltro] = useState("todos");
   const noConn = typeof window.zohoBooks !== "function";
 
-  const cargar = async () => {
+  // Refresca de Zoho y guarda en la app (cache), paginando en bloques chicos para no truncar/timeout
+  const refrescar = async () => {
     if (noConn) { setAviso({ t: "err", m: "La conexión a Zoho Books no está disponible en esta versión." }); return; }
     setCargando(true);
     try {
       let all = [], page = 1, more = true;
-      while (more && page <= 8) {
-        const d = await window.zohoBooks({ action: "list_sales_orders", params: { per_page: "200", page: String(page), filter_by: filtro, sort_column: "date", sort_order: "D" } });
+      while (more && page <= 30) {
+        const d = await window.zohoBooks({ action: "list_sales_orders", params: { per_page: "50", page: String(page), filter_by: "Status.All", sort_column: "date", sort_order: "D" } });
         all.push(...(d.salesorders || []));
         more = d.page_context?.has_more_page;
         page++;
       }
-      setSos(all);
+      // guarda solo los campos que la lista necesita (para no inflar el cache)
+      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, date: s.date, total: s.total, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status }));
+      const fecha = hoy();
+      setSos(slim); setFechaRefresh(fecha);
+      try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim })); } catch {}
+      setAviso({ t: "ok", m: `${slim.length} proyectos actualizados de Zoho.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
     setCargando(false);
   };
-  useEffect(() => { if (sos === null && !noConn) cargar(); }, []);
-  useEffect(() => { if (sos !== null) cargar(); }, [filtro]);
+
+  useEffect(() => {
+    (async () => {
+      let cache = null;
+      try { const r = await window.storage?.get("iso3-proyectos-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
+      if (cache?.sos) { setSos(cache.sos); setFechaRefresh(cache.fecha || ""); }
+      // Refresco automático 1 vez al día (o si no hay cache)
+      if ((!cache?.sos || cache.fecha !== hoy()) && !noConn) refrescar();
+    })();
+  }, []);
 
   if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista") }} />;
 
   const q = busca.trim().toLowerCase();
-  const rows = (sos || []).filter((s) => !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q));
+  const rows = (sos || []).filter((s) => {
+    if (filtro === "abiertos" && s.order_status === "closed") return false;
+    if (filtro === "cerrados" && s.order_status !== "closed") return false;
+    if (filtro === "porcobrar" && s.paid_status === "paid") return false;
+    return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q);
+  });
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho, con tus propios números de pagos y saldo.</p></div>
+        <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho (se refrescan solas 1 vez al día){fechaRefresh ? ` · última: ${fechaRefresh}` : ""}.</p></div>
         <div className="flex items-center gap-2">
           <select value={filtro} onChange={(e) => setFiltro(e.target.value)} className="px-2 py-1.5 text-xs border border-stone-300 rounded bg-white">
-            <option value="Status.All">Todos</option><option value="Status.Open">Abiertos</option><option value="Status.Invoiced">Facturados</option><option value="Status.PartiallyInvoiced">Parciales</option><option value="Status.Closed">Cerrados</option>
+            <option value="todos">Todos</option><option value="abiertos">Abiertos</option><option value="cerrados">Cerrados</option><option value="porcobrar">Por cobrar</option>
           </select>
-          <button onClick={cargar} disabled={cargando} className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 disabled:opacity-40">{cargando ? "Cargando…" : "↻ Recargar"}</button>
+          <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
         </div>
       </div>
       <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por proyecto, OV o cliente…" className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded" />
       {sos === null ? (
-        <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{cargando ? "Leyendo proyectos de Zoho…" : "Dale ↻ Recargar para traer los proyectos."}</div>
+        <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{cargando ? "Leyendo proyectos de Zoho…" : "Dale ↻ Actualizar de Zoho para traer los proyectos."}</div>
       ) : (
         <div className="space-y-2">
           <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
