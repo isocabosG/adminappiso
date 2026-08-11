@@ -2931,7 +2931,10 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
       if (prov != null && Math.abs(l.unit - prov) / (prov || 1) > UMBRAL) alertas.push(`${sku}: real difiere ${((l.unit - prov) / prov * 100).toFixed(1)}% del provisional`);
       const exist = a.existencia || 0;
       const nuevoQty = exist + l.cant;
-      const nuevoProm = nuevoQty ? (exist * a.costoVigente + l.total) / nuevoQty : l.unit;
+      // Si ya hay un promedio calculado y aún no aprobado, encadena sobre ese —
+      // no sobre costoVigente (el de Zoho), que todavía no se ha actualizado.
+      const costoBase = a.promedioPendiente != null ? a.promedioPendiente : a.costoVigente;
+      const nuevoProm = nuevoQty ? (exist * costoBase + l.total) / nuevoQty : l.unit;
       c[sku] = {
         ...a,
         existencia: nuevoQty,
