@@ -2313,6 +2313,7 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
     tel: cp.phone || cp.mobile || (so.billing_address && so.billing_address.phone) || "",
     email: cp.email || so.email || "",
   };
+  const cur = so.currency_code || "MXN"; // moneda de la orden (USD / MXN)
   const contratadoBase = datos.contratado != null && datos.contratado !== "" ? +datos.contratado : (inst ? (+inst.item_total || 0) : (+so.sub_total || 0));
   const conIva = contratadoBase * 1.16;
   const pagosZoho = (so.payments || []).map((p) => ({ fecha: p.date, monto: +p.amount || 0, forma: p.payment_mode, ref: p.reference_number || "", cuenta: p.account_name || "", origen: "Zoho" }));
@@ -2332,8 +2333,8 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
   const generarPDF = () => {
     const es = lang === "es";
     const L = es
-      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", proj: "Proyecto", client: "Cliente", contact: "Contacto", phone: "Teléfono", email: "Correo", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", amount: "Monto", pmode: "Forma", pref: "Referencia", psrc: "Origen", none: "Sin pagos registrados" }
-      : { t: "Project Payment Status", reportDate: "Report date", proj: "Project", client: "Client", contact: "Contact", phone: "Phone", email: "Email", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", amount: "Amount", pmode: "Method", pref: "Reference", psrc: "Source", none: "No payments recorded" };
+      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", proj: "Proyecto", client: "Cliente", contact: "Contacto", phone: "Teléfono", email: "Correo", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", amount: "Monto", pmode: "Forma", pref: "Referencia", psrc: "Origen", none: "Sin pagos registrados" }
+      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", proj: "Project", client: "Client", contact: "Contact", phone: "Phone", email: "Email", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", amount: "Amount", pmode: "Method", pref: "Reference", psrc: "Source", none: "No payments recorded" };
     const EMP = { nombre: "INNOVACIÓN SOLAR", dir: "KM 3.5 Carretera CSL–SJC, Cabo San Lucas, B.C.S. 23454, México", tel: "+52 624 105 94 78", web: "www.innovacionsolar.com" };
     const fmt = (n) => "$" + (isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00");
     const esc = (s) => String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
@@ -2368,12 +2369,14 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
     </style></head><body>
 <div class="head"><img src="${LOGO_ISO}" alt="Innovación Solar"/><div class="co"><b>${EMP.nombre}</b><br>${EMP.dir}<br>${L.phone}: ${EMP.tel} · ${EMP.web}</div></div>
 <h1>${L.t}</h1><p class="sub">${L.reportDate}: ${hoy()}</p>
-<div class="row"><div><p class="k">${L.proj}</p><p class="v">${esc(so.reference_number) || "—"}</p></div><div><p class="k">${L.ov}</p><p class="v">${esc(so.salesorder_number)}</p></div><div><p class="k">${L.date}</p><p class="v">${esc(so.date) || "—"}</p></div></div>
+<div class="row"><div><p class="k">${L.proj}</p><p class="v">${esc(so.reference_number) || "—"}</p></div><div><p class="k">${L.ov}</p><p class="v">${esc(so.salesorder_number)}</p></div><div><p class="k">${L.date}</p><p class="v">${esc(so.date) || "—"}</p></div><div><p class="k">${L.currency}</p><p class="v">${esc(cur)}</p></div></div>
 ${cliRows ? `<div class="box"><table>${cliRows}</table></div>` : ""}
 <div class="box"><p class="k" style="margin-top:0">${L.contr}</p><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
 <p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${L.amount}</th><th>${L.pmode}</th><th>${L.pref}</th><th>${L.psrc}</th></tr></thead><tbody>${filas}</tbody></table>
-<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}</span><span class="tot">${fmt(totalPagado)}</span></div>
-<div class="box duebox" style="display:flex;justify-content:space-between"><span class="tot due">${L.due}</span><span class="tot due">${fmt(porPagar)}</span></div>
+<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}</span><span class="tot">${fmt(totalPagado)} ${cur}</span></div>
+${porPagar >= 0
+  ? `<div class="box duebox" style="display:flex;justify-content:space-between"><span class="tot due">${L.due}</span><span class="tot due">${fmt(porPagar)} ${cur}</span></div>`
+  : `<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot" style="color:#047857">${L.credit}</span><span class="tot" style="color:#047857">${fmt(-porPagar)} ${cur}</span></div>`}
 <div class="foot">${EMP.nombre} · ${EMP.dir} · ${L.phone}: ${EMP.tel} · ${EMP.web}</div>
 </body></html>`;
     const w = window.open("", "_blank", "width=820,height=1000");
@@ -2396,6 +2399,7 @@ ${cliRows ? `<div class="box"><table>${cliRows}</table></div>` : ""}
         {cliente.tel && <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Teléfono</p><p className="text-sm font-medium">{cliente.tel}</p></div>}
         {cliente.email && <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Correo</p><p className="text-sm font-medium">{cliente.email}</p></div>}
         <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Orden de venta</p><p className="text-sm font-medium font-mono">{so.salesorder_number}</p></div>
+        <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Moneda</p><p className="text-sm font-medium">{cur}</p></div>
       </div>
 
       <Section n="1" t="Contratado (Suministro e instalación)">
@@ -2430,7 +2434,9 @@ ${cliRows ? `<div class="box"><table>${cliRows}</table></div>` : ""}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado con IVA</p><p className="text-sm font-semibold font-mono">${mx0(conIva)}</p></div>
             <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Pagos aplicados</p><p className="text-sm font-semibold font-mono">${mx0(totalPagado)}</p></div>
-            <div className="bg-amber-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-amber-700">Total por pagar</p><p className="text-sm font-semibold font-mono text-amber-800">${mx0(porPagar)}</p></div>
+            {porPagar >= 0
+              ? <div className="bg-amber-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-amber-700">Total por pagar</p><p className="text-sm font-semibold font-mono text-amber-800">${mx0(porPagar)}</p></div>
+              : <div className="bg-emerald-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-emerald-700">Saldo a favor</p><p className="text-sm font-semibold font-mono text-emerald-800">${mx0(-porPagar)}</p></div>}
             <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Facturas</p><p className="text-sm font-semibold font-mono">{(so.invoices || []).length}</p></div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
