@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
+import { LOGO_ISO } from "./logoISO.js";
 
 function extraerJSON(txt) {
   if (!txt || !txt.trim()) throw new Error("la IA devolvió una respuesta vacía");
@@ -1981,18 +1982,21 @@ function App() {
 
   return (
     <div className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="bg-stone-900 text-white">
+      <header className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-emerald-600 text-white shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h1 className="text-base font-semibold tracking-tight">AdminAppISO</h1>
-            <p className="text-[10px] font-mono tracking-[0.2em] text-stone-400">INNOVACIÓN SOLAR</p>
+          <div className="flex items-center gap-2.5">
+            <span className="grid place-items-center w-8 h-8 rounded-lg bg-white/15 ring-1 ring-white/25 text-lg leading-none">☀️</span>
+            <div>
+              <h1 className="text-base font-semibold tracking-tight">AdminAppISO</h1>
+              <p className="text-[10px] font-mono tracking-[0.2em] text-emerald-200">INNOVACIÓN SOLAR</p>
+            </div>
           </div>
           <nav className="flex gap-1">
             {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-stone-900" : "text-stone-300 hover:bg-stone-800"}`}>
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
-                {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-500 text-white">{badge}</span>}
+                {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
             ))}
           </nav>
@@ -2060,7 +2064,7 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
           <p className="text-xs text-stone-500">El costo vigente es el que está en Zoho. El nuevo promedio se calcula al cerrar importaciones y se envía cuando tú lo apruebas.</p>
         </div>
         {conPendiente.length > 0 && (
-          <button onClick={enviarTodos} className="px-3 py-2 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">
+          <button onClick={enviarTodos} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">
             Actualizar {conPendiente.length} promedio{conPendiente.length > 1 ? "s" : ""} en Zoho
           </button>
         )}
@@ -2070,7 +2074,7 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
         <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
           className="flex-1 min-w-[180px] px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
         <button onClick={() => setVerTodos((v) => !v)}
-          className={`px-3 py-2 text-xs font-medium rounded border ${verTodos ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-600 border-stone-300"}`}>
+          className={`px-3 py-2 text-xs font-medium rounded border ${verTodos ? "bg-emerald-700 text-white border-stone-900" : "bg-white text-stone-600 border-stone-300"}`}>
           {verTodos ? "Viendo todos" : "Solo importación"}
         </button>
         {rows.length > 200 && <span className="text-[11px] font-mono text-stone-500 w-full">Mostrando 200 de {rows.length} — usa el buscador para filtrar.</span>}
@@ -2171,7 +2175,8 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
   const [fechaRefresh, setFechaRefresh] = useState("");
   const [cargando, setCargando] = useState(false);
   const [busca, setBusca] = useState("");
-  const [filtro, setFiltro] = useState("todos");
+  const [filtros, setFiltros] = useState([]); // chips activos, combinables: abierto/cerrado (estado) + porcobrar/pagado (pago)
+  const toggleFiltro = (k) => setFiltros((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
   const noConn = typeof window.zohoBooks !== "function";
   const refrescando = useRef(false); // candado: evita refrescos dobles (StrictMode / doble clic)
 
@@ -2191,7 +2196,7 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
         page++;
       }
       // guarda solo los campos que la lista necesita (para no inflar el cache)
-      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, date: s.date, total: s.total, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status }));
+      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, company_name: s.company_name, date: s.date, total: s.total, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status }));
       const fecha = hoy();
       setSos(slim); setFechaRefresh(fecha);
       try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim })); } catch {}
@@ -2214,23 +2219,40 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
   if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista") }} />;
 
   const q = busca.trim().toLowerCase();
+  const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
+  const pagoSel = filtros.filter((x) => x === "porcobrar" || x === "pagado");
   const rows = (sos || []).filter((s) => {
-    if (filtro === "abiertos" && s.order_status === "closed") return false;
-    if (filtro === "cerrados" && s.order_status !== "closed") return false;
-    if (filtro === "porcobrar" && s.paid_status === "paid") return false;
-    return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q);
+    // Estado del pedido (grupo 1): si hay chips de estado, debe cumplir alguno
+    if (estadoSel.length) {
+      const cerrado = s.order_status === "closed";
+      if (!((estadoSel.includes("cerrado") && cerrado) || (estadoSel.includes("abierto") && !cerrado))) return false;
+    }
+    // Estado de pago (grupo 2): independiente del estado del pedido
+    if (pagoSel.length) {
+      const pagado = s.paid_status === "paid";
+      if (!((pagoSel.includes("pagado") && pagado) || (pagoSel.includes("porcobrar") && !pagado))) return false;
+    }
+    return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q) || (s.company_name || "").toLowerCase().includes(q);
   });
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho (se refrescan solas 1 vez al día){fechaRefresh ? ` · última: ${fechaRefresh}` : ""}.</p></div>
-        <div className="flex items-center gap-2">
-          <select value={filtro} onChange={(e) => setFiltro(e.target.value)} className="px-2 py-1.5 text-xs border border-stone-300 rounded bg-white">
-            <option value="todos">Todos</option><option value="abiertos">Abiertos</option><option value="cerrados">Cerrados</option><option value="porcobrar">Por cobrar</option>
-          </select>
-          <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
-        </div>
+        <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-stone-400 mr-1">Filtrar:</span>
+        {[["abierto", "Abiertos"], ["cerrado", "Cerrados"], ["porcobrar", "Por cobrar"], ["pagado", "Pagados"]].map(([k, t]) => {
+          const on = filtros.includes(k);
+          return (
+            <button key={k} onClick={() => toggleFiltro(k)}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${on ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400"}`}>
+              {t}
+            </button>
+          );
+        })}
+        {filtros.length > 0 && <button onClick={() => setFiltros([])} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
       </div>
       <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por proyecto, OV o cliente…" className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded" />
       {sos === null ? (
@@ -2263,7 +2285,7 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
 function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
   const [so, setSo] = useState(null);
   const [cargando, setCargando] = useState(true);
-  const [lang, setLang] = useState("es");
+  const [lang, setLang] = useState("en");
   const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
 
   useEffect(() => {
@@ -2282,6 +2304,15 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
 
   const datos = proyData[soId] || {};
   const inst = encuentraInstalacion(so);
+  // Datos de contacto del cliente, tal como vienen de Zoho
+  const cp = (so.contact_person_details && so.contact_person_details[0]) || {};
+  const cliente = {
+    nombre: so.customer_name || "",
+    empresa: so.company_name && so.company_name !== so.customer_name ? so.company_name : "",
+    contacto: [cp.first_name, cp.last_name].filter(Boolean).join(" "),
+    tel: cp.phone || cp.mobile || (so.billing_address && so.billing_address.phone) || "",
+    email: cp.email || so.email || "",
+  };
   const contratadoBase = datos.contratado != null && datos.contratado !== "" ? +datos.contratado : (inst ? (+inst.item_total || 0) : (+so.sub_total || 0));
   const conIva = contratadoBase * 1.16;
   const pagosZoho = (so.payments || []).map((p) => ({ fecha: p.date, monto: +p.amount || 0, forma: p.payment_mode, ref: p.reference_number || "", cuenta: p.account_name || "", origen: "Zoho" }));
@@ -2300,21 +2331,56 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
 
   const generarPDF = () => {
     const es = lang === "es";
-    const L = es ? { t: "Estado de Pagos del Proyecto", proj: "Proyecto", client: "Cliente", ov: "Orden de venta", date: "Fecha", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", due: "Total por pagar", pmode: "Forma", pref: "Referencia", psrc: "Origen", none: "Sin pagos registrados" } : { t: "Project Payment Status", proj: "Project", client: "Client", ov: "Sales order", date: "Date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", due: "Total due", pmode: "Method", pref: "Reference", psrc: "Source", none: "No payments recorded" };
+    const L = es
+      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", proj: "Proyecto", client: "Cliente", contact: "Contacto", phone: "Teléfono", email: "Correo", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", amount: "Monto", pmode: "Forma", pref: "Referencia", psrc: "Origen", none: "Sin pagos registrados" }
+      : { t: "Project Payment Status", reportDate: "Report date", proj: "Project", client: "Client", contact: "Contact", phone: "Phone", email: "Email", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", amount: "Amount", pmode: "Method", pref: "Reference", psrc: "Source", none: "No payments recorded" };
+    const EMP = { nombre: "INNOVACIÓN SOLAR", dir: "KM 3.5 Carretera CSL–SJC, Cabo San Lucas, B.C.S. 23454, México", tel: "+52 624 105 94 78", web: "www.innovacionsolar.com" };
     const fmt = (n) => "$" + (isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00");
-    const filas = pagos.length ? pagos.map((p) => `<tr><td>${p.fecha || ""}</td><td style="text-align:right">${fmt(p.monto)}</td><td>${p.forma || ""}</td><td>${p.ref || ""}</td><td>${p.origen}</td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#888">${L.none}</td></tr>`;
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${L.t}</title><style>body{font-family:-apple-system,Arial,sans-serif;color:#1a1d21;max-width:720px;margin:24px auto;padding:0 24px}h1{font-size:20px;border-bottom:2px solid #e8791a;padding-bottom:8px}.k{color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:12px 0 2px}.v{font-size:14px;font-weight:600}.box{background:#f7f8fa;border-radius:10px;padding:12px 16px;margin:12px 0}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left}th{font-size:11px;text-transform:uppercase;color:#6b7280}.tot{font-size:15px;font-weight:700}.due{color:#d93636}.row{display:flex;gap:32px}</style></head><body>
-<h1>${L.t}</h1><div class="k">INNOVACIÓN SOLAR</div>
-<p class="k">${L.proj}</p><p class="v">${so.reference_number || "—"}</p>
-<div class="row"><div><p class="k">${L.ov}</p><p class="v">${so.salesorder_number}</p></div><div><p class="k">${L.client}</p><p class="v">${so.customer_name || "—"}</p></div><div><p class="k">${L.date}</p><p class="v">${so.date || "—"}</p></div></div>
+    const esc = (s) => String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+    const filas = pagos.length ? pagos.map((p) => `<tr><td>${esc(p.fecha)}</td><td style="text-align:right">${fmt(p.monto)}</td><td>${esc(p.forma)}</td><td>${esc(p.ref)}</td><td>${esc(p.origen)}</td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#888">${L.none}</td></tr>`;
+    // Solo mostramos los renglones de cliente que tengan dato
+    const cliRows = [
+      [L.client, cliente.nombre + (cliente.empresa ? ` · ${cliente.empresa}` : "")],
+      [L.contact, cliente.contacto],
+      [L.phone, cliente.tel],
+      [L.email, cliente.email],
+    ].filter(([, v]) => v).map(([k, v]) => `<tr><td class="ck">${k}</td><td class="cv">${esc(v)}</td></tr>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${L.t} — ${esc(so.salesorder_number)}</title><style>
+      body{font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1a1d21;max-width:720px;margin:24px auto;padding:0 24px}
+      .head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #047857;padding-bottom:12px}
+      .head img{height:42px}
+      .co{text-align:right;font-size:10px;color:#6b7280;line-height:1.5}
+      .co b{color:#047857;font-size:12px;letter-spacing:.03em}
+      h1{font-size:19px;color:#065f46;margin:18px 0 2px}
+      .sub{color:#6b7280;font-size:11px;margin:0 0 8px}
+      .k{color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}
+      .v{font-size:14px;font-weight:600}
+      .row{display:flex;gap:32px;flex-wrap:wrap}
+      .box{background:#f6faf8;border:1px solid #e3efe9;border-radius:10px;padding:12px 16px;margin:12px 0}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+      th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left}
+      th{font-size:10px;text-transform:uppercase;color:#6b7280}
+      .ck{color:#6b7280;width:130px}.cv{font-weight:600}
+      .tot{font-size:15px;font-weight:700}
+      .paidbox{background:#ecfdf5;border-color:#a7f3d0}
+      .duebox{background:#fef2f2;border-color:#fecaca}.due{color:#b91c1c}
+      .foot{margin-top:22px;border-top:1px solid #eee;padding-top:10px;font-size:10px;color:#9aa2ab;text-align:center;line-height:1.6}
+    </style></head><body>
+<div class="head"><img src="${LOGO_ISO}" alt="Innovación Solar"/><div class="co"><b>${EMP.nombre}</b><br>${EMP.dir}<br>${L.phone}: ${EMP.tel} · ${EMP.web}</div></div>
+<h1>${L.t}</h1><p class="sub">${L.reportDate}: ${hoy()}</p>
+<div class="row"><div><p class="k">${L.proj}</p><p class="v">${esc(so.reference_number) || "—"}</p></div><div><p class="k">${L.ov}</p><p class="v">${esc(so.salesorder_number)}</p></div><div><p class="k">${L.date}</p><p class="v">${esc(so.date) || "—"}</p></div></div>
+${cliRows ? `<div class="box"><table>${cliRows}</table></div>` : ""}
 <div class="box"><p class="k" style="margin-top:0">${L.contr}</p><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
-<p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${es ? "Monto" : "Amount"}</th><th>${L.pmode}</th><th>${L.pref}</th><th>${L.psrc}</th></tr></thead><tbody>${filas}</tbody></table>
-<div class="box" style="display:flex;justify-content:space-between"><span class="tot">${L.pays}</span><span class="tot">${fmt(totalPagado)}</span></div>
-<div class="box" style="display:flex;justify-content:space-between;background:#fdecec"><span class="tot due">${L.due}</span><span class="tot due">${fmt(porPagar)}</span></div>
+<p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${L.amount}</th><th>${L.pmode}</th><th>${L.pref}</th><th>${L.psrc}</th></tr></thead><tbody>${filas}</tbody></table>
+<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}</span><span class="tot">${fmt(totalPagado)}</span></div>
+<div class="box duebox" style="display:flex;justify-content:space-between"><span class="tot due">${L.due}</span><span class="tot due">${fmt(porPagar)}</span></div>
+<div class="foot">${EMP.nombre} · ${EMP.dir} · ${L.phone}: ${EMP.tel} · ${EMP.web}</div>
 </body></html>`;
     const w = window.open("", "_blank", "width=820,height=1000");
     if (!w) { setAviso({ t: "err", m: "El navegador bloqueó la ventana. Permite pop-ups para generar el PDF." }); return; }
-    w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 500);
+    w.document.write(html); w.document.close(); w.focus();
+    // Esperamos a que el logo cargue antes de imprimir
+    setTimeout(() => w.print(), 800);
   };
 
   return (
@@ -2322,6 +2388,14 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
       <div className="flex items-center justify-between">
         <div><h2 className="text-sm font-semibold font-mono">{so.salesorder_number}</h2><p className="text-xs text-stone-500">{so.reference_number} · {so.customer_name}</p></div>
         <button onClick={onBack} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap gap-x-8 gap-y-2">
+        <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Cliente</p><p className="text-sm font-medium">{cliente.nombre || "—"}{cliente.empresa ? <span className="text-stone-400"> · {cliente.empresa}</span> : null}</p></div>
+        {cliente.contacto && <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Contacto</p><p className="text-sm font-medium">{cliente.contacto}</p></div>}
+        {cliente.tel && <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Teléfono</p><p className="text-sm font-medium">{cliente.tel}</p></div>}
+        {cliente.email && <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Correo</p><p className="text-sm font-medium">{cliente.email}</p></div>}
+        <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Orden de venta</p><p className="text-sm font-medium font-mono">{so.salesorder_number}</p></div>
       </div>
 
       <Section n="1" t="Contratado (Suministro e instalación)">
@@ -2362,7 +2436,7 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-stone-500">Idioma del PDF:</span>
             <select value={lang} onChange={(e) => setLang(e.target.value)} className="px-2 py-1.5 text-xs border border-stone-300 rounded bg-white"><option value="es">Español</option><option value="en">English</option></select>
-            <button onClick={generarPDF} className="px-4 py-2 bg-stone-900 text-white text-xs font-semibold rounded hover:bg-stone-800">📄 Generar PDF — Project Payment Status</button>
+            <button onClick={generarPDF} className="px-4 py-2 bg-emerald-700 text-white text-xs font-semibold rounded hover:bg-emerald-800">📄 Generar PDF — Project Payment Status</button>
           </div>
         </div>
       </Section>
@@ -2396,7 +2470,7 @@ function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fle
         <h2 className="text-sm font-semibold">Pedimentos</h2>
         <div className="flex gap-2">
           <button onClick={() => setModo("fletes")} className="px-3 py-2 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50">Proveedores de flete</button>
-          <button onClick={() => setModo("nueva")} className="px-3 py-2 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">+ Nueva importación</button>
+          <button onClick={() => setModo("nueva")} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">+ Nueva importación</button>
         </div>
       </div>
       {pedimentos.length === 0 ? (
@@ -2528,7 +2602,7 @@ function ProrrateoDetalle({ pedNumero, lineas, incs, tc, catalogo, setPartidas, 
     <div>
       <div className="flex items-center justify-between px-3 py-2">
         <p className="text-[11px] text-stone-500">Costo landed prorrateado por SKU (por valor FOB). El IVA no capitaliza. Edita la OC de cada renglón.</p>
-        <button onClick={exportar} className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">Exportar CSV</button>
+        <button onClick={exportar} className="px-3 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">Exportar CSV</button>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-[1100px] w-full text-xs">
@@ -2847,7 +2921,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
             </div>
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setDudosos(null)} className="px-3 py-2 text-xs text-stone-500 hover:text-stone-800">Cancelar</button>
-              <button onClick={() => { dudosos.forEach((d) => { if (d.chosen && catalogo[d.chosen]) asignarSku(d.id, d.chosen); }); setDudosos(null); }} className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">Aplicar SKUs</button>
+              <button onClick={() => { dudosos.forEach((d) => { if (d.chosen && catalogo[d.chosen]) asignarSku(d.id, d.chosen); }); setDudosos(null); }} className="px-4 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">Aplicar SKUs</button>
             </div>
           </div>
         </div>
@@ -2869,19 +2943,19 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
             <div>
               <Lbl>Pedimento (PDF)</Lbl>
               <input type="file" accept="application/pdf" onChange={async (e) => { const f = e.target.files?.[0]; if (f) { setPdfPed(await fileToB64(f)); setErrExtrac(null); } }}
-                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-stone-900 file:text-white" />
+                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-emerald-700 file:text-white" />
               {pdfPed && <p className="mt-1 text-[11px] text-teal-700">✓ Pedimento cargado</p>}
             </div>
             <div>
               <Lbl>Cotización Perezgrovas (PDF, opcional)</Lbl>
               <input type="file" accept="application/pdf" onChange={async (e) => { const f = e.target.files?.[0]; if (f) { setPdfCot(await fileToB64(f)); setErrExtrac(null); } }}
-                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-stone-900 file:text-white" />
+                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-emerald-700 file:text-white" />
               {pdfCot && <p className="mt-1 text-[11px] text-teal-700">✓ Cotización cargada</p>}
             </div>
             <div className="md:col-span-2">
               <Lbl>Facturas del proveedor (PDF, opcional · varias)</Lbl>
               <input type="file" accept="application/pdf" multiple onChange={async (e) => { const fs = Array.from(e.target.files || []); if (fs.length) { const b64s = await Promise.all(fs.map(fileToB64)); setPdfFacturas((s) => [...s, ...b64s]); setErrExtrac(null); } e.target.value = ""; }}
-                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-stone-900 file:text-white" />
+                className="block w-full text-xs text-stone-600 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-emerald-700 file:text-white" />
               {pdfFacturas.length > 0 && <p className="mt-1 text-[11px] text-teal-700">✓ {pdfFacturas.length} factura{pdfFacturas.length > 1 ? "s" : ""} cargada{pdfFacturas.length > 1 ? "s" : ""} <button onClick={() => setPdfFacturas([])} className="ml-1 text-stone-400 hover:text-red-600">(quitar)</button></p>}
               <p className="mt-1 text-[10px] text-stone-400">Las facturas del proveedor (Renon) traen el modelo real de cada equipo — sirven para que la app empate mejor los SKU.</p>
             </div>
@@ -3040,7 +3114,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
 
       <Section n="3b" t="Adjuntos de la importación" r="Cotizaciones, facturas, packing list, etc.">
         <div className="p-4">
-          <label className="inline-block px-3 py-2 bg-stone-900 text-white text-xs font-medium rounded cursor-pointer hover:bg-stone-800">
+          <label className="inline-block px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded cursor-pointer hover:bg-emerald-800">
             + Adjuntar archivo
             <input type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setAdjuntos((a) => [...a, f.name]); e.target.value = ""; } }} />
           </label>
@@ -3076,7 +3150,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
           </div>
         )}
         <div className="p-4 border-t border-stone-200 flex gap-2">
-          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Guardar como provisional"}</button>
+          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC} className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Guardar como provisional"}</button>
           <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
           {faltanOC && <span className="text-xs text-amber-700">⚠ Falta capturar la OC de cada factura (sección 2b) antes de guardar.</span>}
         </div>
@@ -3524,7 +3598,7 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
       {estado !== "confirmar" && (
         <>
           <div className="flex items-center gap-2">
-            <button onClick={disparar} disabled={estado === "leyendo"} className="flex-1 py-3 bg-stone-900 text-white text-sm font-semibold rounded-lg disabled:opacity-40">● Capturar</button>
+            <button onClick={disparar} disabled={estado === "leyendo"} className="flex-1 py-3 bg-emerald-700 text-white text-sm font-semibold rounded-lg disabled:opacity-40">● Capturar</button>
             <label className="py-3 px-4 border border-stone-300 rounded-lg text-sm cursor-pointer">Subir foto
               <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => subirFoto(e.target.files?.[0])} />
             </label>
@@ -3642,7 +3716,7 @@ function Respaldo({ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, s
       <h3 className="text-sm font-semibold">Respaldo de datos</h3>
       <p className="text-xs text-stone-500 mt-1">La app guarda todo en este dispositivo. Exporta un respaldo con frecuencia y para pasar los datos a otro equipo. Importar reemplaza los datos actuales.</p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <button onClick={exportar} className="px-4 py-2 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800">⬇ Exportar respaldo</button>
+        <button onClick={exportar} className="px-4 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">⬇ Exportar respaldo</button>
         <label className="px-4 py-2 border border-stone-300 text-xs font-medium rounded cursor-pointer">⬆ Importar respaldo
           <input type="file" accept="application/json" className="hidden" onChange={(e) => importar(e.target.files?.[0])} />
         </label>
@@ -3763,9 +3837,9 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
           <p className="text-xs text-stone-500">Operación diaria y flujo. Cada cuenta en su moneda; el total consolida a USD al TC fix.</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setModo("resumen")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "resumen" ? "bg-stone-900 text-white" : "border border-stone-300 text-stone-600"}`}>Resumen</button>
-          <button onClick={() => setModo("flujo")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "flujo" ? "bg-stone-900 text-white" : "border border-stone-300 text-stone-600"}`}>Flujo semanal</button>
-          <button onClick={() => setModo("movimientos")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "movimientos" ? "bg-stone-900 text-white" : "border border-stone-300 text-stone-600"}`}>Movimientos</button>
+          <button onClick={() => setModo("resumen")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "resumen" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Resumen</button>
+          <button onClick={() => setModo("flujo")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "flujo" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Flujo semanal</button>
+          <button onClick={() => setModo("movimientos")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "movimientos" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Movimientos</button>
           <button onClick={() => setModo("nueva")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">+ Nueva operación</button>
         </div>
       </div>
@@ -3782,7 +3856,7 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
     <div className="space-y-4">
       {/* Consolidado + TC */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <div className="md:col-span-2 bg-stone-900 text-white rounded-lg p-4 flex items-end justify-between">
+        <div className="md:col-span-2 bg-emerald-700 text-white rounded-lg p-4 flex items-end justify-between">
           <div>
             <p className="text-[10px] uppercase tracking-widest text-stone-400">Disponible consolidado</p>
             <p className="text-2xl font-semibold font-mono">${mx(consolidadoUSD)} <span className="text-sm text-stone-400">USD</span></p>
@@ -3921,7 +3995,7 @@ function FlujoSemanal({ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta
         </div>
         <div className="flex rounded border border-stone-300 overflow-hidden">
           {[["semana", "Semana"], ["mes", "Mes"], ["trimestre", "Trim."], ["año", "Año"]].map(([k, t]) => (
-            <button key={k} onClick={() => cambiarNivel(k)} className={`px-2.5 py-1.5 text-xs font-medium ${nivel === k ? "bg-stone-900 text-white" : "bg-white text-stone-600 hover:bg-stone-50"}`}>{t}</button>
+            <button key={k} onClick={() => cambiarNivel(k)} className={`px-2.5 py-1.5 text-xs font-medium ${nivel === k ? "bg-emerald-700 text-white" : "bg-white text-stone-600 hover:bg-stone-50"}`}>{t}</button>
           ))}
         </div>
         <button onClick={hoy} className="px-2.5 py-1.5 text-xs font-medium rounded border border-stone-300 text-stone-600 hover:bg-stone-50">Hoy</button>
@@ -4044,7 +4118,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {Object.entries(TIPOS_OP).map(([k, v]) => (
           <button key={k} onClick={() => setTipo(k)}
-            className={`px-3 py-2 text-xs font-medium rounded border ${tipo === k ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-600 border-stone-300"}`}>{v}</button>
+            className={`px-3 py-2 text-xs font-medium rounded border ${tipo === k ? "bg-emerald-700 text-white border-stone-900" : "bg-white text-stone-600 border-stone-300"}`}>{v}</button>
         ))}
       </div>
 
@@ -4097,7 +4171,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       </div>
 
       <div className="flex gap-2">
-        <button onClick={guardar} disabled={!f.monto || !f.cuentaId} className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded hover:bg-stone-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Registrar operación"}</button>
+        <button onClick={guardar} disabled={!f.monto || !f.cuentaId} className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Registrar operación"}</button>
         <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
       </div>
       <p className="text-[11px] text-stone-400">El registro alimenta el flujo y queda listo para empujarse a Zoho (cliente o proveedor) cuando conectemos la escritura. El comprobante físico se guardará ligado en Zoho.</p>
@@ -4128,7 +4202,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
     <div className="space-y-3">
       <div className="flex flex-wrap gap-1">
         {[["todos", "Todos"], ["ingreso", "Ingresos"], ["egreso", "Egresos"], ["traspaso", "Traspasos"], ["cambio", "Cambios"], ["planeado", "Planeados"]].map(([k, t]) => (
-          <button key={k} onClick={() => setFiltro(k)} className={`px-2.5 py-1.5 text-xs rounded ${filtro === k ? "bg-stone-900 text-white" : "border border-stone-300 text-stone-600"}`}>{t}</button>
+          <button key={k} onClick={() => setFiltro(k)} className={`px-2.5 py-1.5 text-xs rounded ${filtro === k ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>{t}</button>
         ))}
       </div>
       {rows.length === 0 ? (
