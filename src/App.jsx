@@ -2025,7 +2025,7 @@ function App() {
           </div>
         )}
         {vista === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso }} />}
+        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo }} />}
         {vista === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
@@ -2184,7 +2184,7 @@ function PagoBadge({ status }) {
   return <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${c}`}>{t}</span>;
 }
 
-function Proyectos({ proyData, saveProyData, setAviso }) {
+function Proyectos({ proyData, saveProyData, setAviso, catalogo }) {
   const [modo, setModo] = useState("lista");
   const [sos, setSos] = useState(null);
   const [fechaRefresh, setFechaRefresh] = useState("");
@@ -2231,7 +2231,7 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
     })();
   }, []);
 
-  if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista") }} />;
+  if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo }} />;
 
   const q = busca.trim().toLowerCase();
   const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
@@ -2297,12 +2297,12 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
   );
 }
 
-function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo }) {
   const [so, setSo] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [lang, setLang] = useState("en");
   const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
-  const [nuevoCosto, setNuevoCosto] = useState({ fecha: hoy(), tipo: "Material", concepto: "", monto: "" });
+  const [nuevoCosto, setNuevoCosto] = useState({ fecha: hoy(), tipo: "Flete", concepto: "", monto: "" });
 
   useEffect(() => {
     (async () => {
@@ -2356,17 +2356,36 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
   };
   const quitarPago = (id) => setDatos({ pagos: (datos.pagos || []).filter((p) => p.id !== id) });
 
-  // ---- Control presupuestal: costos/compras + mano de obra → utilidad real ----
-  const costos = (datos.costos || []).map((c) => ({ ...c, monto: +c.monto || 0 }));
+  // ---- Control presupuestal: equipo/materiales (Zoho) + costos manuales + mano de obra → utilidad ----
+  // Equipo y materiales que se entregan desde almacén al proyecto (renglones de la OV, a costo).
+  // Excluimos el renglón de servicio "Suministro e instalación".
+  const esInst = (l) => (l.line_item_type === "service" || l.product_type === "service") || (l.sku || "").toUpperCase().startsWith("INST") || /suministro\s*e?\s*instalaci/i.test((l.name || "") + " " + (l.description || ""));
+  const goodsLines = (so.line_items || []).filter((l) => !esInst(l));
+  // Costo unitario = COSTO PROMEDIO del SKU en el catálogo (MXN) convertido a la moneda de la OV.
+  // Si el SKU no está en el catálogo, respaldo = precio de la OV (ya en su moneda).
+  const tcOV = +so.exchange_rate || 1;      // MXN por unidad de la moneda de la OV (1 si la OV es MXN)
+  const cat = catalogo || {};
+  const costoUnit = (l) => {
+    const cv = cat[l.sku] ? +cat[l.sku].costoVigente : NaN;
+    return isFinite(cv) && cv > 0 ? cv / tcOV : (+l.rate || 0);
+  };
+  const skusConCosto = goodsLines.filter((l) => cat[l.sku] && +cat[l.sku].costoVigente > 0).length;
+  const ordenadoGoods = goodsLines.reduce((a, l) => a + (+l.quantity || 0) * costoUnit(l), 0);              // todo lo que ampara la OV
+  const entregadoGoods = goodsLines.reduce((a, l) => a + (+l.quantity_delivered || 0) * costoUnit(l), 0);   // surtido de almacén a la fecha
+  const pendienteGoods = ordenadoGoods - entregadoGoods;
+  const avanceEntrega = ordenadoGoods ? (entregadoGoods / ordenadoGoods) * 100 : 0;
+  const costos = (datos.costos || []).map((c) => ({ ...c, monto: +c.monto || 0 }));                   // otros costos manuales (fletes, viáticos…)
+  const manualCostos = costos.reduce((a, b) => a + b.monto, 0);
   const obra = datos.obra || { dias: "", costoDia: "" };
   const costoObra = (+obra.dias || 0) * (+obra.costoDia || 0);
-  const totalCostos = costos.reduce((a, b) => a + b.monto, 0) + costoObra;
-  const utilidad = contratadoBase - totalCostos;                 // sobre montos SIN IVA
-  const margen = contratadoBase ? (utilidad / contratadoBase) * 100 : 0;
+  const ingresoBase = +so.sub_total || contratadoBase;                                                // ingreso del proyecto SIN IVA
+  const totalCostos = ordenadoGoods + manualCostos + costoObra;                                       // costo total estimado
+  const utilidad = ingresoBase - totalCostos;
+  const margen = ingresoBase ? (utilidad / ingresoBase) * 100 : 0;
   const agregarCosto = () => {
     if (!(+nuevoCosto.monto > 0)) return;
     setDatos({ costos: [...(datos.costos || []), { id: uid(), ...nuevoCosto, monto: +nuevoCosto.monto }] });
-    setNuevoCosto({ fecha: hoy(), tipo: "Material", concepto: "", monto: "" });
+    setNuevoCosto({ fecha: hoy(), tipo: "Flete", concepto: "", monto: "" });
   };
   const quitarCosto = (id) => setDatos({ costos: (datos.costos || []).filter((c) => c.id !== id) });
   const setObra = (patch) => setDatos({ obra: { ...obra, ...patch } });
@@ -2508,28 +2527,41 @@ ${porPagar >= 0
 
       <Section n="4" t="Control Presupuestal" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${utilidad >= 0 ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-700"}`}>Utilidad ${mx0(utilidad)} · {margen.toFixed(1)}%</span>}>
         <div className="p-4 space-y-4">
-          {/* Contratado vs costos vs utilidad */}
+          {/* Ingreso vs costo vs utilidad */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado (sin IVA)</p><p className="text-sm font-semibold font-mono">${mx0(contratadoBase)}</p></div>
-            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Total costos</p><p className="text-sm font-semibold font-mono">${mx0(totalCostos)}</p></div>
-            <div className={`rounded-lg p-3 ${utilidad >= 0 ? "bg-emerald-50" : "bg-red-50"}`}><p className={`text-[10px] uppercase tracking-widest ${utilidad >= 0 ? "text-emerald-700" : "text-red-700"}`}>Utilidad real</p><p className={`text-sm font-semibold font-mono ${utilidad >= 0 ? "text-emerald-800" : "text-red-700"}`}>${mx0(utilidad)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado (sin IVA)</p><p className="text-sm font-semibold font-mono">${mx0(ingresoBase)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Costo total (est.)</p><p className="text-sm font-semibold font-mono">${mx0(totalCostos)}</p></div>
+            <div className={`rounded-lg p-3 ${utilidad >= 0 ? "bg-emerald-50" : "bg-red-50"}`}><p className={`text-[10px] uppercase tracking-widest ${utilidad >= 0 ? "text-emerald-700" : "text-red-700"}`}>Utilidad estimada</p><p className={`text-sm font-semibold font-mono ${utilidad >= 0 ? "text-emerald-800" : "text-red-700"}`}>${mx0(utilidad)}</p></div>
             <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Margen</p><p className="text-sm font-semibold font-mono">{margen.toFixed(1)}%</p></div>
+          </div>
+
+          {/* Equipo y materiales entregados desde almacén (AUTO, de Zoho) */}
+          <div className="border border-stone-200 rounded-lg overflow-hidden">
+            <div className="px-3 py-2 bg-stone-50 flex items-center justify-between gap-2">
+              <span className="text-[10px] uppercase tracking-widest text-stone-500">Equipo y materiales entregados desde almacén · de Zoho, a costo</span>
+              <span className="text-[10px] font-mono text-stone-400">{avanceEntrega.toFixed(0)}% entregado</span>
+            </div>
+            <div className="grid grid-cols-3 divide-x divide-stone-100">
+              <div className="p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Ordenado (OV)</p><p className="text-sm font-semibold font-mono">${mx0(ordenadoGoods)}</p></div>
+              <div className="p-3"><p className="text-[10px] uppercase tracking-widest text-emerald-700">Entregado a la fecha</p><p className="text-sm font-semibold font-mono text-emerald-800">${mx0(entregadoGoods)}</p></div>
+              <div className="p-3"><p className="text-[10px] uppercase tracking-widest text-amber-700">Pendiente por entregar</p><p className="text-sm font-semibold font-mono text-amber-800">${mx0(pendienteGoods)}</p></div>
+            </div>
+            <p className="px-3 pb-2 pt-1 text-[11px] text-stone-400">Costo = <b>costo promedio del SKU</b> (de tu módulo de Costos) × cantidad, convertido a la moneda de la OV. {skusConCosto}/{goodsLines.length} SKU con costo en catálogo; los que faltan usan el precio de la OV como respaldo. En proyectos <b>abiertos</b>, "entregado" = lo surtido de almacén hasta hoy; en <b>cerrados</b>, el total depurado. La utilidad estimada usa el <b>ordenado</b>.</p>
           </div>
 
           {/* Costos y compras del proyecto */}
           <div className="border border-stone-200 rounded-lg overflow-hidden">
-            <div className="px-3 py-2 bg-stone-50 text-[10px] uppercase tracking-widest text-stone-500">Costos y compras del proyecto (sin IVA)</div>
+            <div className="px-3 py-2 bg-stone-50 text-[10px] uppercase tracking-widest text-stone-500">Otros costos (manual) · fletes, viáticos, herramienta, extras — sin IVA</div>
             <div className="overflow-x-auto"><table className="w-full text-xs min-w-[560px]">
               <thead className="bg-stone-50 border-y border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500"><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Tipo</th><th className="text-left px-3 py-2">Concepto</th><th className="text-right px-3 py-2">Monto</th><th></th></tr></thead>
-              <tbody>{costos.length === 0 ? <tr><td colSpan="5" className="text-center text-stone-400 py-4">Sin costos aún. Agrégalos abajo.</td></tr> : costos.map((c) => (
+              <tbody>{costos.length === 0 ? <tr><td colSpan="5" className="text-center text-stone-400 py-4">Sin otros costos. Agrégalos abajo.</td></tr> : costos.map((c) => (
                 <tr key={c.id} className="border-b border-stone-100"><td className="px-3 py-1.5">{c.fecha}</td><td className="px-3 py-1.5">{c.tipo}</td><td className="px-3 py-1.5">{c.concepto}</td><td className="px-3 py-1.5 text-right font-mono">${mx(c.monto)}</td><td className="px-2"><button onClick={() => quitarCosto(c.id)} className="text-stone-400 hover:text-red-600">×</button></td></tr>
               ))}
-              {costoObra > 0 && <tr className="border-b border-stone-100"><td className="px-3 py-1.5 text-stone-400">—</td><td className="px-3 py-1.5">Mano de obra</td><td className="px-3 py-1.5">{obra.dias} días × ${mx(+obra.costoDia || 0)}/día</td><td className="px-3 py-1.5 text-right font-mono">${mx(costoObra)}</td><td></td></tr>}
               </tbody>
             </table></div>
             <div className="p-3 border-t border-stone-200 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
               <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={nuevoCosto.fecha} onChange={(e) => setNuevoCosto({ ...nuevoCosto, fecha: e.target.value })} /></div>
-              <div><Lbl>Tipo</Lbl><select className={inp} value={nuevoCosto.tipo} onChange={(e) => setNuevoCosto({ ...nuevoCosto, tipo: e.target.value })}>{["Material", "Equipo", "Orden de compra", "Flete", "Mano de obra", "Otro"].map((t) => <option key={t}>{t}</option>)}</select></div>
+              <div><Lbl>Tipo</Lbl><select className={inp} value={nuevoCosto.tipo} onChange={(e) => setNuevoCosto({ ...nuevoCosto, tipo: e.target.value })}>{["Flete", "Viáticos", "Herramienta", "Material extra", "Equipo extra", "Otro"].map((t) => <option key={t}>{t}</option>)}</select></div>
               <div><Lbl>Concepto</Lbl><input className={inp} value={nuevoCosto.concepto} onChange={(e) => setNuevoCosto({ ...nuevoCosto, concepto: e.target.value })} /></div>
               <div><Lbl>Monto (sin IVA)</Lbl><input type="number" step="0.01" className={inp + " font-mono"} value={nuevoCosto.monto} onChange={(e) => setNuevoCosto({ ...nuevoCosto, monto: e.target.value })} /></div>
               <button onClick={agregarCosto} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">+ Agregar costo</button>
@@ -2543,7 +2575,7 @@ ${porPagar >= 0
             <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Costo mano de obra</p><p className="text-sm font-semibold font-mono">${mx0(costoObra)}</p></div>
           </div>
 
-          <p className="text-[11px] text-stone-400">Los costos se capturan SIN IVA (costo neto) para calcular la utilidad real. Próximamente: jalar automáticamente las órdenes de compra de Zoho por proyecto y los días de obra desde IS-PMT (días en sitio × costo operativo de personal/supervisión).</p>
+          <p className="text-[11px] text-stone-400"><b>Utilidad estimada = Contratado (sin IVA) − equipo/materiales (ordenado, de Zoho) − otros costos − mano de obra.</b> El equipo/material se jala automático de la OV; tú capturas los otros costos y la mano de obra. Próximamente: días de obra automáticos desde IS-PMT (días en sitio × costo operativo de personal/supervisión).</p>
         </div>
       </Section>
     </div>
