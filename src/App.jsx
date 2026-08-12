@@ -2420,7 +2420,8 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
       ? `<div class="cli"><span class="cli-name">${esc(cliente.nombre)}${cliente.empresa ? " · " + esc(cliente.empresa) : ""}</span>${cliMeta ? `<span class="cli-meta">${cliMeta}</span>` : ""}</div>`
       : "";
     const billBlock = (rfc || billAddr) ? `<div class="bill"><b>${L.billing}:</b> ${esc(so.customer_name)}${rfc ? " · RFC " + esc(rfc) : ""}${billAddr ? " · " + esc(billAddr) : ""}</div>` : "";
-    const filename = `${L.t} - ${so.salesorder_number}.pdf`;
+    const projName = (so.reference_number || "").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+    const filename = `${L.t} - ${so.salesorder_number}${projName ? " - " + projName : ""}.pdf`;
     const inclPaid = `<span style="font-weight:400;font-size:10px;color:#6b7280"> ${L.inclIva}</span>`;
     const inclDue = `<span style="font-weight:400;font-size:10px"> ${L.inclIva}</span>`;
     const contenido = `
