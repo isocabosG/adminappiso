@@ -2302,6 +2302,7 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
   const [cargando, setCargando] = useState(true);
   const [lang, setLang] = useState("en");
   const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
+  const [nuevoCosto, setNuevoCosto] = useState({ fecha: hoy(), tipo: "Material", concepto: "", monto: "" });
 
   useEffect(() => {
     (async () => {
@@ -2355,22 +2356,37 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
   };
   const quitarPago = (id) => setDatos({ pagos: (datos.pagos || []).filter((p) => p.id !== id) });
 
+  // ---- Control presupuestal: costos/compras + mano de obra → utilidad real ----
+  const costos = (datos.costos || []).map((c) => ({ ...c, monto: +c.monto || 0 }));
+  const obra = datos.obra || { dias: "", costoDia: "" };
+  const costoObra = (+obra.dias || 0) * (+obra.costoDia || 0);
+  const totalCostos = costos.reduce((a, b) => a + b.monto, 0) + costoObra;
+  const utilidad = contratadoBase - totalCostos;                 // sobre montos SIN IVA
+  const margen = contratadoBase ? (utilidad / contratadoBase) * 100 : 0;
+  const agregarCosto = () => {
+    if (!(+nuevoCosto.monto > 0)) return;
+    setDatos({ costos: [...(datos.costos || []), { id: uid(), ...nuevoCosto, monto: +nuevoCosto.monto }] });
+    setNuevoCosto({ fecha: hoy(), tipo: "Material", concepto: "", monto: "" });
+  };
+  const quitarCosto = (id) => setDatos({ costos: (datos.costos || []).filter((c) => c.id !== id) });
+  const setObra = (patch) => setDatos({ obra: { ...obra, ...patch } });
+
   const generarPDF = () => {
     const es = lang === "es";
     const L = es
-      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", proj: "Proyecto", client: "Cliente", contact: "Contacto", phone: "Teléfono", email: "Correo", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", amount: "Monto", pmode: "Forma", pref: "Referencia", psrc: "Origen", none: "Sin pagos registrados" }
-      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", proj: "Project", client: "Client", contact: "Contact", phone: "Phone", email: "Email", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", amount: "Amount", pmode: "Method", pref: "Reference", psrc: "Source", none: "No payments recorded" };
+      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", proj: "Proyecto", client: "Cliente", contact: "Contacto", phone: "Teléfono", email: "Correo", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", amount: "Monto", pmode: "Forma", pref: "Referencia", psrc: "Origen", confirmed: "Fecha de alta", none: "Sin pagos registrados" }
+      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", proj: "Project", client: "Client", contact: "Contact", phone: "Phone", email: "Email", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", amount: "Amount", pmode: "Method", pref: "Reference", psrc: "Source", confirmed: "Confirmed date", none: "No payments recorded" };
     const EMP = { nombre: "INNOVACIÓN SOLAR", dir: "KM 3.5 Carretera CSL–SJC, Cabo San Lucas, B.C.S. 23454, México", tel: "+52 624 105 94 78", web: "www.innovacionsolar.com" };
     const fmt = (n) => "$" + (isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00");
     const esc = (s) => String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+    // Fecha de alta del proyecto en Zoho: fecha del primer pago o, si no hay, la fecha de la OV
+    const confirmedDate = (pagos.length ? pagos[0].fecha : "") || so.date || "";
     const filas = pagos.length ? pagos.map((p) => `<tr><td>${esc(p.fecha)}</td><td style="text-align:right">${fmt(p.monto)}</td><td>${esc(p.forma)}</td><td>${esc(p.ref)}</td><td>${esc(p.origen)}</td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#888">${L.none}</td></tr>`;
-    // Solo mostramos los renglones de cliente que tengan dato
-    const cliRows = [
-      [L.client, cliente.nombre + (cliente.empresa ? ` · ${cliente.empresa}` : "")],
-      [L.contact, cliente.contacto],
-      [L.phone, cliente.tel],
-      [L.email, cliente.email],
-    ].filter(([, v]) => v).map(([k, v]) => `<tr><td class="ck">${k}</td><td class="cv">${esc(v)}</td></tr>`).join("");
+    // Bloque de cliente compacto (una línea corporativa)
+    const cliMeta = [cliente.contacto, cliente.tel, cliente.email].filter(Boolean).map(esc).join(" &nbsp;·&nbsp; ");
+    const cliBlock = (cliente.nombre || cliMeta)
+      ? `<div class="cli"><span class="cli-name">${esc(cliente.nombre)}${cliente.empresa ? " · " + esc(cliente.empresa) : ""}</span>${cliMeta ? `<span class="cli-meta">${cliMeta}</span>` : ""}</div>`
+      : "";
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${L.t} — ${esc(so.salesorder_number)}</title><style>
       body{font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1a1d21;max-width:720px;margin:24px auto;padding:0 24px}
       .head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #047857;padding-bottom:12px}
@@ -2391,12 +2407,17 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
       .paidbox{background:#ecfdf5;border-color:#a7f3d0}
       .duebox{background:#fef2f2;border-color:#fecaca}.due{color:#b91c1c}
       .foot{margin-top:22px;border-top:1px solid #eee;padding-top:10px;font-size:10px;color:#9aa2ab;text-align:center;line-height:1.6}
+      .cli{margin:6px 0 2px;font-size:11px}
+      .cli-name{font-weight:600;font-size:12px;color:#1a1d21}
+      .cli-meta{color:#6b7280;margin-left:10px}
+      @page{margin:0}
+      @media print{ body{margin:14mm auto} }
     </style></head><body>
 <div class="head"><img src="${LOGO_ISO}" alt="Innovación Solar"/><div class="co"><b>${EMP.nombre}</b><br>${EMP.dir}<br>${L.phone}: ${EMP.tel} · ${EMP.web}</div></div>
 <h1>${L.t}</h1><p class="sub">${L.reportDate}: ${hoy()}</p>
 <div class="row"><div><p class="k">${L.proj}</p><p class="v">${esc(so.reference_number) || "—"}</p></div><div><p class="k">${L.ov}</p><p class="v">${esc(so.salesorder_number)}</p></div><div><p class="k">${L.date}</p><p class="v">${esc(so.date) || "—"}</p></div><div><p class="k">${L.currency}</p><p class="v">${esc(cur)}</p></div></div>
-${cliRows ? `<div class="box"><table>${cliRows}</table></div>` : ""}
-<div class="box"><p class="k" style="margin-top:0">${L.contr}</p><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
+${cliBlock}
+<div class="box"><div style="display:flex;justify-content:space-between;align-items:baseline"><p class="k" style="margin-top:0">${L.contr}</p><p class="k" style="margin-top:0">${L.confirmed}: <span style="color:#1a1d21;font-weight:600">${esc(confirmedDate) || "—"}</span></p></div><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
 <p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${L.amount}</th><th>${L.pmode}</th><th>${L.pref}</th><th>${L.psrc}</th></tr></thead><tbody>${filas}</tbody></table>
 <div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}</span><span class="tot">${fmt(totalPagado)} ${cur}</span></div>
 ${porPagar >= 0
@@ -2482,6 +2503,47 @@ ${porPagar >= 0
             <select value={lang} onChange={(e) => setLang(e.target.value)} className="px-2 py-1.5 text-xs border border-stone-300 rounded bg-white"><option value="es">Español</option><option value="en">English</option></select>
             <button onClick={generarPDF} className="px-4 py-2 bg-emerald-700 text-white text-xs font-semibold rounded hover:bg-emerald-800">📄 Generar PDF — Project Payment Status</button>
           </div>
+        </div>
+      </Section>
+
+      <Section n="4" t="Control Presupuestal" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${utilidad >= 0 ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-700"}`}>Utilidad ${mx0(utilidad)} · {margen.toFixed(1)}%</span>}>
+        <div className="p-4 space-y-4">
+          {/* Contratado vs costos vs utilidad */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado (sin IVA)</p><p className="text-sm font-semibold font-mono">${mx0(contratadoBase)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Total costos</p><p className="text-sm font-semibold font-mono">${mx0(totalCostos)}</p></div>
+            <div className={`rounded-lg p-3 ${utilidad >= 0 ? "bg-emerald-50" : "bg-red-50"}`}><p className={`text-[10px] uppercase tracking-widest ${utilidad >= 0 ? "text-emerald-700" : "text-red-700"}`}>Utilidad real</p><p className={`text-sm font-semibold font-mono ${utilidad >= 0 ? "text-emerald-800" : "text-red-700"}`}>${mx0(utilidad)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Margen</p><p className="text-sm font-semibold font-mono">{margen.toFixed(1)}%</p></div>
+          </div>
+
+          {/* Costos y compras del proyecto */}
+          <div className="border border-stone-200 rounded-lg overflow-hidden">
+            <div className="px-3 py-2 bg-stone-50 text-[10px] uppercase tracking-widest text-stone-500">Costos y compras del proyecto (sin IVA)</div>
+            <div className="overflow-x-auto"><table className="w-full text-xs min-w-[560px]">
+              <thead className="bg-stone-50 border-y border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500"><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Tipo</th><th className="text-left px-3 py-2">Concepto</th><th className="text-right px-3 py-2">Monto</th><th></th></tr></thead>
+              <tbody>{costos.length === 0 ? <tr><td colSpan="5" className="text-center text-stone-400 py-4">Sin costos aún. Agrégalos abajo.</td></tr> : costos.map((c) => (
+                <tr key={c.id} className="border-b border-stone-100"><td className="px-3 py-1.5">{c.fecha}</td><td className="px-3 py-1.5">{c.tipo}</td><td className="px-3 py-1.5">{c.concepto}</td><td className="px-3 py-1.5 text-right font-mono">${mx(c.monto)}</td><td className="px-2"><button onClick={() => quitarCosto(c.id)} className="text-stone-400 hover:text-red-600">×</button></td></tr>
+              ))}
+              {costoObra > 0 && <tr className="border-b border-stone-100"><td className="px-3 py-1.5 text-stone-400">—</td><td className="px-3 py-1.5">Mano de obra</td><td className="px-3 py-1.5">{obra.dias} días × ${mx(+obra.costoDia || 0)}/día</td><td className="px-3 py-1.5 text-right font-mono">${mx(costoObra)}</td><td></td></tr>}
+              </tbody>
+            </table></div>
+            <div className="p-3 border-t border-stone-200 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
+              <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={nuevoCosto.fecha} onChange={(e) => setNuevoCosto({ ...nuevoCosto, fecha: e.target.value })} /></div>
+              <div><Lbl>Tipo</Lbl><select className={inp} value={nuevoCosto.tipo} onChange={(e) => setNuevoCosto({ ...nuevoCosto, tipo: e.target.value })}>{["Material", "Equipo", "Orden de compra", "Flete", "Mano de obra", "Otro"].map((t) => <option key={t}>{t}</option>)}</select></div>
+              <div><Lbl>Concepto</Lbl><input className={inp} value={nuevoCosto.concepto} onChange={(e) => setNuevoCosto({ ...nuevoCosto, concepto: e.target.value })} /></div>
+              <div><Lbl>Monto (sin IVA)</Lbl><input type="number" step="0.01" className={inp + " font-mono"} value={nuevoCosto.monto} onChange={(e) => setNuevoCosto({ ...nuevoCosto, monto: e.target.value })} /></div>
+              <button onClick={agregarCosto} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">+ Agregar costo</button>
+            </div>
+          </div>
+
+          {/* Mano de obra */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 items-end">
+            <div><Lbl>Días totales de mano de obra</Lbl><input type="number" step="1" className={inp + " font-mono"} value={obra.dias} onChange={(e) => setObra({ dias: e.target.value })} /></div>
+            <div><Lbl>Costo operativo por día</Lbl><input type="number" step="0.01" className={inp + " font-mono"} value={obra.costoDia} onChange={(e) => setObra({ costoDia: e.target.value })} /></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Costo mano de obra</p><p className="text-sm font-semibold font-mono">${mx0(costoObra)}</p></div>
+          </div>
+
+          <p className="text-[11px] text-stone-400">Los costos se capturan SIN IVA (costo neto) para calcular la utilidad real. Próximamente: jalar automáticamente las órdenes de compra de Zoho por proyecto y los días de obra desde IS-PMT (días en sitio × costo operativo de personal/supervisión).</p>
         </div>
       </Section>
     </div>
