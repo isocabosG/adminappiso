@@ -2025,7 +2025,7 @@ function App() {
           </div>
         )}
         {vista === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo }} />}
+        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix }} />}
         {vista === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
@@ -2184,7 +2184,8 @@ function PagoBadge({ status }) {
   return <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${c}`}>{t}</span>;
 }
 
-function Proyectos({ proyData, saveProyData, setAviso, catalogo }) {
+function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
+  const [anio, setAnio] = useState("todos");
   const [modo, setModo] = useState("lista");
   const [sos, setSos] = useState(null);
   const [fechaRefresh, setFechaRefresh] = useState("");
@@ -2237,29 +2238,44 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo }) {
   const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
   const pagoSel = filtros.filter((x) => x === "porcobrar" || x === "pagado");
   const rows = (sos || []).filter((s) => {
-    // Estado del pedido (grupo 1): si hay chips de estado, debe cumplir alguno
-    if (estadoSel.length) {
-      const cerrado = s.order_status === "closed";
-      if (!((estadoSel.includes("cerrado") && cerrado) || (estadoSel.includes("abierto") && !cerrado))) return false;
-    }
-    // Estado de pago (grupo 2): independiente del estado del pedido
-    if (pagoSel.length) {
-      const pagado = s.paid_status === "paid";
-      if (!((pagoSel.includes("pagado") && pagado) || (pagoSel.includes("porcobrar") && !pagado))) return false;
-    }
+    if (anio !== "todos" && (s.date || "").slice(0, 4) !== anio) return false;                 // filtro por año
+    if (estadoSel.length) { const cerrado = s.order_status === "closed"; if (!((estadoSel.includes("cerrado") && cerrado) || (estadoSel.includes("abierto") && !cerrado))) return false; }
+    if (pagoSel.length) { const pagado = s.paid_status === "paid"; if (!((pagoSel.includes("pagado") && pagado) || (pagoSel.includes("porcobrar") && !pagado))) return false; }
     return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q) || (s.company_name || "").toLowerCase().includes(q);
   });
-  const filtrando = filtros.length > 0 || !!q;
-  const totalValor = rows.reduce((a, s) => a + (+s.bcy_total || +s.total || 0), 0); // en MXN (base)
+  const filtrando = filtros.length > 0 || !!q || anio !== "todos";
+  const anios = Array.from(new Set((sos || []).map((s) => (s.date || "").slice(0, 4)).filter(Boolean))).sort().reverse();
+  // Resumen: MXN base (con IVA) y USD al TC de hoy
+  const tc = +tcFix || 0;
+  const contratMXN = rows.reduce((a, s) => a + (+s.bcy_total || +s.total || 0), 0);
+  const cobradoMXN = rows.reduce((a, s) => { const t = +s.total || 0, b = +s.balance || 0, r = t > 0 ? (t - b) / t : (s.paid_status === "paid" ? 1 : 0); return a + (+s.bcy_total || t) * r; }, 0);
+  const porCobrarMXN = contratMXN - cobradoMXN;
+  const usd = (m) => (tc > 0 ? m / tc : null);
+  // Utilidad prom. y compras/materiales: de los proyectos que ya se abrieron (tienen análisis guardado)
+  const anal = rows.map((s) => proyData[s.salesorder_id]?.analisis).filter(Boolean);
+  const gastoMatMXN = anal.reduce((a, x) => a + (+x.gastoMXN || 0), 0);
+  const margenProm = anal.length ? anal.reduce((a, x) => a + (+x.margen || 0), 0) / anal.length : null;
 
   return (
     <div className="space-y-4">
-      <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-lg px-4 py-3 flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor total de proyectos{filtrando ? " (filtrados)" : ""}</p>
-          <p className="text-2xl font-bold font-mono leading-tight">${mx0(totalValor)} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+      <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <p className="text-[10px] uppercase tracking-widest text-emerald-100">Resumen de proyectos{filtrando ? " (filtrados)" : ""} · {rows.length}</p>
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-emerald-100">Año:</span>
+            <select value={anio} onChange={(e) => setAnio(e.target.value)} className="px-2 py-1 rounded bg-white/15 border border-white/25 text-white text-xs focus:outline-none">
+              <option value="todos" className="text-stone-800">Todos</option>
+              {anios.map((y) => <option key={y} value={y} className="text-stone-800">{y}</option>)}
+            </select>
+          </div>
         </div>
-        <p className="text-xs text-emerald-100">{rows.length} proyecto{rows.length === 1 ? "" : "s"}{fechaRefresh ? ` · al ${fechaRefresh}` : ""}</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Contratado (con IVA)</p><p className="text-lg font-bold font-mono leading-tight">${mx0(contratMXN)}<span className="text-xs font-normal text-emerald-100"> MXN</span></p>{usd(contratMXN) != null && <p className="text-[11px] text-emerald-100/90 font-mono">${mx0(usd(contratMXN))} USD</p>}</div>
+          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Cobrado</p><p className="text-lg font-bold font-mono leading-tight">${mx0(cobradoMXN)}<span className="text-xs font-normal text-emerald-100"> MXN</span></p>{usd(cobradoMXN) != null && <p className="text-[11px] text-emerald-100/90 font-mono">${mx0(usd(cobradoMXN))} USD</p>}</div>
+          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Por cobrar</p><p className="text-lg font-bold font-mono leading-tight">${mx0(porCobrarMXN)}<span className="text-xs font-normal text-emerald-100"> MXN</span></p>{usd(porCobrarMXN) != null && <p className="text-[11px] text-emerald-100/90 font-mono">${mx0(usd(porCobrarMXN))} USD</p>}</div>
+          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom.</p><p className="text-lg font-bold font-mono leading-tight">{margenProm == null ? "—" : margenProm.toFixed(1) + "%"}</p><p className="text-[11px] text-emerald-100/90 font-mono">Compras/mat.: ${mx0(gastoMatMXN)}</p></div>
+        </div>
+        <p className="text-[10px] text-emerald-100/80 mt-2">Con IVA · USD al TC {tc || "—"}{fechaRefresh ? ` · datos al ${fechaRefresh}` : ""}. Utilidad prom. y compras/materiales = de los {anal.length} proyecto{anal.length === 1 ? "" : "s"} ya abierto{anal.length === 1 ? "" : "s"} (se llenan al entrar a cada proyecto).</p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho (se refrescan solas 1 vez al día){fechaRefresh ? ` · última: ${fechaRefresh}` : ""}.</p></div>
@@ -2323,6 +2339,29 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
       setCargando(false);
     })();
   }, [soId]);
+
+  // Guarda un mini-análisis (gasto en materiales + utilidad + margen, en MXN) cuando el proyecto carga,
+  // para que el resumen de arriba pueda sumar/promediar sin volver a leer cada proyecto.
+  useEffect(() => {
+    if (!so) return;
+    const d = proyData[soId] || {};
+    const esI = (l) => (l.line_item_type === "service" || l.product_type === "service") || (l.sku || "").toUpperCase().startsWith("INST") || /suministro\s*e?\s*instalaci/i.test((l.name || "") + " " + (l.description || ""));
+    const tc = +so.exchange_rate || 1; // MXN por unidad de la moneda de la OV
+    const cuMXN = (l) => { const cv = (catalogo && catalogo[l.sku]) ? +catalogo[l.sku].costoVigente : NaN; return isFinite(cv) && cv > 0 ? cv : (+l.rate || 0) * tc; };
+    const goods = (so.line_items || []).filter((l) => !esI(l));
+    const ordenMXN = goods.reduce((a, l) => a + (+l.quantity || 0) * cuMXN(l), 0);
+    const gastoMXN = goods.reduce((a, l) => a + (+l.quantity_delivered || 0) * cuMXN(l), 0); // materiales/equipo entregado
+    const manualMXN = (d.costos || []).reduce((a, b) => a + (+b.monto || 0), 0) * tc;
+    const obraMXN = ((+((d.obra || {}).dias) || 0) * (+((d.obra || {}).costoDia) || 0)) * tc;
+    const ingresoMXN = +so.bcy_sub_total || (+so.sub_total || 0) * tc;
+    const utilMXN = ingresoMXN - ordenMXN - manualMXN - obraMXN;
+    const marg = ingresoMXN ? Math.round((utilMXN / ingresoMXN) * 1000) / 10 : 0;
+    const a = { margen: marg, gastoMXN: Math.round(gastoMXN), ordenMXN: Math.round(ordenMXN), utilMXN: Math.round(utilMXN), ingresoMXN: Math.round(ingresoMXN), fecha: hoy() };
+    const prev = d.analisis;
+    if (!prev || prev.margen !== a.margen || prev.gastoMXN !== a.gastoMXN || prev.utilMXN !== a.utilMXN) {
+      saveProyData({ ...proyData, [soId]: { ...d, analisis: a } });
+    }
+  }, [so]);
 
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded";
   if (cargando) return <div className="p-10 text-center text-sm text-stone-500">Leyendo proyecto de Zoho…</div>;
@@ -3554,10 +3593,12 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const [modo, setModo] = useState("lista");
   const q = busca.trim().toLowerCase();
+  const valorDe = (a) => (a.existencia || 0) * (+a.costoVigente || 0);
   const rows = Object.entries(catalogo)
     .filter(([sku, a]) => !q || sku.toLowerCase().includes(q) || (a.descripcion || "").toLowerCase().includes(q))
-    .sort((a, b) => (a[1].existencia || 0) - (b[1].existencia || 0));
+    .sort((a, b) => valorDe(b[1]) - valorDe(a[1])); // mayor valor primero
   const totalPzas = rows.reduce((s, [, a]) => s + (a.existencia || 0), 0);
+  const valorCat = rows.reduce((s, [, a]) => s + valorDe(a), 0);
   const bajo = rows.filter(([, a]) => (a.existencia || 0) <= 5).length;
 
   // ---- Valor del inventario al día: stock actual (Zoho) × costo del SKU. Cache + refresco diario. ----
@@ -3622,33 +3663,38 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         </div>
         <button onClick={() => setModo("recepcion")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">📷 Recepción por cámara</button>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <Kpi t="Artículos" v={rows.length} />
         <Kpi t="Piezas totales" v={totalPzas} />
+        <Kpi t="Valor catálogo (MXN)" v={`$${mx0(valorCat)}`} />
         <Kpi t="Stock bajo (≤5)" v={bajo} alerta={bajo > 0} />
       </div>
       <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
         className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
-      {rows.length > 200 && <p className="text-[11px] font-mono text-stone-500">Mostrando 200 de {rows.length} — usa el buscador para filtrar.</p>}
+      <p className="text-[11px] font-mono text-stone-500">Ordenado por valor (mayor a menor){rows.length > 500 ? ` · mostrando 500 de ${rows.length} — usa el buscador para el resto` : ""}.</p>
       <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[520px] text-sm">
+        <table className="w-full min-w-[680px] text-sm">
           <thead className="bg-stone-50 border-b border-stone-200">
             <tr className="text-[10px] uppercase tracking-widest text-stone-500">
               <th className="text-left px-3 py-2">SKU</th>
               <th className="text-left px-3 py-2">Artículo</th>
               <th className="text-right px-3 py-2">Existencia</th>
+              <th className="text-right px-3 py-2">Costo unit.</th>
+              <th className="text-right px-3 py-2">Valor</th>
               <th className="text-left px-3 py-2 pl-4">Estado</th>
             </tr>
           </thead>
           <tbody>
-            {rows.slice(0, 200).map(([sku, a]) => {
-              const ex = a.existencia || 0;
+            {rows.slice(0, 500).map(([sku, a]) => {
+              const ex = a.existencia || 0, cv = +a.costoVigente || 0, val = ex * cv;
               const estado = ex === 0 ? ["Agotado", "bg-red-100 text-red-700"] : ex <= 5 ? ["Stock bajo", "bg-amber-100 text-amber-800"] : ["OK", "bg-teal-100 text-teal-800"];
               return (
                 <tr key={sku} className="border-b border-stone-100">
                   <td className="px-3 py-2 font-mono text-xs font-semibold">{sku}</td>
                   <td className="px-3 py-2 text-stone-600 text-xs">{a.descripcion}</td>
                   <td className="px-3 py-2 text-right font-mono">{ex}</td>
+                  <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(cv)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(val)}</td>
                   <td className="px-3 py-2 pl-4"><span className={`px-2 py-0.5 text-[10px] rounded font-medium ${estado[1]}`}>{estado[0]}</span></td>
                 </tr>
               );
