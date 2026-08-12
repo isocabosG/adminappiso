@@ -1992,7 +1992,7 @@ function App() {
   const pendientes = Object.values(catalogo).filter((a) => a.promedioPendiente != null).length;
 
   return (
-    <div className="min-h-screen bg-stone-100 text-stone-900">
+    <div className="min-h-screen bg-stone-100 text-stone-900 overflow-x-hidden">
       <header className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-emerald-600 text-white shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
@@ -2002,7 +2002,7 @@ function App() {
               <p className="text-[10px] font-mono tracking-[0.2em] text-emerald-200">INNOVACIÓN SOLAR</p>
             </div>
           </div>
-          <nav className="flex items-center gap-1">
+          <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
             {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
