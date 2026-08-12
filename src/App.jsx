@@ -2010,8 +2010,10 @@ function App() {
                 {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
             ))}
-            <button onClick={toggleDark} title="Modo claro/oscuro" aria-label="Modo claro/oscuro"
-              className="ml-1 grid place-items-center w-8 h-8 rounded text-emerald-50 hover:bg-white/15 text-base leading-none">{dark ? "☀️" : "🌙"}</button>
+            <button onClick={toggleDark} title="Cambiar tema"
+              className="ml-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/30 text-emerald-50 text-xs font-medium hover:bg-white/15 transition-colors">
+              <span className="text-sm leading-none">{dark ? "☀️" : "🌙"}</span>{dark ? "Claro" : "Oscuro"}
+            </button>
           </nav>
         </div>
       </header>
