@@ -2303,6 +2303,7 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const [lang, setLang] = useState("en");
   const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
   const [nuevoCosto, setNuevoCosto] = useState({ fecha: hoy(), tipo: "Flete", concepto: "", monto: "" });
+  const [verEntrega, setVerEntrega] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -2393,21 +2394,44 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const generarPDF = () => {
     const es = lang === "es";
     const L = es
-      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", proj: "Proyecto", client: "Cliente", contact: "Contacto", phone: "Teléfono", email: "Correo", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", amount: "Monto", pmode: "Forma", pref: "Referencia", psrc: "Origen", confirmed: "Fecha de alta", none: "Sin pagos registrados" }
-      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", proj: "Project", client: "Client", contact: "Contact", phone: "Phone", email: "Email", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", amount: "Amount", pmode: "Method", pref: "Reference", psrc: "Source", confirmed: "Confirmed date", none: "No payments recorded" };
+      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", salesEng: "Ingeniero de ventas", billing: "Datos de facturación", proj: "Proyecto", client: "Cliente", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", inclIva: "(incl. IVA 16%)", amount: "Monto", pmode: "Forma", account: "Cuenta", pref: "Referencia", confirmed: "Fecha de alta", none: "Sin pagos registrados", gen: "Generando PDF…", ready: "Listo — revisa tus Descargas. Ya puedes cerrar esta ventana." }
+      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", salesEng: "Sales engineer", billing: "Billing details", proj: "Project", client: "Client", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", inclIva: "(incl. 16% VAT)", amount: "Amount", pmode: "Method", account: "Account", pref: "Reference", confirmed: "Confirmed date", none: "No payments recorded", gen: "Generating PDF…", ready: "Done — check your Downloads. You can close this window." };
     const EMP = { nombre: "INNOVACIÓN SOLAR", dir: "KM 3.5 Carretera CSL–SJC, Cabo San Lucas, B.C.S. 23454, México", tel: "+52 624 105 94 78", web: "www.innovacionsolar.com" };
     const fmt = (n) => "$" + (isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00");
     const esc = (s) => String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
-    // Fecha de alta del proyecto en Zoho: fecha del primer pago o, si no hay, la fecha de la OV
     const confirmedDate = (pagos.length ? pagos[0].fecha : "") || so.date || "";
-    const filas = pagos.length ? pagos.map((p) => `<tr><td>${esc(p.fecha)}</td><td style="text-align:right">${fmt(p.monto)}</td><td>${esc(p.forma)}</td><td>${esc(p.ref)}</td><td>${esc(p.origen)}</td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#888">${L.none}</td></tr>`;
-    // Bloque de cliente compacto (una línea corporativa)
+    const salesEng = so.salesperson_name || "";
+    const rfc = so.tax_reg_no || "";
+    const bill = so.billing_address || {};
+    const billAddr = [bill.address, bill.street2, bill.city, bill.state, bill.zip, bill.country].filter(Boolean).join(", ");
+    // Pagos: quitamos "Origen" y mostramos la cuenta/banco a la que entró (account_name de Zoho)
+    const filas = pagos.length ? pagos.map((p) => `<tr><td>${esc(p.fecha)}</td><td style="text-align:right">${fmt(p.monto)}</td><td>${esc(p.forma)}</td><td>${esc(p.cuenta || "")}</td><td>${esc(p.ref)}</td></tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#888">${L.none}</td></tr>`;
     const cliMeta = [cliente.contacto, cliente.tel, cliente.email].filter(Boolean).map(esc).join(" &nbsp;·&nbsp; ");
     const cliBlock = (cliente.nombre || cliMeta)
       ? `<div class="cli"><span class="cli-name">${esc(cliente.nombre)}${cliente.empresa ? " · " + esc(cliente.empresa) : ""}</span>${cliMeta ? `<span class="cli-meta">${cliMeta}</span>` : ""}</div>`
       : "";
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${L.t} — ${esc(so.salesorder_number)}</title><style>
-      body{font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1a1d21;max-width:720px;margin:24px auto;padding:0 24px}
+    const billBlock = (rfc || billAddr) ? `<div class="bill"><b>${L.billing}:</b> ${esc(so.customer_name)}${rfc ? " · RFC " + esc(rfc) : ""}${billAddr ? " · " + esc(billAddr) : ""}</div>` : "";
+    const filename = `${L.t} - ${so.salesorder_number}.pdf`;
+    const inclPaid = `<span style="font-weight:400;font-size:10px;color:#6b7280"> ${L.inclIva}</span>`;
+    const inclDue = `<span style="font-weight:400;font-size:10px"> ${L.inclIva}</span>`;
+    const contenido = `
+<div class="head"><img src="${LOGO_ISO}" alt="Innovación Solar"/><div class="co"><b>${EMP.nombre}</b><br>${EMP.dir}<br>${L.phone}: ${EMP.tel} · ${EMP.web}</div></div>
+<h1>${L.t}</h1><p class="sub">${L.reportDate}: ${hoy()}</p>
+<div class="row"><div><p class="k">${L.proj}</p><p class="v">${esc(so.reference_number) || "—"}</p></div><div><p class="k">${L.ov}</p><p class="v">${esc(so.salesorder_number)}</p></div><div><p class="k">${L.date}</p><p class="v">${esc(so.date) || "—"}</p></div><div><p class="k">${L.currency}</p><p class="v">${esc(cur)}</p></div>${salesEng ? `<div><p class="k">${L.salesEng}</p><p class="v">${esc(salesEng)}</p></div>` : ""}</div>
+${cliBlock}
+${billBlock}
+<div class="box"><div style="display:flex;justify-content:space-between;align-items:baseline"><p class="k" style="margin-top:0">${L.contr}</p><p class="k" style="margin-top:0">${L.confirmed}: <span style="color:#1a1d21;font-weight:600">${esc(confirmedDate) || "—"}</span></p></div><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
+<p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${L.amount}</th><th>${L.pmode}</th><th>${L.account}</th><th>${L.pref}</th></tr></thead><tbody>${filas}</tbody></table>
+<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}${inclPaid}</span><span class="tot">${fmt(totalPagado)} ${cur}</span></div>
+${porPagar >= 0
+  ? `<div class="box duebox" style="display:flex;justify-content:space-between"><span class="tot due">${L.due}${inclDue}</span><span class="tot due">${fmt(porPagar)} ${cur}</span></div>`
+  : `<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot" style="color:#047857">${L.credit}${inclPaid}</span><span class="tot" style="color:#047857">${fmt(-porPagar)} ${cur}</span></div>`}
+<div class="foot">${EMP.nombre} · ${EMP.dir} · ${L.phone}: ${EMP.tel} · ${EMP.web}</div>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(filename)}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"><\/script>
+<style>
+      body{font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1a1d21;background:#eef1f0;margin:0;padding:18px}
+      #report{max-width:720px;margin:0 auto;background:#fff;padding:26px 30px;border-radius:8px}
       .head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #047857;padding-bottom:12px}
       .head img{height:42px}
       .co{text-align:right;font-size:10px;color:#6b7280;line-height:1.5}
@@ -2416,12 +2440,11 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
       .sub{color:#6b7280;font-size:11px;margin:0 0 8px}
       .k{color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}
       .v{font-size:14px;font-weight:600}
-      .row{display:flex;gap:32px;flex-wrap:wrap}
+      .row{display:flex;gap:28px;flex-wrap:wrap}
       .box{background:#f6faf8;border:1px solid #e3efe9;border-radius:10px;padding:12px 16px;margin:12px 0}
       table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
       th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left}
       th{font-size:10px;text-transform:uppercase;color:#6b7280}
-      .ck{color:#6b7280;width:130px}.cv{font-weight:600}
       .tot{font-size:15px;font-weight:700}
       .paidbox{background:#ecfdf5;border-color:#a7f3d0}
       .duebox{background:#fef2f2;border-color:#fecaca}.due{color:#b91c1c}
@@ -2429,26 +2452,25 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
       .cli{margin:6px 0 2px;font-size:11px}
       .cli-name{font-weight:600;font-size:12px;color:#1a1d21}
       .cli-meta{color:#6b7280;margin-left:10px}
-      @page{margin:0}
-      @media print{ body{margin:14mm auto} }
-    </style></head><body>
-<div class="head"><img src="${LOGO_ISO}" alt="Innovación Solar"/><div class="co"><b>${EMP.nombre}</b><br>${EMP.dir}<br>${L.phone}: ${EMP.tel} · ${EMP.web}</div></div>
-<h1>${L.t}</h1><p class="sub">${L.reportDate}: ${hoy()}</p>
-<div class="row"><div><p class="k">${L.proj}</p><p class="v">${esc(so.reference_number) || "—"}</p></div><div><p class="k">${L.ov}</p><p class="v">${esc(so.salesorder_number)}</p></div><div><p class="k">${L.date}</p><p class="v">${esc(so.date) || "—"}</p></div><div><p class="k">${L.currency}</p><p class="v">${esc(cur)}</p></div></div>
-${cliBlock}
-<div class="box"><div style="display:flex;justify-content:space-between;align-items:baseline"><p class="k" style="margin-top:0">${L.contr}</p><p class="k" style="margin-top:0">${L.confirmed}: <span style="color:#1a1d21;font-weight:600">${esc(confirmedDate) || "—"}</span></p></div><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
-<p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${L.amount}</th><th>${L.pmode}</th><th>${L.pref}</th><th>${L.psrc}</th></tr></thead><tbody>${filas}</tbody></table>
-<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}</span><span class="tot">${fmt(totalPagado)} ${cur}</span></div>
-${porPagar >= 0
-  ? `<div class="box duebox" style="display:flex;justify-content:space-between"><span class="tot due">${L.due}</span><span class="tot due">${fmt(porPagar)} ${cur}</span></div>`
-  : `<div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot" style="color:#047857">${L.credit}</span><span class="tot" style="color:#047857">${fmt(-porPagar)} ${cur}</span></div>`}
-<div class="foot">${EMP.nombre} · ${EMP.dir} · ${L.phone}: ${EMP.tel} · ${EMP.web}</div>
+      .bill{font-size:11px;color:#4b5563;margin:2px 0 4px}
+      #status{max-width:720px;margin:10px auto 0;text-align:center;color:#6b7280;font-size:12px}
+      @media print{ #status{display:none} @page{margin:12mm} body{background:#fff;padding:0} #report{box-shadow:none} }
+</style></head><body>
+<div id="report">${contenido}</div>
+<p id="status">${L.gen}</p>
+<script>
+      window.addEventListener('load', function () {
+        var el = document.getElementById('report'), s = document.getElementById('status');
+        var opt = { margin: [10, 10, 12, 10], filename: ${JSON.stringify(filename)}, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }, pagebreak: { mode: ['css', 'legacy'] } };
+        if (window.html2pdf) {
+          window.html2pdf().set(opt).from(el).save().then(function () { s.textContent = ${JSON.stringify(L.ready)}; }).catch(function () { window.print(); });
+        } else { setTimeout(function () { window.print(); }, 400); }
+      });
+<\/script>
 </body></html>`;
-    const w = window.open("", "_blank", "width=820,height=1000");
+    const w = window.open("", "_blank", "width=880,height=1000");
     if (!w) { setAviso({ t: "err", m: "El navegador bloqueó la ventana. Permite pop-ups para generar el PDF." }); return; }
     w.document.write(html); w.document.close(); w.focus();
-    // Esperamos a que el logo cargue antes de imprimir
-    setTimeout(() => w.print(), 800);
   };
 
   return (
@@ -2546,6 +2568,38 @@ ${porPagar >= 0
               <div className="p-3"><p className="text-[10px] uppercase tracking-widest text-emerald-700">Entregado a la fecha</p><p className="text-sm font-semibold font-mono text-emerald-800">${mx0(entregadoGoods)}</p></div>
               <div className="p-3"><p className="text-[10px] uppercase tracking-widest text-amber-700">Pendiente por entregar</p><p className="text-sm font-semibold font-mono text-amber-800">${mx0(pendienteGoods)}</p></div>
             </div>
+            {goodsLines.length > 0 && (
+              <div className="px-3 pt-2 pb-1 border-t border-stone-100">
+                <button onClick={() => setVerEntrega((v) => !v)} className="text-xs font-medium text-emerald-700 hover:text-emerald-800">
+                  {verEntrega ? "▾ Ocultar detalle de lo entregado" : "▸ Mostrar detalle de lo entregado"}
+                </button>
+                {verEntrega && (
+                  <div className="mt-2 overflow-x-auto border border-stone-200 rounded-lg">
+                    <table className="w-full text-xs min-w-[620px]">
+                      <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
+                        <th className="text-left px-3 py-2">SKU</th><th className="text-left px-3 py-2">Descripción</th><th className="text-right px-3 py-2">Entregado</th><th className="text-right px-3 py-2">Costo unit.</th><th className="text-right px-3 py-2">Subtotal</th>
+                      </tr></thead>
+                      <tbody>
+                        {goodsLines.filter((l) => (+l.quantity_delivered || 0) > 0).length === 0
+                          ? <tr><td colSpan="5" className="text-center text-stone-400 py-4">Aún no se ha entregado equipo/material a este proyecto.</td></tr>
+                          : goodsLines.filter((l) => (+l.quantity_delivered || 0) > 0).map((l, i) => {
+                              const q = +l.quantity_delivered || 0, cu = costoUnit(l), sinCat = !(cat[l.sku] && +cat[l.sku].costoVigente > 0);
+                              return (
+                                <tr key={l.line_item_id || i} className="border-b border-stone-100">
+                                  <td className="px-3 py-1.5 font-mono">{l.sku}</td>
+                                  <td className="px-3 py-1.5">{l.name}{sinCat ? <span className="text-amber-600 text-[10px]"> · precio OV</span> : null}</td>
+                                  <td className="px-3 py-1.5 text-right font-mono">{q}{(+l.quantity || 0) > q ? <span className="text-stone-400"> / {l.quantity}</span> : null}</td>
+                                  <td className="px-3 py-1.5 text-right font-mono">${mx(cu)}</td>
+                                  <td className="px-3 py-1.5 text-right font-mono">${mx(q * cu)}</td>
+                                </tr>
+                              );
+                            })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
             <p className="px-3 pb-2 pt-1 text-[11px] text-stone-400">Costo = <b>costo promedio del SKU</b> (de tu módulo de Costos) × cantidad, convertido a la moneda de la OV. {skusConCosto}/{goodsLines.length} SKU con costo en catálogo; los que faltan usan el precio de la OV como respaldo. En proyectos <b>abiertos</b>, "entregado" = lo surtido de almacén hasta hoy; en <b>cerrados</b>, el total depurado. La utilidad estimada usa el <b>ordenado</b>.</p>
           </div>
 
