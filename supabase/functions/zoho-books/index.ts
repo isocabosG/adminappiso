@@ -15,7 +15,14 @@ const CORS = {
 const ACCOUNTS = "https://accounts.zoho.com";
 const API = "https://www.zohoapis.com/books/v3";
 
-async function getAccessToken() {
+// Caché del access token entre invocaciones. Las instancias "calientes" de la
+// función lo reutilizan, así NO le pedimos un token nuevo a Zoho en cada llamada.
+// El token de Zoho dura ~1h; solo lo renovamos cuando le queda poco. Esto evita
+// el bloqueo "too many requests" cuando el dashboard pagina varios proyectos.
+let tokenCache: { token: string; exp: number } | null = null;
+let refreshing: Promise<string> | null = null;
+
+async function pedirTokenAZoho(): Promise<string> {
   const id = Deno.env.get("ZOHO_CLIENT_ID");
   const secret = Deno.env.get("ZOHO_CLIENT_SECRET");
   const refresh = Deno.env.get("ZOHO_REFRESH_TOKEN");
@@ -31,7 +38,18 @@ async function getAccessToken() {
   const r = await fetch(`${ACCOUNTS}/oauth/v2/token?${params}`, { method: "POST" });
   const j = await r.json();
   if (!j.access_token) throw new Error("No se pudo renovar el token de Zoho: " + JSON.stringify(j));
+  const durMs = (j.expires_in ? Number(j.expires_in) : 3600) * 1000;
+  tokenCache = { token: j.access_token, exp: Date.now() + durMs };
   return j.access_token;
+}
+
+async function getAccessToken() {
+  // Reutiliza el token en caché si aún le queda más de 2 min de vida.
+  if (tokenCache && tokenCache.exp > Date.now() + 120_000) return tokenCache.token;
+  // Si ya hay una renovación en curso, esperamos esa misma (no disparamos varias).
+  if (refreshing) return refreshing;
+  refreshing = pedirTokenAZoho().finally(() => { refreshing = null; });
+  return refreshing;
 }
 
 Deno.serve(async (req) => {
