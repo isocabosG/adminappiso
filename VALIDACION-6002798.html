@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Validación pedimento 6002798 — INNOVACIÓN SOLAR</title>
+<style>
+  :root{
+    --ink:#1a1d21; --muted:#6b7280; --line:#e5e7eb; --bg:#f7f8fa; --card:#ffffff;
+    --ok:#0f9d58; --okbg:#e7f6ee; --bad:#d93636; --badbg:#fdecec; --warn:#b8860b; --warnbg:#fbf3e0;
+    --accent:#e8791a; --accentbg:#fef1e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 22px 60px}
+  header{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:26px}
+  .kick{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-size:25px;margin:6px 0 3px;font-weight:700}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:17px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+  .explain{background:var(--accentbg);border:1px solid #f3cfa8;border-radius:12px;padding:18px 20px;margin-bottom:18px}
+  .explain h3{margin:0 0 10px;font-size:15px;color:#9a4f10}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:2px solid var(--line)}
+  .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+  .strike{color:var(--bad);text-decoration:line-through;opacity:.8}
+  .good{color:var(--ok);font-weight:700}
+  .badcell{background:var(--badbg)}
+  .okcell{background:var(--okbg)}
+  tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:none;padding-top:11px}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;vertical-align:middle}
+  .pill.ok{background:var(--okbg);color:var(--ok)}
+  .pill.bad{background:var(--badbg);color:var(--bad)}
+  .pill.warn{background:var(--warnbg);color:var(--warn)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin:2px 0 20px}
+  .legend b{color:var(--ink)}
+  .diagram{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#0e1116;color:#d7dbe0;
+    border-radius:10px;padding:16px 18px;overflow-x:auto;line-height:1.7;margin:12px 0}
+  .diagram .hl-kg{color:#ff8a5c;font-weight:700}
+  .diagram .hl-fob{color:#57d38c;font-weight:700}
+  .diagram .lbl{color:#8b95a3}
+  .note{font-size:12.5px;color:var(--muted);margin-top:8px}
+  ul.clean{margin:8px 0 0;padding-left:20px}
+  ul.clean li{margin:6px 0;font-size:13.5px}
+  .recon{background:#0e1116;color:#d7dbe0;border-radius:10px;padding:16px 18px;font-family:ui-monospace,Menlo,monospace;font-size:13px;line-height:1.9}
+  .recon .g{color:#57d38c;font-weight:700}
+  .recon .o{color:#ff8a5c}
+  code{background:#eef0f3;padding:1px 6px;border-radius:5px;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="kick">INNOVACIÓN SOLAR · AdminAppISO</div>
+  <h1>Validación de extracción — Pedimento 26 40 3965 6002798</h1>
+  <div class="sub">Renon Energy · Importación definitiva A1 · Pagado 22-jun-2026 · TC 17.3688 &nbsp;|&nbsp; Cotización Perezgrovas 6002798</div>
+</header>
+
+<div class="explain">
+  <h3>Por qué no te cuadran los números: el pedimento pone 3 renglones de cifras por partida</h3>
+  <p style="margin:0 0 6px;font-size:13.5px">Para <b>cada</b> partida, el anexo del pedimento trae dos líneas. La app se llevó el número equivocado de la primera línea. Así se lee la <b>Partida 1</b> tal cual viene en el PDF:</p>
+  <div class="diagram">
+1&nbsp;&nbsp;85076001&nbsp;&nbsp;...&nbsp;&nbsp;<span class="lbl">cant.pzas→</span>18.000&nbsp;&nbsp;1&nbsp;&nbsp;<span class="hl-kg">4555.87800</span>&nbsp;&nbsp;CHN CHN&nbsp;&nbsp;IVA...&nbsp;&nbsp;209797
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="lbl">val.aduana→</span>1300827&nbsp;&nbsp;&nbsp;<span class="lbl">precio pagado→</span>1258160&nbsp;&nbsp;&nbsp;<span class="lbl">precio unit.→</span>69897.77778
+  </div>
+  <ul class="clean" style="margin-top:4px">
+    <li><span class="hl-kg" style="color:#c0470f">4555.878</span> = <b>kilos netos</b> de la partida (cantidad UMT). <b>Esto es lo que la app metió como “FOB U. USD” — y ahí está el error.</b></li>
+    <li><b>1,258,160</b> = precio pagado <b>en pesos</b>. Entre TC 17.3688 = <b>72,437.94 USD</b> → es la factura Renon RN‑26012201JFA. Ese ÷ 18 pzas = <b class="good">4,024.33 USD</b> = el FOB unitario correcto.</li>
+    <li>Los kilos (4,555.878) en realidad van en la columna <b>PESO U. KG</b>, que en la app quedó vacía. O sea: se intercambiaron las dos columnas.</li>
+  </ul>
+</div>
+
+<h2>1 · Encabezado</h2>
+<div class="card">
+<table>
+  <thead><tr><th>Campo</th><th>En el pedimento</th><th>En la app</th><th>Estado</th></tr></thead>
+  <tbody>
+    <tr><td>Número</td><td class="num">26 40 3965 6002798</td><td class="num">26 40 3965 6002798</td><td><span class="pill ok">OK</span></td></tr>
+    <tr><td>Tipo de cambio</td><td class="num">17.36880</td><td class="num">17.3688</td><td><span class="pill ok">OK</span></td></tr>
+    <tr><td>Fecha de pago</td><td class="num">22/06/2026</td><td class="num">22/06/2026</td><td><span class="pill ok">OK</span></td></tr>
+  </tbody>
+</table>
+<p class="note">Nota: la cotización trae TC 17.49 (estimado de Perezgrovas). La app usó bien el 17.3688 <b>oficial del pedimento</b>. Correcto.</p>
+</div>
+
+<h2>2 · Partidas — mercancía FOB</h2>
+<div class="legend">
+  <span><b class="strike">tachado rojo</b> = lo que puso la app (kilos)</span>
+  <span><b class="good">verde</b> = FOB unitario correcto</span>
+  <span><b>Peso kg</b> = va en la columna que quedó vacía</span>
+</div>
+<div class="card" style="overflow-x:auto">
+<table>
+  <thead><tr>
+    <th>#</th><th>Descripción</th><th>Cant.</th>
+    <th>Precio pagado (MXN)</th><th>FOB partida USD</th>
+    <th>FOB U. USD app</th><th>FOB U. USD correcto</th><th>Peso kg (→PESO)</th>
+  </tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td><td>XTREME HV</td><td class="num">18</td>
+      <td class="num">1,258,160</td><td class="num">72,437.94</td>
+      <td class="num strike">4,555.878</td><td class="num good">4,024.33</td><td class="num">4,555.878</td>
+    </tr>
+    <tr>
+      <td>2</td><td>Almacenamiento (incluye baterías)</td><td class="num">4</td>
+      <td class="num">873,721</td><td class="num">50,304.08</td>
+      <td class="num strike">4,579.991</td><td class="num good">12,576.02</td><td class="num">4,579.991</td>
+    </tr>
+    <tr>
+      <td>3</td><td>Almacenamiento (incluye baterías)</td><td class="num">4</td>
+      <td class="num">873,721</td><td class="num">50,304.08</td>
+      <td class="num strike">4,579.991</td><td class="num good">12,576.02</td><td class="num">4,579.991</td>
+    </tr>
+    <tr>
+      <td>4</td><td>XTREME LV 1.0</td><td class="num">21</td>
+      <td class="num">1,214,655</td><td class="num">69,933.15</td>
+      <td class="num strike">5,064.101</td><td class="num good">3,330.15</td><td class="num">5,064.101</td>
+    </tr>
+    <tr>
+      <td>5</td><td>Baterías recargables Li‑ion</td><td class="num">20</td>
+      <td class="num">615,099</td><td class="num">35,414.00</td>
+      <td class="num strike">1,442.423</td><td class="num good">1,770.70</td><td class="num">1,442.423</td>
+    </tr>
+  </tbody>
+  <tfoot>
+    <tr><td colspan="3">Totales</td><td class="num">4,835,356</td><td class="num">278,393.25</td><td></td><td></td><td class="num">20,222.38</td></tr>
+  </tfoot>
+</table>
+<p class="note"><b>Prueba de que se lee bien:</b> la suma del precio pagado = 4,835,356 MXN = el “valor comercial” del pedimento; ÷ TC = 278,393.25 USD = exacto a la suma de las 5 facturas Renon. ✔</p>
+</div>
+
+<h2>3 · Incrementables</h2>
+<div class="card" style="overflow-x:auto">
+<table>
+  <thead><tr><th>Concepto</th><th>Fuente</th><th>App puso</th><th>Correcto</th><th>Estado</th></tr></thead>
+  <tbody>
+    <tr class="badcell"><td>Flete internacional → San Diego</td><td>Pedimento (FLETES)</td><td class="num">133,198 <b>USD</b></td><td class="num">133,198 <b>MXN</b></td><td><span class="pill bad">Moneda</span></td></tr>
+    <tr class="badcell"><td>Cruce San Diego → Tijuana</td><td>Cotización</td><td class="num strike">648 USD</td><td class="num good">891 USD / 15,583 MXN</td><td><span class="pill bad">Valor</span></td></tr>
+    <tr class="okcell"><td>DTA</td><td>Pedimento (liquidación)</td><td class="num">39,995 MXN</td><td class="num">39,995 MXN</td><td><span class="pill ok">OK</span></td></tr>
+    <tr class="okcell"><td>IGI</td><td>Pedimento</td><td class="num">— (vacío)</td><td class="num">0 (tasa 0%)</td><td><span class="pill ok">OK</span></td></tr>
+    <tr class="okcell"><td>Prevalidación</td><td>Pedimento (PRV)</td><td class="num">330 MXN</td><td class="num">330 MXN</td><td><span class="pill ok">OK</span></td></tr>
+    <tr class="badcell"><td>Honorarios + servicios agente</td><td>Cotización</td><td class="num">— (vacío)</td><td class="num good">29,747 MXN</td><td><span class="pill bad">Falta</span></td></tr>
+    <tr><td>Cuenta de Gastos Americana (ICC)</td><td>Pedimento (otros) / Cotiz.</td><td class="num">30,778 MXN</td><td class="num">30,778 MXN <span style="color:var(--muted)">(cotiz. 30,991)</span></td><td><span class="pill warn">Menor</span></td></tr>
+    <tr class="okcell"><td>IVA de importación</td><td>Pedimento</td><td class="num">806,291 MXN · No capitaliza</td><td class="num">806,291 MXN · No capitaliza</td><td><span class="pill ok">OK</span></td></tr>
+    <tr><td>Flete Tijuana → Los Cabos</td><td>Estimado (no en docs)</td><td class="num">20,000 MXN</td><td class="num">estimado manual</td><td><span class="pill warn">Estim.</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>4 · La cuenta que confirma todo</h2>
+<div class="recon">
+&nbsp;&nbsp;Valor comercial (FOB)&nbsp;&nbsp;&nbsp;<span class="g">4,835,356</span>&nbsp;MXN&nbsp;&nbsp;<span style="color:#8b95a3">(suma de las 5 partidas)</span><br>
++&nbsp;Fletes (incrementable)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="o">133,198</span>&nbsp;MXN&nbsp;&nbsp;<span style="color:#8b95a3">← NO son USD</span><br>
++&nbsp;Otros incrementables (ICC)&nbsp;&nbsp;&nbsp;<span class="o">30,778</span>&nbsp;MXN<br>
+&nbsp;&nbsp;──────────────────────────────────<br>
+=&nbsp;Valor en aduana&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="g">4,999,333</span>&nbsp;MXN&nbsp;&nbsp;✔ cuadra exacto con el pedimento
+</div>
+<p class="note">Si el flete fuera USD, esta suma se dispararía a millones y el valor en aduana no cerraría. Por eso sabemos con certeza que 133,198 está en pesos.</p>
+
+<h2>Resumen</h2>
+<div class="card">
+<ul class="clean">
+  <li><b>Encabezado y cantidades:</b> perfectos.</li>
+  <li><b>Error grande:</b> la app intercambió <b>FOB unitario ↔ peso kg</b> en las 5 partidas. El FOB quedó con los kilos.</li>
+  <li><b>Incrementables:</b> flete internacional marcado USD debe ser <b>MXN</b>; cruce SD‑TJ debe ser <b>891 USD</b> (no 648); faltan los <b>honorarios 29,747 MXN</b>.</li>
+  <li><b>La raíz</b> es el prompt de la IA: hay que enseñarle a mapear las columnas del anexo (piezas → cant, precio pagado÷TC → FOB, cantidad UMT → peso) y a tratar los incrementables del pedimento como pesos.</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>

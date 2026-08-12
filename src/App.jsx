@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
-import { LOGO_ISO } from "./logoISO.js";
+import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 
 function extraerJSON(txt) {
   if (!txt || !txt.trim()) throw new Error("la IA devolvió una respuesta vacía");
@@ -1933,6 +1933,17 @@ function App() {
   const [tcFix, setTcFix] = useState(null);
   const [proyData, setProyData] = useState(null);   // datos propios por proyecto: contratado override + pagos manuales
   const [aviso, setAviso] = useState(null);
+  const [dark, setDark] = useState(false);
+
+  // Modo oscuro: la clase 'dark' en <html> y la persistencia (por dispositivo) las maneja
+  // un script en index.html (window.__isoTheme). Aquí solo reflejamos/alternamos.
+  useEffect(() => { setDark(document.documentElement.classList.contains("dark")); }, []);
+  const toggleDark = () => {
+    let on;
+    if (window.__isoTheme) { on = window.__isoTheme.toggle(); }
+    else { const el = document.documentElement; el.classList.toggle("dark"); on = el.classList.contains("dark"); }
+    setDark(on);
+  };
 
   /* ---- carga inicial + semilla (blindada contra datos viejos) ---- */
   useEffect(() => {
@@ -1985,13 +1996,13 @@ function App() {
       <header className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-emerald-600 text-white shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
-            <span className="grid place-items-center w-8 h-8 rounded-lg bg-white/15 ring-1 ring-white/25 text-lg leading-none">☀️</span>
+            <img src={LEAF_WHITE} alt="Innovación Solar" className="h-8 w-auto" />
             <div>
               <h1 className="text-base font-semibold tracking-tight">AdminAppISO</h1>
               <p className="text-[10px] font-mono tracking-[0.2em] text-emerald-200">INNOVACIÓN SOLAR</p>
             </div>
           </div>
-          <nav className="flex gap-1">
+          <nav className="flex items-center gap-1">
             {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
@@ -1999,6 +2010,8 @@ function App() {
                 {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
             ))}
+            <button onClick={toggleDark} title="Modo claro/oscuro" aria-label="Modo claro/oscuro"
+              className="ml-1 grid place-items-center w-8 h-8 rounded text-emerald-50 hover:bg-white/15 text-base leading-none">{dark ? "☀️" : "🌙"}</button>
           </nav>
         </div>
       </header>
