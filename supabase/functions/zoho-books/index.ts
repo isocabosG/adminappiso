@@ -4,6 +4,7 @@
 // Credenciales OAuth guardadas como secretos de Supabase:
 //   ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN, ZOHO_ORG_ID
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { encodeBase64 } from "jsr:@std/encoding/base64";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -64,13 +65,16 @@ Deno.serve(async (req) => {
 
     const token = await getAccessToken();
 
-    const { purchaseorder_id, salesorder_id, ...restParams } = params;
-    let path, qsParams = params;
+    const { purchaseorder_id, salesorder_id, invoice_id, document_id, ...restParams } = params;
+    let path, qsParams = params, binary = false;
     if (action === "list_purchase_orders") { path = "/purchaseorders"; }
     else if (action === "get_purchase_order") { path = `/purchaseorders/${purchaseorder_id}`; qsParams = restParams; } // trae line_items (SKU + cantidad)
     else if (action === "list_sales_orders") { path = "/salesorders"; } // proyectos
     else if (action === "get_sales_order") { path = `/salesorders/${salesorder_id}`; qsParams = restParams; } // trae line_items, payments[], invoices[], cf_proyecto
     else if (action === "list_items") { path = "/items"; } // inventario: stock_on_hand + purchase_rate por SKU
+    else if (action === "get_so_attachment") { path = `/salesorders/${salesorder_id}/attachment`; qsParams = document_id ? { document_id } : {}; binary = true; } // contrato/adjunto del proyecto
+    else if (action === "get_so_pdf") { path = `/salesorders/${salesorder_id}`; qsParams = { accept: "pdf" }; binary = true; }        // OV en PDF
+    else if (action === "get_invoice_pdf") { path = `/invoices/${invoice_id}`; qsParams = { accept: "pdf" }; binary = true; }         // factura en PDF
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 
@@ -78,6 +82,15 @@ Deno.serve(async (req) => {
     const r = await fetch(`${API}${path}?${qs}`, {
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
     });
+    if (binary) {
+      // Zoho devuelve el archivo binario; lo mandamos en base64 para que el frontend lo abra/descargue.
+      if (!r.ok) {
+        const t = await r.text();
+        return new Response(JSON.stringify({ error: "Zoho no devolvió el archivo (" + r.status + "): " + t.slice(0, 180) }), { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+      }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      return new Response(JSON.stringify({ base64: encodeBase64(buf), contentType: r.headers.get("content-type") || "application/octet-stream" }), { status: 200, headers: { ...CORS, "Content-Type": "application/json" } });
+    }
     const data = await r.json();
     return new Response(JSON.stringify(data), {
       status: r.status,

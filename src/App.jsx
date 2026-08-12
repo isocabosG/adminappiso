@@ -2329,6 +2329,23 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
   const [nuevoCosto, setNuevoCosto] = useState({ fecha: hoy(), tipo: "Flete", concepto: "", monto: "" });
   const [verEntrega, setVerEntrega] = useState(false);
+  const [docCargando, setDocCargando] = useState("");
+  // Abre (o descarga) un archivo de Zoho (contrato/adjunto o PDF de factura/OV) vía la Edge Function.
+  const abrirDoc = async (payload, nombre, descargar) => {
+    if (typeof window.zohoBooks !== "function") { setAviso({ t: "err", m: "La conexión a Zoho no está disponible en esta versión." }); return; }
+    setDocCargando(nombre + (descargar ? "·d" : "·v"));
+    try {
+      const d = await window.zohoBooks(payload);
+      if (!d || !d.base64) throw new Error("el archivo llegó vacío");
+      const bytes = Uint8Array.from(atob(d.base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: d.contentType || "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      if (descargar) { const a = document.createElement("a"); a.href = url; a.download = nombre || "documento"; document.body.appendChild(a); a.click(); a.remove(); }
+      else { window.open(url, "_blank"); }
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { setAviso({ t: "err", m: "No se pudo abrir el archivo: " + (e.message || e) }); }
+    setDocCargando("");
+  };
 
   useEffect(() => {
     (async () => {
@@ -2545,6 +2562,44 @@ ${porPagar >= 0
         {cliente.email && <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Correo</p><p className="text-sm font-medium">{cliente.email}</p></div>}
         <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Orden de venta</p><p className="text-sm font-medium font-mono">{so.salesorder_number}</p></div>
         <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Moneda</p><p className="text-sm font-medium">{cur}</p></div>
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-lg p-4">
+        <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-2">Documentos y facturas</p>
+        <div className="space-y-1">
+          {(so.documents && so.documents.length ? so.documents : (so.has_attachment ? [{ file_name: so.attachment_name || "Adjunto", document_id: "" }] : [])).map((doc, i) => {
+            const nm = doc.file_name || "Adjunto";
+            return (
+              <div key={"doc" + i} className="flex items-center justify-between gap-2 py-1 border-b border-stone-100 last:border-0">
+                <div className="min-w-0"><p className="text-sm text-stone-700 truncate">📎 {nm}</p>{doc.file_size_formatted ? <p className="text-[10px] text-stone-400">{doc.file_size_formatted}{doc.uploaded_by ? ` · ${doc.uploaded_by}` : ""}</p> : null}</div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => abrirDoc({ action: "get_so_attachment", params: { salesorder_id: so.salesorder_id, document_id: doc.document_id } }, nm, false)} disabled={docCargando === nm + "·v"} className="px-2.5 py-1 text-xs rounded border border-stone-300 hover:border-emerald-400 disabled:opacity-40">{docCargando === nm + "·v" ? "…" : "Ver"}</button>
+                  <button onClick={() => abrirDoc({ action: "get_so_attachment", params: { salesorder_id: so.salesorder_id, document_id: doc.document_id } }, nm, true)} disabled={docCargando === nm + "·d"} className="px-2.5 py-1 text-xs rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">{docCargando === nm + "·d" ? "…" : "Descargar"}</button>
+                </div>
+              </div>
+            );
+          })}
+          {(so.invoices || []).map((inv, i) => {
+            const nm = (inv.invoice_number || "Factura") + ".pdf";
+            return (
+              <div key={"inv" + i} className="flex items-center justify-between gap-2 py-1 border-b border-stone-100 last:border-0">
+                <div className="min-w-0"><p className="text-sm text-stone-700">🧾 {inv.invoice_number}</p><p className="text-[10px] text-stone-400">${mx(+inv.total || 0)} · saldo ${mx(+inv.balance || 0)}</p></div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => abrirDoc({ action: "get_invoice_pdf", params: { invoice_id: inv.invoice_id } }, nm, false)} disabled={docCargando === nm + "·v"} className="px-2.5 py-1 text-xs rounded border border-stone-300 hover:border-emerald-400 disabled:opacity-40">{docCargando === nm + "·v" ? "…" : "Ver PDF"}</button>
+                  <button onClick={() => abrirDoc({ action: "get_invoice_pdf", params: { invoice_id: inv.invoice_id } }, nm, true)} disabled={docCargando === nm + "·d"} className="px-2.5 py-1 text-xs rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">{docCargando === nm + "·d" ? "…" : "Descargar"}</button>
+                </div>
+              </div>
+            );
+          })}
+          <div className="flex items-center justify-between gap-2 py-1">
+            <p className="text-sm text-stone-700">📋 Orden de venta (PDF)</p>
+            <div className="flex gap-1 shrink-0">
+              <button onClick={() => abrirDoc({ action: "get_so_pdf", params: { salesorder_id: so.salesorder_id } }, so.salesorder_number + ".pdf", false)} disabled={docCargando === so.salesorder_number + ".pdf·v"} className="px-2.5 py-1 text-xs rounded border border-stone-300 hover:border-emerald-400 disabled:opacity-40">{docCargando === so.salesorder_number + ".pdf·v" ? "…" : "Ver"}</button>
+              <button onClick={() => abrirDoc({ action: "get_so_pdf", params: { salesorder_id: so.salesorder_id } }, so.salesorder_number + ".pdf", true)} disabled={docCargando === so.salesorder_number + ".pdf·d"} className="px-2.5 py-1 text-xs rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">{docCargando === so.salesorder_number + ".pdf·d" ? "…" : "Descargar"}</button>
+            </div>
+          </div>
+          {(!so.documents || !so.documents.length) && !so.has_attachment && !(so.invoices || []).length ? <p className="text-xs text-stone-400 pt-1">Sin contratos ni facturas adjuntos en Zoho (puedes ver la OV en PDF arriba).</p> : null}
+        </div>
       </div>
 
       <Section n="1" t="Contratado" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${cerrado ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{cerrado ? "Cerrado" : "Abierto"}</span>}>
