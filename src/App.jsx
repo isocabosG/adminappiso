@@ -2211,7 +2211,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo }) {
         page++;
       }
       // guarda solo los campos que la lista necesita (para no inflar el cache)
-      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, company_name: s.company_name, date: s.date, total: s.total, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status }));
+      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, company_name: s.company_name, date: s.date, total: s.total, bcy_total: s.bcy_total, currency_code: s.currency_code, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status }));
       const fecha = hoy();
       setSos(slim); setFechaRefresh(fecha);
       try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim })); } catch {}
@@ -2249,9 +2249,18 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo }) {
     }
     return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q) || (s.company_name || "").toLowerCase().includes(q);
   });
+  const filtrando = filtros.length > 0 || !!q;
+  const totalValor = rows.reduce((a, s) => a + (+s.bcy_total || +s.total || 0), 0); // en MXN (base)
 
   return (
     <div className="space-y-4">
+      <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-lg px-4 py-3 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor total de proyectos{filtrando ? " (filtrados)" : ""}</p>
+          <p className="text-2xl font-bold font-mono leading-tight">${mx0(totalValor)} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+        </div>
+        <p className="text-xs text-emerald-100">{rows.length} proyecto{rows.length === 1 ? "" : "s"}{fechaRefresh ? ` · al ${fechaRefresh}` : ""}</p>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho (se refrescan solas 1 vez al día){fechaRefresh ? ` · última: ${fechaRefresh}` : ""}.</p></div>
         <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
@@ -3550,11 +3559,61 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const totalPzas = rows.reduce((s, [, a]) => s + (a.existencia || 0), 0);
   const bajo = rows.filter(([, a]) => (a.existencia || 0) <= 5).length;
 
+  // ---- Valor del inventario al día: stock actual (Zoho) × costo del SKU. Cache + refresco diario. ----
+  const [invVal, setInvVal] = useState(null);
+  const [invFecha, setInvFecha] = useState("");
+  const [invSkus, setInvSkus] = useState(0);
+  const [invCargando, setInvCargando] = useState(false);
+  const invRef = useRef(false);
+  const noConn = typeof window.zohoBooks !== "function";
+  const refrescarInv = async () => {
+    if (noConn) { setAviso({ t: "err", m: "La conexión a Zoho no está disponible en esta versión." }); return; }
+    if (invRef.current) return;
+    invRef.current = true; setInvCargando(true);
+    try {
+      let total = 0, skus = 0, page = 1, more = true;
+      while (more && page <= 30) {
+        const d = await window.zohoBooks({ action: "list_items", params: { per_page: "200", page: String(page), filter_by: "Status.Active" } });
+        for (const it of (d.items || [])) {
+          const stock = +it.stock_on_hand || 0;
+          if (stock <= 0) continue;
+          const cv = catalogo[it.sku] ? +catalogo[it.sku].costoVigente : NaN;      // costo promedio del SKU (tu módulo de Costos)
+          const costo = isFinite(cv) && cv > 0 ? cv : (+it.purchase_rate || 0);     // respaldo: costo de compra de Zoho
+          total += stock * costo; skus++;
+        }
+        more = d.page_context?.has_more_page; page++;
+      }
+      const fecha = hoy();
+      setInvVal(total); setInvFecha(fecha); setInvSkus(skus);
+      try { await window.storage?.set("iso3-inventario-cache", JSON.stringify({ fecha, total, skus })); } catch {}
+      setAviso({ t: "ok", m: `Inventario valuado: $${mx0(total)} MXN (${skus} SKU con existencia).` });
+    } catch (e) { setAviso({ t: "err", m: "No se pudo valuar el inventario: " + (e.message || e) }); }
+    invRef.current = false; setInvCargando(false);
+  };
+  useEffect(() => {
+    (async () => {
+      let cache = null;
+      try { const r = await window.storage?.get("iso3-inventario-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
+      if (cache && cache.total != null) { setInvVal(cache.total); setInvFecha(cache.fecha || ""); setInvSkus(cache.skus || 0); }
+      if ((!cache || cache.fecha !== hoy()) && !noConn) refrescarInv();
+    })();
+  }, []);
+
   if (modo === "recepcion")
     return <RecepcionCamara catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} onSalir={() => setModo("lista")} />;
 
   return (
     <div className="space-y-4">
+      <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-lg px-4 py-3 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor total del inventario (hoy)</p>
+          <p className="text-2xl font-bold font-mono leading-tight">{invVal == null ? "—" : `$${mx0(invVal)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-emerald-100">{invCargando ? "Valuando…" : (invFecha ? `al ${invFecha}${invSkus ? ` · ${invSkus} SKU` : ""}` : "sin datos")}</p>
+          <button onClick={refrescarInv} disabled={invCargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+        </div>
+      </div>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold">Inventario</h2>
