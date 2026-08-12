@@ -2395,7 +2395,15 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const pagosManual = (datos.pagos || []).map((p) => ({ ...p, monto: +p.monto || 0, origen: "Manual" }));
   const pagos = [...pagosZoho, ...pagosManual].sort((a, b) => ((a.fecha || "") < (b.fecha || "") ? -1 : 1));
   const totalPagado = pagos.reduce((a, b) => a + b.monto, 0);
-  const porPagar = conIva - totalPagado;
+  // Cobranza real: se rige por las FACTURAS (lo que el cliente debe), no por el total de la OV.
+  // En Zoho a veces la factura difiere de la OV (p. ej. la OV se depuró después de facturar).
+  const facturas = so.invoices || [];
+  const facturado = facturas.reduce((a, i) => a + (+i.total || 0), 0);
+  const saldoFact = facturas.reduce((a, i) => a + (+i.balance || 0), 0);
+  const hayFactura = facturas.length > 0 && facturado > 0;
+  const montoConIva = hayFactura ? facturado : conIva;              // lo efectivamente facturado (o la OV si no hay factura)
+  const porPagar = hayFactura ? saldoFact : (conIva - totalPagado); // saldo real de facturas
+  const difFacturaContrato = hayFactura ? facturado - conIva : 0;   // diferencia factura vs OV (informativa)
 
   const setDatos = (patch) => saveProyData({ ...proyData, [soId]: { ...datos, ...patch } });
   const agregarPago = () => {
@@ -2442,8 +2450,8 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const generarPDF = () => {
     const es = lang === "es";
     const L = es
-      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", salesEng: "Ingeniero de ventas", billing: "Datos de facturación", proj: "Proyecto", client: "Cliente", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", inclIva: "(incl. IVA 16%)", amount: "Monto", pmode: "Forma", account: "Cuenta", pref: "Referencia", confirmed: "Fecha de alta", none: "Sin pagos registrados", gen: "Generando PDF…", ready: "Listo — revisa tus Descargas. Ya puedes cerrar esta ventana." }
-      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", salesEng: "Sales engineer", billing: "Billing details", proj: "Project", client: "Client", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", inclIva: "(incl. 16% VAT)", amount: "Amount", pmode: "Method", account: "Account", pref: "Reference", confirmed: "Confirmed date", none: "No payments recorded", gen: "Generating PDF…", ready: "Done — check your Downloads. You can close this window." };
+      ? { t: "Estado de Pagos del Proyecto", reportDate: "Fecha del reporte", currency: "Moneda", salesEng: "Ingeniero de ventas", billing: "Datos de facturación", proj: "Proyecto", client: "Cliente", ov: "Orden de venta", date: "Fecha OV", subiva: "Sin IVA", iva: "IVA 16%", total: "Total con IVA", contr: "Contratado (Suministro e instalación)", pays: "Pagos aplicados", paid: "Total pagado", due: "Total por pagar", credit: "Saldo a favor", inclIva: "(incl. IVA 16%)", amount: "Monto", pmode: "Forma", account: "Cuenta", pref: "Referencia", confirmed: "Fecha de alta", facturado: "Facturado (con IVA)", none: "Sin pagos registrados", gen: "Generando PDF…", ready: "Listo — revisa tus Descargas. Ya puedes cerrar esta ventana." }
+      : { t: "Project Payment Status", reportDate: "Report date", currency: "Currency", salesEng: "Sales engineer", billing: "Billing details", proj: "Project", client: "Client", ov: "Sales order", date: "SO date", subiva: "Before tax", iva: "VAT 16%", total: "Total with tax", contr: "Contracted (Supply & installation)", pays: "Payments applied", paid: "Total paid", due: "Total due", credit: "Credit balance", inclIva: "(incl. 16% VAT)", amount: "Amount", pmode: "Method", account: "Account", pref: "Reference", confirmed: "Confirmed date", facturado: "Invoiced (with tax)", none: "No payments recorded", gen: "Generating PDF…", ready: "Done — check your Downloads. You can close this window." };
     const EMP = { nombre: "INNOVACIÓN SOLAR", dir: "KM 3.5 Carretera CSL–SJC, Cabo San Lucas, B.C.S. 23454, México", tel: "+52 624 105 94 78", web: "www.innovacionsolar.com" };
     const fmt = (n) => "$" + (isFinite(n) ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00");
     const esc = (s) => String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
@@ -2471,6 +2479,7 @@ ${cliBlock}
 ${billBlock}
 <div class="box"><div style="display:flex;justify-content:space-between;align-items:baseline"><p class="k" style="margin-top:0">${L.contr}</p><p class="k" style="margin-top:0">${L.confirmed}: <span style="color:#1a1d21;font-weight:600">${esc(confirmedDate) || "—"}</span></p></div><table><tr><td>${L.subiva}</td><td style="text-align:right">${fmt(contratadoBase)}</td></tr><tr><td>${L.iva}</td><td style="text-align:right">${fmt(conIva - contratadoBase)}</td></tr><tr><td class="tot">${L.total}</td><td style="text-align:right" class="tot">${fmt(conIva)}</td></tr></table></div>
 <p class="k">${L.pays}</p><table><thead><tr><th>${L.date}</th><th style="text-align:right">${L.amount}</th><th>${L.pmode}</th><th>${L.account}</th><th>${L.pref}</th></tr></thead><tbody>${filas}</tbody></table>
+${hayFactura && Math.abs(difFacturaContrato) > 1 ? `<div class="box" style="display:flex;justify-content:space-between"><span class="tot">${L.facturado}</span><span class="tot">${fmt(facturado)} ${cur}</span></div>` : ""}
 <div class="box paidbox" style="display:flex;justify-content:space-between"><span class="tot">${L.paid}${inclPaid}</span><span class="tot">${fmt(totalPagado)} ${cur}</span></div>
 ${porPagar >= 0
   ? `<div class="box duebox" style="display:flex;justify-content:space-between"><span class="tot due">${L.due}${inclDue}</span><span class="tot due">${fmt(porPagar)} ${cur}</span></div>`
@@ -2581,7 +2590,7 @@ ${porPagar >= 0
       <Section n="3" t="Resumen y reporte">
         <div className="p-4 space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado con IVA</p><p className="text-sm font-semibold font-mono">${mx0(conIva)}</p></div>
+            <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">{hayFactura ? "Facturado con IVA" : "Contratado con IVA"}</p><p className="text-sm font-semibold font-mono">${mx0(montoConIva)}</p>{hayFactura && Math.abs(difFacturaContrato) > 1 ? <p className="text-[10px] text-stone-400">OV: ${mx0(conIva)}</p> : null}</div>
             <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Pagos aplicados</p><p className="text-sm font-semibold font-mono">${mx0(totalPagado)}</p></div>
             {porPagar >= 0
               ? <div className="bg-amber-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-amber-700">Total por pagar</p><p className="text-sm font-semibold font-mono text-amber-800">${mx0(porPagar)}</p></div>
