@@ -2314,8 +2314,18 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack }) {
     email: cp.email || so.email || "",
   };
   const cur = so.currency_code || "MXN"; // moneda de la orden (USD / MXN)
-  const contratadoBase = datos.contratado != null && datos.contratado !== "" ? +datos.contratado : (inst ? (+inst.item_total || 0) : (+so.sub_total || 0));
-  const conIva = contratadoBase * 1.16;
+  const cerrado = so.order_status === "closed";
+  const manual = datos.contratado != null && datos.contratado !== "";
+  // Base "sin IVA" por defecto:
+  //  - Proyecto CERRADO: Innobyte ajusta la OV para que su total = lo contratado → usamos el total de la OV.
+  //  - Proyecto ABIERTO: usamos el renglón "Suministro e instalación" (la OV aún no está ajustada).
+  const baseAuto = cerrado ? (+so.sub_total || 0) : (inst ? (+inst.item_total || 0) : (+so.sub_total || 0));
+  const contratadoBase = manual ? +datos.contratado : baseAuto;
+  // Total con IVA: si el usuario capturó monto, +16%. Si es cerrado sin captura, el total EXACTO de la OV (Zoho).
+  const conIva = manual ? contratadoBase * 1.16 : (cerrado ? (+so.total || baseAuto * 1.16) : contratadoBase * 1.16);
+  // Cotejo contra el valor de contrato/cotización que capture el usuario
+  const contratoRef = datos.contratoRef != null && datos.contratoRef !== "" ? +datos.contratoRef : null;
+  const cotejoDiff = contratoRef != null ? conIva - contratoRef : null;
   const pagosZoho = (so.payments || []).map((p) => ({ fecha: p.date, monto: +p.amount || 0, forma: p.payment_mode, ref: p.reference_number || "", cuenta: p.account_name || "", origen: "Zoho" }));
   const pagosManual = (datos.pagos || []).map((p) => ({ ...p, monto: +p.monto || 0, origen: "Manual" }));
   const pagos = [...pagosZoho, ...pagosManual].sort((a, b) => ((a.fecha || "") < (b.fecha || "") ? -1 : 1));
@@ -2402,14 +2412,27 @@ ${porPagar >= 0
         <div><p className="text-[10px] uppercase tracking-widest text-stone-400">Moneda</p><p className="text-sm font-medium">{cur}</p></div>
       </div>
 
-      <Section n="1" t="Contratado (Suministro e instalación)">
+      <Section n="1" t="Contratado" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${cerrado ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{cerrado ? "Cerrado" : "Abierto"}</span>}>
         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Field l="Sin IVA (editable)"><input type="number" step="0.01" className={inp + " font-mono"} value={datos.contratado != null && datos.contratado !== "" ? datos.contratado : (inst ? inst.item_total : so.sub_total)} onChange={(e) => setDatos({ contratado: e.target.value })} /></Field>
+          <Field l="Sin IVA (editable)"><input type="number" step="0.01" className={inp + " font-mono"} value={manual ? datos.contratado : baseAuto} onChange={(e) => setDatos({ contratado: e.target.value })} /></Field>
           <Field l="IVA 16%"><input className={inp + " font-mono bg-stone-50"} value={mx(conIva - contratadoBase)} readOnly /></Field>
           <Field l="Con IVA"><input className={inp + " font-mono bg-stone-50 font-semibold"} value={mx(conIva)} readOnly /></Field>
-          <Field l="Concepto detectado"><input className={inp + " text-stone-500"} value={inst?.name || "—"} readOnly /></Field>
+          <Field l="Base usada"><input className={inp + " text-stone-500"} value={cerrado ? "Total de la OV (cerrado)" : (inst?.name || "Suministro e instalación")} readOnly /></Field>
         </div>
-        <p className="px-4 pb-3 text-[11px] text-stone-400">Se toma del renglón "Suministro e instalación" de la OV. Ajústalo si tu contrato dice otra cosa.</p>
+        <div className="px-4 pb-2 grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+          <Field l="Total OV en Zoho (con IVA)"><input className={inp + " font-mono bg-stone-50 text-stone-500"} value={mx(+so.total || 0)} readOnly /></Field>
+          <Field l="Contrato / cotización (con IVA)"><input type="number" step="0.01" className={inp + " font-mono"} placeholder="captura el contrato" value={datos.contratoRef != null ? datos.contratoRef : ""} onChange={(e) => setDatos({ contratoRef: e.target.value })} /></Field>
+          <div className="md:col-span-2">
+            {contratoRef == null ? (
+              <p className="text-[11px] text-stone-400">Captura el valor del contrato o cotización para cotejarlo contra lo contratado.</p>
+            ) : Math.abs(cotejoDiff) < 1 ? (
+              <span className="inline-block text-[11px] px-2.5 py-1 rounded bg-emerald-50 text-emerald-800 font-medium">✓ Coincide con el contrato</span>
+            ) : (
+              <span className="inline-block text-[11px] px-2.5 py-1 rounded bg-red-50 text-red-700 font-medium">⚠ Diferencia de ${mx(Math.abs(cotejoDiff))} {cotejoDiff > 0 ? "(contratado mayor que contrato)" : "(contratado menor que contrato)"}</span>
+            )}
+          </div>
+        </div>
+        <p className="px-4 pb-3 text-[11px] text-stone-400">{cerrado ? "Proyecto cerrado: se usa el total de la orden de venta (Innobyte lo ajusta al cerrar para que la OV = lo contratado)." : "Proyecto abierto: se usa el renglón \"Suministro e instalación\". Ajústalo si tu contrato dice otra cosa."} Puedes sobrescribir el monto sin IVA cuando lo necesites.</p>
       </Section>
 
       <Section n="2" t="Pagos aplicados" r={`$${mx0(totalPagado)}`}>
