@@ -2173,15 +2173,19 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const noConn = typeof window.zohoBooks !== "function";
+  const refrescando = useRef(false); // candado: evita refrescos dobles (StrictMode / doble clic)
 
-  // Refresca de Zoho y guarda en la app (cache), paginando en bloques chicos para no truncar/timeout
+  // Refresca de Zoho y guarda en la app (cache). Trae 200 por página para hacer
+  // POCAS llamadas (así Zoho no bloquea por "demasiadas solicitudes").
   const refrescar = async () => {
     if (noConn) { setAviso({ t: "err", m: "La conexión a Zoho Books no está disponible en esta versión." }); return; }
+    if (refrescando.current) return; // ya hay un refresco en curso
+    refrescando.current = true;
     setCargando(true);
     try {
       let all = [], page = 1, more = true;
-      while (more && page <= 30) {
-        const d = await window.zohoBooks({ action: "list_sales_orders", params: { per_page: "50", page: String(page), filter_by: "Status.All", sort_column: "date", sort_order: "D" } });
+      while (more && page <= 15) {
+        const d = await window.zohoBooks({ action: "list_sales_orders", params: { per_page: "200", page: String(page), filter_by: "Status.All", sort_column: "date", sort_order: "D" } });
         all.push(...(d.salesorders || []));
         more = d.page_context?.has_more_page;
         page++;
@@ -2193,6 +2197,7 @@ function Proyectos({ proyData, saveProyData, setAviso }) {
       try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim })); } catch {}
       setAviso({ t: "ok", m: `${slim.length} proyectos actualizados de Zoho.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
+    refrescando.current = false;
     setCargando(false);
   };
 
