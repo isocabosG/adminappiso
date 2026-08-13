@@ -16,12 +16,45 @@ const CORS = {
 const ACCOUNTS = "https://accounts.zoho.com";
 const API = "https://www.zohoapis.com/books/v3";
 
-// Caché del access token entre invocaciones. Las instancias "calientes" de la
-// función lo reutilizan, así NO le pedimos un token nuevo a Zoho en cada llamada.
-// El token de Zoho dura ~1h; solo lo renovamos cuando le queda poco. Esto evita
-// el bloqueo "too many requests" cuando el dashboard pagina varios proyectos.
-let tokenCache: { token: string; exp: number } | null = null;
+// Caché del access token. El token de Zoho dura ~1h; renovarlo muchas veces
+// dispara el bloqueo "too many requests" de Zoho. Por eso lo guardamos en la
+// tabla adm_kv (COMPARTIDO entre TODAS las instancias del Edge Function): así,
+// aunque haya ráfagas de llamadas (proyectos + facturas + almacenes), el token
+// se renueva ~1 vez por hora en total, no una vez por instancia.
+type Tok = { token: string; exp: number };
+let tokenCache: Tok | null = null;          // caché en memoria de esta instancia
 let refreshing: Promise<string> | null = null;
+
+// Supabase inyecta estas dos variables automáticamente en los Edge Functions.
+const SB_URL = Deno.env.get("SUPABASE_URL");
+const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+const TOKEN_KEY = "zoho_access_token";
+
+async function leerTokenDB(): Promise<Tok | null> {
+  if (!SB_URL || !SB_KEY) return null;
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/adm_kv?key=eq.${TOKEN_KEY}&select=value`, {
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const raw = rows?.[0]?.value;
+    if (!raw) return null;
+    const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return v?.token && v?.exp ? v as Tok : null;
+  } catch { return null; }
+}
+
+async function guardarTokenDB(v: Tok) {
+  if (!SB_URL || !SB_KEY) return;
+  try {
+    await fetch(`${SB_URL}/rest/v1/adm_kv`, {
+      method: "POST",
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ key: TOKEN_KEY, value: JSON.stringify(v), updated_at: new Date().toISOString() }),
+    });
+  } catch { /* si falla el guardado seguimos con el token en memoria */ }
+}
 
 async function pedirTokenAZoho(): Promise<string> {
   const id = Deno.env.get("ZOHO_CLIENT_ID");
@@ -36,18 +69,38 @@ async function pedirTokenAZoho(): Promise<string> {
     client_secret: secret,
     grant_type: "refresh_token",
   });
-  const r = await fetch(`${ACCOUNTS}/oauth/v2/token?${params}`, { method: "POST" });
-  const j = await r.json();
-  if (!j.access_token) throw new Error("No se pudo renovar el token de Zoho: " + JSON.stringify(j));
-  const durMs = (j.expires_in ? Number(j.expires_in) : 3600) * 1000;
-  tokenCache = { token: j.access_token, exp: Date.now() + durMs };
-  return j.access_token;
+  let ultimo: unknown = null;
+  for (let intento = 0; intento < 3; intento++) {
+    const r = await fetch(`${ACCOUNTS}/oauth/v2/token?${params}`, { method: "POST" });
+    const j = await r.json();
+    if (j.access_token) {
+      const durMs = (j.expires_in ? Number(j.expires_in) : 3600) * 1000;
+      const v: Tok = { token: j.access_token, exp: Date.now() + durMs };
+      tokenCache = v;
+      await guardarTokenDB(v);
+      return j.access_token;
+    }
+    ultimo = j;
+    // Si Zoho frena por "demasiadas solicitudes", esperamos y reintentamos.
+    // Entre reintentos revisamos la BD: otra instancia pudo haber renovado ya.
+    if (String(j.error_description || "").toLowerCase().includes("too many")) {
+      const db = await leerTokenDB();
+      if (db && db.exp > Date.now() + 120_000) { tokenCache = db; return db.token; }
+      await new Promise((res) => setTimeout(res, 1500 * (intento + 1)));
+      continue;
+    }
+    break; // otro tipo de error: no tiene caso reintentar
+  }
+  throw new Error("No se pudo renovar el token de Zoho: " + JSON.stringify(ultimo));
 }
 
 async function getAccessToken() {
-  // Reutiliza el token en caché si aún le queda más de 2 min de vida.
+  // 1) token en memoria de esta instancia (si le queda >2 min).
   if (tokenCache && tokenCache.exp > Date.now() + 120_000) return tokenCache.token;
-  // Si ya hay una renovación en curso, esperamos esa misma (no disparamos varias).
+  // 2) token compartido en la BD (otra instancia ya lo renovó).
+  const db = await leerTokenDB();
+  if (db && db.exp > Date.now() + 120_000) { tokenCache = db; return db.token; }
+  // 3) hay que renovarlo: una sola renovación en curso a la vez.
   if (refreshing) return refreshing;
   refreshing = pedirTokenAZoho().finally(() => { refreshing = null; });
   return refreshing;
@@ -72,6 +125,7 @@ Deno.serve(async (req) => {
     else if (action === "list_sales_orders") { path = "/salesorders"; } // proyectos
     else if (action === "get_sales_order") { path = `/salesorders/${salesorder_id}`; qsParams = restParams; } // trae line_items, payments[], invoices[], cf_proyecto
     else if (action === "list_items") { path = "/items"; } // inventario: stock_on_hand + purchase_rate por SKU
+    else if (action === "list_invoices") { path = "/invoices"; } // facturas: balance real por OV (reference_number = número de OV)
     else if (action === "get_so_attachment") { path = `/salesorders/${salesorder_id}/attachment`; qsParams = document_id ? { document_id } : {}; binary = true; } // contrato/adjunto del proyecto
     else if (action === "get_so_pdf") { path = `/salesorders/${salesorder_id}`; qsParams = { accept: "pdf" }; binary = true; }        // OV en PDF
     else if (action === "get_invoice_pdf") { path = `/invoices/${invoice_id}`; qsParams = { accept: "pdf" }; binary = true; }         // factura en PDF

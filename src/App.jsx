@@ -2191,6 +2191,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const [fechaRefresh, setFechaRefresh] = useState("");
   const [cargando, setCargando] = useState(false);
   const [busca, setBusca] = useState("");
+  const [fact, setFact] = useState({}); // saldo real por OV: { "SO-00279": {total, balance, n} } — viene de las facturas
   const [filtros, setFiltros] = useState([]); // chips activos, combinables: abierto/cerrado (estado) + porcobrar/pagado (pago)
   const toggleFiltro = (k) => setFiltros((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
   const noConn = typeof window.zohoBooks !== "function";
@@ -2213,10 +2214,29 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
       }
       // guarda solo los campos que la lista necesita (para no inflar el cache)
       const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, company_name: s.company_name, date: s.date, total: s.total, bcy_total: s.bcy_total, currency_code: s.currency_code, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status, source: s.source }));
+      // Facturas: el saldo REAL se paga contra la factura, no contra la OV. Las jalamos
+      // en bloque y las agrupamos por número de OV (la factura trae reference_number = "SO-00279").
+      let allInv = [], pi = 1, moreI = true;
+      while (moreI && pi <= 20) {
+        const di = await window.zohoBooks({ action: "list_invoices", params: { per_page: "200", page: String(pi), filter_by: "Status.All", sort_column: "date", sort_order: "D" } });
+        allInv.push(...(di.invoices || []));
+        moreI = di.page_context?.has_more_page;
+        pi++;
+      }
+      const factMap = {};
+      for (const f of allInv) {
+        const k = (f.reference_number || "").trim();
+        if (!k) continue; // sin OV de referencia no se puede cruzar
+        if (f.status === "void") continue; // facturas canceladas no cuentan
+        if (!factMap[k]) factMap[k] = { total: 0, balance: 0, n: 0 };
+        factMap[k].total += (+f.total || 0);
+        factMap[k].balance += (+f.balance || 0);
+        factMap[k].n++;
+      }
       const fecha = hoy();
-      setSos(slim); setFechaRefresh(fecha);
-      try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim })); } catch {}
-      setAviso({ t: "ok", m: `${slim.length} proyectos actualizados de Zoho.` });
+      setSos(slim); setFact(factMap); setFechaRefresh(fecha);
+      try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim, fact: factMap })); } catch {}
+      setAviso({ t: "ok", m: `${slim.length} proyectos · ${allInv.length} facturas actualizados de Zoho.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
     refrescando.current = false;
     setCargando(false);
@@ -2226,7 +2246,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
     (async () => {
       let cache = null;
       try { const r = await window.storage?.get("iso3-proyectos-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache?.sos) { setSos(cache.sos); setFechaRefresh(cache.fecha || ""); }
+      if (cache?.sos) { setSos(cache.sos); setFact(cache.fact || {}); setFechaRefresh(cache.fecha || ""); }
       // Refresco automático 1 vez al día (o si no hay cache)
       if ((!cache?.sos || cache.fecha !== hoy()) && !noConn) refrescar();
     })();
@@ -2247,10 +2267,19 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const anios = Array.from(new Set((sos || []).map((s) => (s.date || "").slice(0, 4)).filter(Boolean))).sort().reverse();
   // Las OV creadas por API (QUOTE CREATOR) llegan SIN IVA; les sumamos 16% solo para mostrar el valor con IVA.
   const ivaF = (s) => (String(s.source || "").toLowerCase() === "api" ? 1.16 : 1);
+  // Valores REALES por OV. El saldo verdadero se paga contra la FACTURA (no contra la OV),
+  // por eso cruzamos por número de OV. Si hay factura, mandan sus montos (ya traen IVA y el
+  // saldo real). Si NO hay factura, usamos la OV y le sumamos 16% cuando venga de API sin IVA.
+  const facOf = (s) => { const f = fact[s.salesorder_number]; return f && f.n > 0 ? f : null; };
+  const totDoc = (s) => { const f = facOf(s); return f ? f.total : (+s.total || 0) * ivaF(s); };     // contratado (moneda de la OV)
+  const balDoc = (s) => { const f = facOf(s); return f ? f.balance : (+s.balance || 0) * ivaF(s); };  // saldo Zoho (moneda de la OV)
+  const manualOf = (s) => (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
+  const balNeto = (s) => Math.max(0, balDoc(s) - manualOf(s));                                        // por cobrar real (menos pagos manuales)
+  const rateS = (s) => { const t = +s.total || 0, b = +s.bcy_total || 0; return t > 0 && b > 0 ? b / t : 1; }; // TC propio de la OV → MXN
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
-  const contratMXN = rows.reduce((a, s) => a + (+s.bcy_total || +s.total || 0) * ivaF(s), 0);
-  const cobradoMXN = rows.reduce((a, s) => { const t = +s.total || 0, b = +s.balance || 0, r = t > 0 ? (t - b) / t : (s.paid_status === "paid" ? 1 : 0); return a + (+s.bcy_total || t) * ivaF(s) * r; }, 0);
+  const contratMXN = rows.reduce((a, s) => a + totDoc(s) * rateS(s), 0);
+  const cobradoMXN = rows.reduce((a, s) => a + (totDoc(s) - balNeto(s)) * rateS(s), 0);
   const porCobrarMXN = contratMXN - cobradoMXN;
   const usd = (m) => (tc > 0 ? m / tc : null);
   // Utilidad prom. y compras/materiales: de los proyectos que ya se abrieron (tienen análisis guardado)
@@ -2303,7 +2332,8 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         <div className="space-y-2">
           <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
           {rows.map((s) => {
-            const pagadoManual = (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
+            const pagadoManual = manualOf(s);
+            const conFactura = !!facOf(s);
             return (
               <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)} className="w-full bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 hover:border-stone-400 text-left">
                 <div className="min-w-0">
@@ -2312,8 +2342,8 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
                   <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
                 </div>
                 <div className="text-right font-mono text-xs">
-                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(s.total * ivaF(s))}</span>{ivaF(s) > 1 ? <span className="text-[9px] text-stone-400"> c/IVA</span> : null}</p>
-                  <p className="text-stone-400">Saldo Zoho ${mx0(s.balance)}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
+                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(totDoc(s))}</span> <span className="text-[9px] text-stone-400">{s.currency_code || ""}</span></p>
+                  <p className="text-stone-400">Por cobrar <span className="text-stone-600 font-semibold">${mx0(balNeto(s))}</span>{conFactura ? <span className="text-[9px] text-emerald-600"> · factura</span> : null}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
                 </div>
               </button>
             );
