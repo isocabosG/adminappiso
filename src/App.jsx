@@ -3657,115 +3657,143 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const [modo, setModo] = useState("lista");
   const q = busca.trim().toLowerCase();
-  const valorDe = (a) => (a.existencia || 0) * (+a.costoVigente || 0);
-  const rows = Object.entries(catalogo)
-    .filter(([sku, a]) => !q || sku.toLowerCase().includes(q) || (a.descripcion || "").toLowerCase().includes(q))
-    .sort((a, b) => valorDe(b[1]) - valorDe(a[1])); // mayor valor primero
-  const totalPzas = rows.reduce((s, [, a]) => s + (a.existencia || 0), 0);
-  const valorCat = rows.reduce((s, [, a]) => s + valorDe(a), 0);
-  const bajo = rows.filter(([, a]) => (a.existencia || 0) <= 5).length;
-
-  // ---- Valor del inventario al día: stock actual (Zoho) × costo del SKU. Cache + refresco diario. ----
-  const [invVal, setInvVal] = useState(null);
+  // ---- Valor del inventario FÍSICO por almacén (stock_on_hand de Zoho × costo del SKU). Cache + refresco diario. ----
+  const ALMACENES = [
+    { id: "4053294000001024003", nombre: "Central", fiscal: true },
+    { id: "4053294000004523001", nombre: "Semi-OK" },
+    { id: "4053294000015259001", nombre: "Deshecho" },
+    { id: "4053294000001303001", nombre: "Perezgrovas" },
+    { id: "4053294000014692004", nombre: "Cargo Baja" },
+  ];
+  const [inv, setInv] = useState(null);            // { total, almacenes:[{nombre,fiscal,valor,piezas}], porSku:{sku:{desc,cost,tot,w}} }
   const [invFecha, setInvFecha] = useState("");
-  const [invSkus, setInvSkus] = useState(0);
   const [invCargando, setInvCargando] = useState(false);
+  const [invProg, setInvProg] = useState("");
   const invRef = useRef(false);
   const noConn = typeof window.zohoBooks !== "function";
+  const costoSku = (it) => { const cv = catalogo[it.sku] ? +catalogo[it.sku].costoVigente : NaN; return isFinite(cv) && cv > 0 ? cv : (+it.purchase_rate || 0); };
   const refrescarInv = async () => {
     if (noConn) { setAviso({ t: "err", m: "La conexión a Zoho no está disponible en esta versión." }); return; }
     if (invRef.current) return;
     invRef.current = true; setInvCargando(true);
     try {
-      let total = 0, skus = 0, page = 1, more = true;
-      while (more && page <= 30) {
-        const d = await window.zohoBooks({ action: "list_items", params: { per_page: "200", page: String(page), filter_by: "Status.Active" } });
-        for (const it of (d.items || [])) {
-          const stock = +it.stock_on_hand || 0;
-          if (stock <= 0) continue;
-          const cv = catalogo[it.sku] ? +catalogo[it.sku].costoVigente : NaN;      // costo promedio del SKU (tu módulo de Costos)
-          const costo = isFinite(cv) && cv > 0 ? cv : (+it.purchase_rate || 0);     // respaldo: costo de compra de Zoho
-          total += stock * costo; skus++;
+      const porSku = {}, alm = {};
+      for (const a of ALMACENES) {
+        setInvProg(`Leyendo ${a.nombre}…`);
+        let page = 1, more = true;
+        while (more && page <= 30) {
+          const d = await window.zohoBooks({ action: "list_items", params: { warehouse_id: a.id, per_page: "200", page: String(page), filter_by: "Status.Active" } });
+          for (const it of (d.items || [])) {
+            const stock = +it.stock_on_hand || 0;
+            if (stock <= 0) continue;
+            const cost = costoSku(it);
+            if (!porSku[it.sku]) porSku[it.sku] = { desc: it.name || it.sku, cost, tot: 0, w: {} };
+            porSku[it.sku].w[a.nombre] = (porSku[it.sku].w[a.nombre] || 0) + stock;
+            porSku[it.sku].tot += stock;
+            alm[a.nombre] = alm[a.nombre] || { valor: 0, piezas: 0, fiscal: !!a.fiscal };
+            alm[a.nombre].valor += stock * cost;
+            alm[a.nombre].piezas += stock;
+          }
+          more = d.page_context?.has_more_page; page++;
         }
-        more = d.page_context?.has_more_page; page++;
       }
+      const almacenes = ALMACENES.filter((a) => alm[a.nombre]).map((a) => ({ nombre: a.nombre, fiscal: !!a.fiscal, ...alm[a.nombre] }));
+      const total = almacenes.reduce((s, a) => s + a.valor, 0);
       const fecha = hoy();
-      setInvVal(total); setInvFecha(fecha); setInvSkus(skus);
-      try { await window.storage?.set("iso3-inventario-cache", JSON.stringify({ fecha, total, skus })); } catch {}
-      setAviso({ t: "ok", m: `Inventario valuado: $${mx0(total)} MXN (${skus} SKU con existencia).` });
+      const data = { total, almacenes, porSku };
+      setInv(data); setInvFecha(fecha);
+      try { await window.storage?.set("iso3-inventario-cache", JSON.stringify({ fecha, ...data })); } catch {}
+      const central = almacenes.find((a) => a.fiscal);
+      setAviso({ t: "ok", m: `Inventario valuado: $${mx0(total)} MXN · Central (fiscal): $${mx0(central ? central.valor : 0)}.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudo valuar el inventario: " + (e.message || e) }); }
-    invRef.current = false; setInvCargando(false);
+    invRef.current = false; setInvCargando(false); setInvProg("");
   };
   useEffect(() => {
     (async () => {
       let cache = null;
       try { const r = await window.storage?.get("iso3-inventario-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache && cache.total != null) { setInvVal(cache.total); setInvFecha(cache.fecha || ""); setInvSkus(cache.skus || 0); }
+      if (cache && cache.porSku) { setInv({ total: cache.total, almacenes: cache.almacenes || [], porSku: cache.porSku }); setInvFecha(cache.fecha || ""); }
       if ((!cache || cache.fecha !== hoy()) && !noConn) refrescarInv();
     })();
   }, []);
+
+  const colAlmacenes = (inv?.almacenes || []).map((a) => a.nombre);
+  const invRows = inv ? Object.entries(inv.porSku)
+    .filter(([sku, x]) => !q || sku.toLowerCase().includes(q) || (x.desc || "").toLowerCase().includes(q))
+    .map(([sku, x]) => [sku, x, x.tot * (x.cost || 0)])
+    .sort((a, b) => b[2] - a[2]) : [];
 
   if (modo === "recepcion")
     return <RecepcionCamara catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} onSalir={() => setModo("lista")} />;
 
   return (
     <div className="space-y-4">
-      <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-lg px-4 py-3 flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor total del inventario (hoy)</p>
-          <p className="text-2xl font-bold font-mono leading-tight">{invVal == null ? "—" : `$${mx0(invVal)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+      <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor total del inventario físico (hoy)</p>
+            <p className="text-2xl font-bold font-mono leading-tight">{inv == null ? "—" : `$${mx0(inv.total)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-emerald-100">{invCargando ? (invProg || "Valuando…") : (invFecha ? `al ${invFecha}` : "sin datos")}</p>
+            <button onClick={refrescarInv} disabled={invCargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+          </div>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-emerald-100">{invCargando ? "Valuando…" : (invFecha ? `al ${invFecha}${invSkus ? ` · ${invSkus} SKU` : ""}` : "sin datos")}</p>
-          <button onClick={refrescarInv} disabled={invCargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+          {(inv?.almacenes || []).map((a) => (
+            <div key={a.nombre} className={`rounded-lg p-2.5 ${a.fiscal ? "bg-white/20 ring-1 ring-white/40" : "bg-white/10"}`}>
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">{a.nombre}{a.fiscal ? " · fiscal" : ""}</p>
+              <p className="text-sm font-bold font-mono leading-tight">${mx0(a.valor)}</p>
+              <p className="text-[10px] text-emerald-100/90">{a.piezas} pzas</p>
+            </div>
+          ))}
         </div>
+        <p className="text-[10px] text-emerald-100/80 mt-2">Stock físico ("en existencia") de Zoho × costo del SKU. <b>Central</b> es lo que se reporta fiscalmente.</p>
       </div>
+
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold">Inventario</h2>
-          <p className="text-xs text-stone-500">Existencias por artículo. Vista para almacén.</p>
+          <p className="text-xs text-stone-500">Existencias físicas por almacén (de Zoho).</p>
         </div>
         <button onClick={() => setModo("recepcion")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">📷 Recepción por cámara</button>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <Kpi t="Artículos" v={rows.length} />
-        <Kpi t="Piezas totales" v={totalPzas} />
-        <Kpi t="Valor catálogo (MXN)" v={`$${mx0(valorCat)}`} />
-        <Kpi t="Stock bajo (≤5)" v={bajo} alerta={bajo > 0} />
-      </div>
+
       <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
         className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
-      <p className="text-[11px] font-mono text-stone-500">Ordenado por valor (mayor a menor){rows.length > 500 ? ` · mostrando 500 de ${rows.length} — usa el buscador para el resto` : ""}.</p>
-      <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[680px] text-sm">
-          <thead className="bg-stone-50 border-b border-stone-200">
-            <tr className="text-[10px] uppercase tracking-widest text-stone-500">
-              <th className="text-left px-3 py-2">SKU</th>
-              <th className="text-left px-3 py-2">Artículo</th>
-              <th className="text-right px-3 py-2">Existencia</th>
-              <th className="text-right px-3 py-2">Costo unit.</th>
-              <th className="text-right px-3 py-2">Valor</th>
-              <th className="text-left px-3 py-2 pl-4">Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, 500).map(([sku, a]) => {
-              const ex = a.existencia || 0, cv = +a.costoVigente || 0, val = ex * cv;
-              const estado = ex === 0 ? ["Agotado", "bg-red-100 text-red-700"] : ex <= 5 ? ["Stock bajo", "bg-amber-100 text-amber-800"] : ["OK", "bg-teal-100 text-teal-800"];
-              return (
-                <tr key={sku} className="border-b border-stone-100">
-                  <td className="px-3 py-2 font-mono text-xs font-semibold">{sku}</td>
-                  <td className="px-3 py-2 text-stone-600 text-xs">{a.descripcion}</td>
-                  <td className="px-3 py-2 text-right font-mono">{ex}</td>
-                  <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(cv)}</td>
-                  <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(val)}</td>
-                  <td className="px-3 py-2 pl-4"><span className={`px-2 py-0.5 text-[10px] rounded font-medium ${estado[1]}`}>{estado[0]}</span></td>
+      {inv == null ? (
+        <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{invCargando ? (invProg || "Leyendo inventario de Zoho…") : "Dale ↻ Actualizar para traer el inventario por almacén."}</div>
+      ) : (
+        <>
+          <p className="text-[11px] font-mono text-stone-500">{invRows.length} SKU con existencia · ordenado por valor{invRows.length > 500 ? " · mostrando 500 (usa el buscador para el resto)" : ""}.</p>
+          <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
+            <table className="w-full text-sm" style={{ minWidth: 560 + colAlmacenes.length * 82 }}>
+              <thead className="bg-stone-50 border-b border-stone-200">
+                <tr className="text-[10px] uppercase tracking-widest text-stone-500">
+                  <th className="text-left px-3 py-2">SKU</th>
+                  <th className="text-left px-3 py-2">Artículo</th>
+                  {colAlmacenes.map((n) => <th key={n} className="text-right px-2 py-2 whitespace-nowrap">{n}</th>)}
+                  <th className="text-right px-3 py-2">Total</th>
+                  <th className="text-right px-3 py-2">Costo</th>
+                  <th className="text-right px-3 py-2">Valor</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {invRows.slice(0, 500).map(([sku, x, val]) => (
+                  <tr key={sku} className="border-b border-stone-100">
+                    <td className="px-3 py-2 font-mono text-xs font-semibold">{sku}</td>
+                    <td className="px-3 py-2 text-stone-600 text-xs">{x.desc}</td>
+                    {colAlmacenes.map((n) => <td key={n} className={`px-2 py-2 text-right font-mono ${n === "Central" ? "font-semibold text-stone-800" : "text-stone-500"}`}>{x.w[n] || 0}</td>)}
+                    <td className="px-3 py-2 text-right font-mono">{x.tot}</td>
+                    <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(x.cost || 0)}</td>
+                    <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(val)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 }
