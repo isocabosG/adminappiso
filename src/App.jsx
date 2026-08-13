@@ -2212,7 +2212,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         page++;
       }
       // guarda solo los campos que la lista necesita (para no inflar el cache)
-      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, company_name: s.company_name, date: s.date, total: s.total, bcy_total: s.bcy_total, currency_code: s.currency_code, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status }));
+      const slim = all.map((s) => ({ salesorder_id: s.salesorder_id, salesorder_number: s.salesorder_number, reference_number: s.reference_number, customer_name: s.customer_name, company_name: s.company_name, date: s.date, total: s.total, bcy_total: s.bcy_total, currency_code: s.currency_code, balance: s.balance, paid_status: s.paid_status, order_status: s.order_status, invoiced_status: s.invoiced_status, source: s.source }));
       const fecha = hoy();
       setSos(slim); setFechaRefresh(fecha);
       try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim })); } catch {}
@@ -2245,10 +2245,12 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   });
   const filtrando = filtros.length > 0 || !!q || anio !== "todos";
   const anios = Array.from(new Set((sos || []).map((s) => (s.date || "").slice(0, 4)).filter(Boolean))).sort().reverse();
+  // Las OV creadas por API (QUOTE CREATOR) llegan SIN IVA; les sumamos 16% solo para mostrar el valor con IVA.
+  const ivaF = (s) => (String(s.source || "").toLowerCase() === "api" ? 1.16 : 1);
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
-  const contratMXN = rows.reduce((a, s) => a + (+s.bcy_total || +s.total || 0), 0);
-  const cobradoMXN = rows.reduce((a, s) => { const t = +s.total || 0, b = +s.balance || 0, r = t > 0 ? (t - b) / t : (s.paid_status === "paid" ? 1 : 0); return a + (+s.bcy_total || t) * r; }, 0);
+  const contratMXN = rows.reduce((a, s) => a + (+s.bcy_total || +s.total || 0) * ivaF(s), 0);
+  const cobradoMXN = rows.reduce((a, s) => { const t = +s.total || 0, b = +s.balance || 0, r = t > 0 ? (t - b) / t : (s.paid_status === "paid" ? 1 : 0); return a + (+s.bcy_total || t) * ivaF(s) * r; }, 0);
   const porCobrarMXN = contratMXN - cobradoMXN;
   const usd = (m) => (tc > 0 ? m / tc : null);
   // Utilidad prom. y compras/materiales: de los proyectos que ya se abrieron (tienen análisis guardado)
@@ -2310,7 +2312,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
                   <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
                 </div>
                 <div className="text-right font-mono text-xs">
-                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(s.total)}</span></p>
+                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(s.total * ivaF(s))}</span>{ivaF(s) > 1 ? <span className="text-[9px] text-stone-400"> c/IVA</span> : null}</p>
                   <p className="text-stone-400">Saldo Zoho ${mx0(s.balance)}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
                 </div>
               </button>
