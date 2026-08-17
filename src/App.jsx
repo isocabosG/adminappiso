@@ -1,5 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
 import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
+import { supabase } from "./supabaseClient.js";
+
+// Camaro blanco (broma para Jesús 🏎️): silueta de muscle car al lado de "Proyectos".
+function CamaroIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 64 24" className={className} fill="currentColor" aria-hidden="true">
+      <path d="M3 16h3.5a5 5 0 0 1 10 0h20a5 5 0 0 1 10 0H60a2 2 0 0 0 2-2v-1.6c0-1-.8-1.9-1.9-2.1l-6-1c-2.6-2.9-5.8-4.4-9.5-4.7l-9-.5c-4.2 0-7.4 1.3-10.4 3.7l-2.7 1.9-8.2 1.2C5.5 11.5 3.7 12.3 3 13.6 2.5 14.4 2 15 2 15.4A.9.9 0 0 0 3 16z" />
+      <circle cx="11.5" cy="17" r="3.3" />
+      <circle cx="41.5" cy="17" r="3.3" />
+    </svg>
+  );
+}
 
 function extraerJSON(txt) {
   if (!txt || !txt.trim()) throw new Error("la IA devolvió una respuesta vacía");
@@ -1944,6 +1956,10 @@ function App() {
     else { const el = document.documentElement; el.classList.toggle("dark"); on = el.classList.contains("dark"); }
     setDark(on);
   };
+  // Cierra la sesión de Supabase. Root escucha onAuthStateChange y regresa solo al Login.
+  const cerrarSesion = async () => {
+    try { await supabase.auth.signOut(); } catch (e) { setAviso({ t: "err", m: "No se pudo cerrar sesión: " + (e?.message || e) }); }
+  };
 
   /* ---- carga inicial + semilla (blindada contra datos viejos) ---- */
   useEffect(() => {
@@ -2005,14 +2021,20 @@ function App() {
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
             {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
+                {k === "proyectos" && <CamaroIcon className="ml-1 h-3 w-auto align-middle" />}
                 {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
             ))}
             <button onClick={toggleDark} title="Cambiar tema"
               className="ml-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/30 text-emerald-50 text-xs font-medium hover:bg-white/15 transition-colors">
               <span className="text-sm leading-none">{dark ? "☀️" : "🌙"}</span>{dark ? "Claro" : "Oscuro"}
+            </button>
+            <button onClick={cerrarSesion} title="Cerrar sesión"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/30 text-emerald-50 text-xs font-medium hover:bg-white/15 transition-colors">
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+              Salir
             </button>
           </nav>
         </div>
