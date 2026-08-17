@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
 import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
+import { buildMRP, calendarioCompra } from "./mrp.js";
+import { hitoById, LEAD_EQUIPO_CRITICO } from "./hitos.js";
 
 // Camaro blanco (broma para Jesús 🏎️): silueta de muscle car al lado de "Proyectos".
 function CamaroIcon({ className = "" }) {
@@ -2019,7 +2021,7 @@ function App() {
             </div>
           </div>
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
-            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
+            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
@@ -2050,6 +2052,7 @@ function App() {
         {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix }} />}
         {vista === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
+        {vista === "mrp" && <MRP catalogo={catalogo} setAviso={setAviso} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vista === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
       </main>
@@ -3707,6 +3710,234 @@ function Fletes({ fletes, saveFletes }) {
 }
 
 /* ===================== MÓDULO · INVENTARIO (almacén) ===================== */
+// ===================== MRP de compras por hito =====================
+// Cruza el feed de IS-PMT (/api/mrp → Edge Function mrp-feed) con el inventario
+// físico (cache de la pestaña Inventario) y las órdenes de compra abiertas de
+// Zoho, y arma el calendario de compra por hito. La clasificación por hito y los
+// leads vienen de src/hitos.js (copia literal de is-pmt/lib/hitos.js); aquí NO se
+// reclasifica: se consume milestone_id. El motor está en src/mrp.js.
+const HITO_UI = {
+  1: { chip: "bg-amber-100 text-amber-800 border-amber-300",   bar: "bg-amber-500" },
+  2: { chip: "bg-cyan-100 text-cyan-800 border-cyan-300",     bar: "bg-cyan-500" },
+  3: { chip: "bg-violet-100 text-violet-800 border-violet-300", bar: "bg-violet-500" },
+  4: { chip: "bg-red-100 text-red-800 border-red-300",         bar: "bg-red-500" },
+  5: { chip: "bg-emerald-100 text-emerald-800 border-emerald-300", bar: "bg-emerald-500" },
+};
+const upMrp = (s) => String(s || "").toUpperCase();
+const nfMrp = new Intl.NumberFormat("es-MX");
+
+function MRP({ catalogo, setAviso }) {
+  const noFeed = typeof window.mrpFeed !== "function";
+  const noZoho = typeof window.zohoBooks !== "function";
+  const [feed, setFeed] = useState(null);            // { proyectos, generated_at }
+  const [cargando, setCargando] = useState(false);
+  const [stockBySku, setStockBySku] = useState({});  // sku(may) -> stock físico
+  const [transito, setTransito] = useState({});      // sku(may) -> en tránsito (OC abiertas)
+  const [transProg, setTransProg] = useState("");
+  const [mes, setMes] = useState("");                // "" = todos los meses
+  const [soloFaltante, setSoloFaltante] = useState(true);
+  const cargaRef = useRef(false);
+
+  // Stock físico: del cache que arma la pestaña Inventario (stock_on_hand por SKU).
+  const cargarStock = async () => {
+    try {
+      const r = await window.storage?.get("iso3-inventario-cache");
+      if (r?.value) {
+        const c = JSON.parse(r.value);
+        const m = {};
+        for (const [sku, x] of Object.entries(c.porSku || {})) m[upMrp(sku)] = +x.tot || 0;
+        setStockBySku(m);
+      }
+    } catch {}
+  };
+
+  const cargarFeed = async () => {
+    if (noFeed) { setAviso({ t: "err", m: "El feed del MRP no está disponible en esta versión." }); return; }
+    if (cargaRef.current) return;
+    cargaRef.current = true; setCargando(true);
+    try {
+      const d = await window.mrpFeed();
+      setFeed({ proyectos: d.proyectos || [], generated_at: d.generated_at || "" });
+      setAviso({ t: "ok", m: `Feed IS-PMT: ${(d.proyectos || []).length} proyectos calendarizados.` });
+    } catch (e) {
+      setAviso({ t: "err", m: "No se pudo leer el feed de IS-PMT: " + (e.message || e) });
+    }
+    cargaRef.current = false; setCargando(false);
+  };
+
+  useEffect(() => { cargarStock(); cargarFeed(); }, []);
+
+  // En tránsito: órdenes de compra abiertas de Zoho, sumadas por SKU. Detrás de un
+  // botón porque son N llamadas a Books (una por OC) y no queremos pegarle en cada carga.
+  const calcularTransito = async () => {
+    if (noZoho) { setAviso({ t: "err", m: "La conexión a Zoho no está disponible." }); return; }
+    setTransProg("Leyendo órdenes de compra…");
+    try {
+      const abiertas = [];
+      let page = 1, more = true;
+      while (more && page <= 20) {
+        const d = await window.zohoBooks({ action: "list_purchase_orders", params: { filter_by: "Status.All", per_page: "100", page: String(page), sort_column: "date", sort_order: "D" } });
+        for (const po of (d.purchaseorders || [])) {
+          const pend = (+po.quantity_yet_to_receive || 0) > 0 || (po.received_status && po.received_status !== "received");
+          const st = (po.status || "").toLowerCase();
+          if (pend && st !== "cancelled" && st !== "draft") abiertas.push(po.purchaseorder_id);
+        }
+        more = d.page_context?.has_more_page; page++;
+      }
+      const map = {};
+      let i = 0;
+      for (const id of abiertas) {
+        i++; setTransProg(`Leyendo OC ${i}/${abiertas.length}…`);
+        try {
+          const d = await window.zohoBooks({ action: "get_purchase_order", params: { purchaseorder_id: id } });
+          for (const li of (d.purchaseorder?.line_items || [])) {
+            const sku = upMrp(li.sku); if (!sku) continue;
+            const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
+            if (q > 0) map[sku] = (map[sku] || 0) + q;
+          }
+        } catch {}
+      }
+      setTransito(map);
+      setAviso({ t: "ok", m: `En tránsito calculado sobre ${abiertas.length} órdenes de compra abiertas.` });
+    } catch (e) {
+      setAviso({ t: "err", m: "No se pudo calcular en tránsito: " + (e.message || e) });
+    }
+    setTransProg("");
+  };
+
+  const invPorSku = useMemo(() => {
+    const skus = new Set([...Object.keys(stockBySku), ...Object.keys(transito)]);
+    const m = {};
+    for (const sku of skus) m[sku] = { stock: stockBySku[sku] || 0, enTransito: transito[sku] || 0, desc: (catalogo && catalogo[sku]?.desc) || "" };
+    return m;
+  }, [stockBySku, transito, catalogo]);
+
+  // Proyectos normalizados (SKU en mayúsculas para cuadrar con el inventario).
+  const proyNorm = useMemo(() => (feed?.proyectos || []).map((p) => ({
+    ...p, materiales: (p.materiales || []).map((x) => ({ ...x, sku: x.sku ? upMrp(x.sku) : null })),
+  })), [feed]);
+
+  const meses = useMemo(() => {
+    const s = new Set();
+    for (const f of calendarioCompra(proyNorm, invPorSku)) if (f.fechaCompra) s.add(f.fechaCompra.slice(0, 7));
+    return [...s].sort();
+  }, [proyNorm, invPorSku]);
+
+  const opts = useMemo(() => (mes ? { soloFaltante, desde: mes + "-01", hasta: mes + "-31" } : { soloFaltante }), [mes, soloFaltante]);
+  const grupos = useMemo(() => buildMRP(proyNorm, invPorSku, opts), [proyNorm, invPorSku, opts]);
+  const calendario = useMemo(() => calendarioCompra(proyNorm, invPorSku, opts), [proyNorm, invPorSku, opts]);
+  const sinStock = Object.keys(stockBySku).length === 0;
+  const sinTransito = Object.keys(transito).length === 0;
+  const totComprar = grupos.reduce((a, g) => a + g.totPorComprar, 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-gradient-to-r from-violet-800 to-violet-600 text-white rounded-lg p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-violet-100">MRP de compras por hito · fuente IS-PMT</p>
+            <p className="text-2xl font-bold leading-tight">{feed ? `${feed.proyectos.length} proyectos` : "—"} <span className="text-sm font-normal text-violet-100">calendarizados</span></p>
+            <p className="text-[11px] text-violet-100/90 mt-0.5">Por comprar (total filtrado): <b>{nfMrp.format(totComprar)}</b> pzas</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-violet-100">{cargando ? "Leyendo feed…" : (feed?.generated_at ? `feed al ${String(feed.generated_at).slice(0, 16).replace("T", " ")}` : "sin datos")}</p>
+            <button onClick={cargarFeed} disabled={cargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar feed</button>
+          </div>
+        </div>
+        <p className="text-[10px] text-violet-100/80 mt-2">El número del hito es el orden en que <b>llega a obra</b>, no en que se compra: las baterías son Hito 3 pero se piden primero (lead {LEAD_EQUIPO_CRITICO} d). El calendario ordena por lead descendente.</p>
+      </div>
+
+      {noFeed && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">El feed del MRP no está disponible en esta versión de la app (falta la Edge Function <code>mrp-feed</code>).</div>}
+      {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b> para valuar; el MRP usa ese cache como existencia física. Mientras, el stock se toma como 0.</div>}
+
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs text-stone-600">Mes de compra
+            <select value={mes} onChange={(e) => setMes(e.target.value)} className="mt-1 block px-2 py-1.5 border rounded text-xs">
+              <option value="">Todos</option>
+              {meses.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 pb-1.5">
+            <input type="checkbox" checked={soloFaltante} onChange={(e) => setSoloFaltante(e.target.checked)} /> Solo lo que falta
+          </label>
+        </div>
+        <div className="text-right">
+          <button onClick={calcularTransito} disabled={!!transProg || noZoho} className="px-3 py-2 bg-violet-700 text-white text-xs font-medium rounded hover:bg-violet-800 disabled:opacity-40">
+            {transProg || (sinTransito ? "Calcular en tránsito (OC)" : "↻ Recalcular en tránsito")}
+          </button>
+          {sinTransito && !transProg && <p className="text-[10px] text-stone-500 mt-1">En tránsito = 0 hasta calcularlo desde las OC abiertas.</p>}
+        </div>
+      </div>
+
+      {/* Calendario de compra: lista accionable, lo más lento arriba */}
+      <div className="bg-white rounded-lg border overflow-hidden">
+        <div className="px-3 py-2 border-b bg-stone-50 text-sm font-semibold">Calendario de compra <span className="font-normal text-stone-500">· ordenado por anticipación (lead)</span></div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-stone-50 text-stone-500">
+              <tr>
+                <th className="px-3 py-2 text-left">Comprar antes</th><th className="px-2 py-2 text-center">Lead</th><th className="px-2 py-2 text-center">Hito</th>
+                <th className="px-3 py-2 text-left">SKU</th><th className="px-3 py-2 text-left">Descripción</th>
+                <th className="px-2 py-2 text-right">Req.</th><th className="px-2 py-2 text-right">Stock</th><th className="px-2 py-2 text-right">Tránsito</th><th className="px-2 py-2 text-right">Por comprar</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calendario.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-stone-400">Sin partidas para el filtro actual.</td></tr>}
+              {calendario.map((f, i) => (
+                <tr key={i} className="border-t hover:bg-stone-50">
+                  <td className="px-3 py-1.5 font-mono tabular-nums whitespace-nowrap">{f.fechaCompra || "—"}</td>
+                  <td className="px-2 py-1.5 text-center tabular-nums">{f.lead}{f.critico ? "★" : ""}</td>
+                  <td className="px-2 py-1.5 text-center"><span className={`px-1.5 py-0.5 rounded border text-[10px] ${HITO_UI[f.hito]?.chip || ""}`}>{f.hito}</span></td>
+                  <td className="px-3 py-1.5 font-mono">{f.sku || "—"}</td>
+                  <td className="px-3 py-1.5">{f.desc}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{nfMrp.format(f.requerido)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(f.stock)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(f.enTransito)}</td>
+                  <td className={`px-2 py-1.5 text-right tabular-nums font-semibold ${f.porComprar > 0 ? "text-red-700" : "text-emerald-700"}`}>{nfMrp.format(f.porComprar)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Desglose por hito */}
+      <div className="space-y-3">
+        {grupos.map((g) => (
+          <div key={g.hito} className="bg-white rounded-lg border overflow-hidden">
+            <div className="px-3 py-2 border-b flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${HITO_UI[g.hito]?.chip || ""}`}>Hito {g.hito}</span>
+                <span className="text-sm font-semibold">{g.meta?.nombre || ""}</span>
+              </div>
+              <div className="text-[11px] text-stone-500">
+                lead {g.leadHito} d · comprar ≥ <b className="font-mono">{g.ventana.fechaCompra || "—"}</b> · en sitio ≤ <b className="font-mono">{g.ventana.fechaInstalacion || "—"}</b> · por comprar <b className="text-red-700">{nfMrp.format(g.totPorComprar)}</b>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <tbody>
+                  {g.materiales.map((m, i) => (
+                    <tr key={i} className="border-t hover:bg-stone-50">
+                      <td className="px-3 py-1.5 font-mono w-28">{m.sku || "—"}</td>
+                      <td className="px-3 py-1.5">{m.desc}{m.critico ? <span className="ml-1 text-[10px] text-violet-700">★ crítico</span> : null}<span className="ml-1 text-[10px] text-stone-400">({m.proyectos.length} obra{m.proyectos.length !== 1 ? "s" : ""})</span></td>
+                      <td className="px-2 py-1.5 text-right tabular-nums w-16">{nfMrp.format(m.requerido)}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-stone-500 w-16">{nfMrp.format(m.stock)}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-stone-500 w-16">{nfMrp.format(m.enTransito)}</td>
+                      <td className={`px-2 py-1.5 text-right tabular-nums font-semibold w-20 ${m.porComprar > 0 ? "text-red-700" : "text-emerald-700"}`}>{nfMrp.format(m.porComprar)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const [modo, setModo] = useState("lista");

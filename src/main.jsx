@@ -35,4 +35,13 @@ window.zohoBooks = async (payload) => {
   return data
 }
 
+// Helper del feed del MRP. Va a la Edge Function 'mrp-feed', que pega a IS-PMT
+// (/api/mrp) con el token guardado del lado servidor. Devuelve { ok, proyectos[] }.
+window.mrpFeed = async () => {
+  const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.error) throw new Error(data.error)
+  return data
+}
+
 createRoot(document.getElementById('root')).render(<Root />)
