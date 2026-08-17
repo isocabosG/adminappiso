@@ -4,13 +4,21 @@ import { supabase } from "./supabaseClient.js";
 import { buildMRP, calendarioCompra } from "./mrp.js";
 import { hitoById, LEAD_EQUIPO_CRITICO } from "./hitos.js";
 
-// Camaro blanco (broma para Jesús 🏎️): silueta de muscle car al lado de "Proyectos".
-function CamaroIcon({ className = "" }) {
+// Chevrolet Camaro (broma para Jesús 🏎️): corre bajo el título del header.
+function CamaroCar({ className = "" }) {
   return (
-    <svg viewBox="0 0 64 24" className={className} fill="currentColor" aria-hidden="true">
-      <path d="M3 16h3.5a5 5 0 0 1 10 0h20a5 5 0 0 1 10 0H60a2 2 0 0 0 2-2v-1.6c0-1-.8-1.9-1.9-2.1l-6-1c-2.6-2.9-5.8-4.4-9.5-4.7l-9-.5c-4.2 0-7.4 1.3-10.4 3.7l-2.7 1.9-8.2 1.2C5.5 11.5 3.7 12.3 3 13.6 2.5 14.4 2 15 2 15.4A.9.9 0 0 0 3 16z" />
-      <circle cx="11.5" cy="17" r="3.3" />
-      <circle cx="41.5" cy="17" r="3.3" />
+    <svg viewBox="0 0 100 34" className={className} aria-hidden="true">
+      {/* carrocería baja tipo muscle coupe */}
+      <path d="M3 23 C4 17 8 16 13 15 L30 15 C33 10 40 7 52 7 C64 7 73 9 82 13 L92 15 C96 16 97 19 97 22 L97 23 C97 24.5 96 25 94 25 L86 25 A7 7 0 0 0 72 25 L44 25 A7 7 0 0 0 30 25 L6 25 C4 25 3 24.5 3 23 Z" fill="#e5e7eb" />
+      {/* cabina */}
+      <path d="M34 14 L41 9.2 C47 7.8 58 7.9 64 9.6 L71 13 Z" fill="#0e7490" />
+      {/* franjas SS en el cofre */}
+      <rect x="49.5" y="7.4" width="2" height="7.6" fill="#111" /><rect x="52.5" y="7.4" width="2" height="7.6" fill="#111" />
+      {/* ruedas */}
+      <circle cx="37" cy="25" r="6" fill="#111" /><circle cx="37" cy="25" r="2.3" fill="#cbd5e1" />
+      <circle cx="79" cy="25" r="6" fill="#111" /><circle cx="79" cy="25" r="2.3" fill="#cbd5e1" />
+      {/* faro */}
+      <circle cx="6.5" cy="19" r="1.4" fill="#fde68a" />
     </svg>
   );
 }
@@ -2018,6 +2026,12 @@ function App() {
             <div>
               <h1 className="text-base font-semibold tracking-tight">AdminAppISO</h1>
               <p className="text-[10px] font-mono tracking-[0.2em] text-emerald-200">INNOVACIÓN SOLAR</p>
+              <div className="camaro-track"><CamaroCar className="camaro-run" /></div>
+              <style>{`
+                .camaro-track{position:relative;height:16px;width:190px;overflow:hidden;margin-top:1px}
+                .camaro-run{position:absolute;top:0;left:0;height:16px;width:auto;animation:camaroRun 4.5s linear infinite;will-change:transform}
+                @keyframes camaroRun{0%{transform:translateX(-46px)}100%{transform:translateX(200px)}}
+              `}</style>
             </div>
           </div>
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
@@ -2025,7 +2039,6 @@ function App() {
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
-                {k === "proyectos" && <CamaroIcon className="ml-1 h-3 w-auto align-middle" />}
                 {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
             ))}
@@ -3725,6 +3738,11 @@ const HITO_UI = {
 };
 const upMrp = (s) => String(s || "").toUpperCase();
 const nfMrp = new Intl.NumberFormat("es-MX");
+const MESES_MRP = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const fechaCortaMrp = (iso) => { if (!iso) return "—"; const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number); return (y && m && d) ? `${String(d).padStart(2, "0")} ${MESES_MRP[m - 1]} ${y}` : String(iso); };
+const diasMrp = (iso, hoyISO) => { if (!iso) return null; const a = Date.parse(String(iso).slice(0, 10) + "T00:00:00"), b = Date.parse(String(hoyISO).slice(0, 10) + "T00:00:00"); return (isNaN(a) || isNaN(b)) ? null : Math.round((a - b) / 86400000); };
+const urgMrp = (dias) => dias == null ? "text-stone-400" : dias <= 14 ? "text-red-700 font-semibold" : dias <= 30 ? "text-amber-600 font-semibold" : "text-stone-500";
+const urgTxt = (dias) => dias == null ? "" : dias < 0 ? `vencido ${-dias} d` : dias === 0 ? "hoy" : `en ${dias} d`;
 
 function MRP({ catalogo, setAviso }) {
   const noFeed = typeof window.mrpFeed !== "function";
@@ -3736,6 +3754,7 @@ function MRP({ catalogo, setAviso }) {
   const [transProg, setTransProg] = useState("");
   const [mes, setMes] = useState("");                // "" = todos los meses
   const [soloFaltante, setSoloFaltante] = useState(true);
+  const [proyectoSel, setProyectoSel] = useState(""); // "" = todos los proyectos
   const cargaRef = useRef(false);
 
   // Stock físico: del cache que arma la pestaña Inventario (stock_on_hand por SKU).
@@ -3745,7 +3764,9 @@ function MRP({ catalogo, setAviso }) {
       if (r?.value) {
         const c = JSON.parse(r.value);
         const m = {};
-        for (const [sku, x] of Object.entries(c.porSku || {})) m[upMrp(sku)] = +x.tot || 0;
+        // Stock real para comprar = SOLO existencia física del almacén Central (fiscal),
+        // no la suma de todos los almacenes (Semi-OK/Deshecho/Perezgrovas/Cargo Baja no cuentan).
+        for (const [sku, x] of Object.entries(c.porSku || {})) m[upMrp(sku)] = +((x.w && x.w["Central"]) || 0);
         setStockBySku(m);
       }
     } catch {}
@@ -3817,15 +3838,19 @@ function MRP({ catalogo, setAviso }) {
     ...p, materiales: (p.materiales || []).map((x) => ({ ...x, sku: x.sku ? upMrp(x.sku) : null })),
   })), [feed]);
 
+  const HOY = hoy();
+  const proyectosLista = useMemo(() => (feed?.proyectos || []).map((p) => ({ id: String(p.id), name: p.name, ov: p.ov })), [feed]);
+  const proyFiltrados = useMemo(() => (proyectoSel ? proyNorm.filter((p) => String(p.id) === proyectoSel) : proyNorm), [proyNorm, proyectoSel]);
+
   const meses = useMemo(() => {
     const s = new Set();
-    for (const f of calendarioCompra(proyNorm, invPorSku)) if (f.fechaCompra) s.add(f.fechaCompra.slice(0, 7));
+    for (const f of calendarioCompra(proyFiltrados, invPorSku)) if (f.fechaCompra) s.add(f.fechaCompra.slice(0, 7));
     return [...s].sort();
-  }, [proyNorm, invPorSku]);
+  }, [proyFiltrados, invPorSku]);
 
   const opts = useMemo(() => (mes ? { soloFaltante, desde: mes + "-01", hasta: mes + "-31" } : { soloFaltante }), [mes, soloFaltante]);
-  const grupos = useMemo(() => buildMRP(proyNorm, invPorSku, opts), [proyNorm, invPorSku, opts]);
-  const calendario = useMemo(() => calendarioCompra(proyNorm, invPorSku, opts), [proyNorm, invPorSku, opts]);
+  const grupos = useMemo(() => buildMRP(proyFiltrados, invPorSku, opts), [proyFiltrados, invPorSku, opts]);
+  const calendario = useMemo(() => calendarioCompra(proyFiltrados, invPorSku, opts), [proyFiltrados, invPorSku, opts]);
   const sinStock = Object.keys(stockBySku).length === 0;
   const sinTransito = Object.keys(transito).length === 0;
   const totComprar = grupos.reduce((a, g) => a + g.totPorComprar, 0);
@@ -3848,12 +3873,19 @@ function MRP({ catalogo, setAviso }) {
       </div>
 
       {noFeed && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">El feed del MRP no está disponible en esta versión de la app (falta la Edge Function <code>mrp-feed</code>).</div>}
-      {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b> para valuar; el MRP usa ese cache como existencia física. Mientras, el stock se toma como 0.</div>}
+      {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b>. El MRP usa <b>solo la existencia física del almacén Central (fiscal)</b> como stock; mientras, se toma 0.</div>}
+      {!sinStock && <p className="text-[11px] text-stone-500">Stock = existencia física del almacén <b>Central (fiscal)</b> únicamente. Los demás almacenes (Semi-OK, Deshecho, Perezgrovas, Cargo Baja) no cuentan para comprar.</p>}
 
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs text-stone-600">Proyecto
+            <select value={proyectoSel} onChange={(e) => setProyectoSel(e.target.value)} className="mt-1 block px-2 py-1.5 rounded text-xs bg-white border border-stone-300 text-stone-800">
+              <option value="">Todos los proyectos</option>
+              {proyectosLista.map((p) => <option key={p.id} value={p.id}>{p.name}{p.ov ? ` · ${p.ov}` : ""}</option>)}
+            </select>
+          </label>
           <label className="text-xs text-stone-600">Mes de compra
-            <select value={mes} onChange={(e) => setMes(e.target.value)} className="mt-1 block px-2 py-1.5 border rounded text-xs">
+            <select value={mes} onChange={(e) => setMes(e.target.value)} className="mt-1 block px-2 py-1.5 rounded text-xs bg-white border border-stone-300 text-stone-800">
               <option value="">Todos</option>
               {meses.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
@@ -3886,7 +3918,7 @@ function MRP({ catalogo, setAviso }) {
               {calendario.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-stone-400">Sin partidas para el filtro actual.</td></tr>}
               {calendario.map((f, i) => (
                 <tr key={i} className="border-t hover:bg-stone-50">
-                  <td className="px-3 py-1.5 font-mono tabular-nums whitespace-nowrap">{f.fechaCompra || "—"}</td>
+                  <td className="px-3 py-1.5 whitespace-nowrap"><div className="tabular-nums">{fechaCortaMrp(f.fechaCompra)}</div><div className={`text-[10px] ${urgMrp(diasMrp(f.fechaCompra, HOY))}`}>{urgTxt(diasMrp(f.fechaCompra, HOY))}</div></td>
                   <td className="px-2 py-1.5 text-center tabular-nums">{f.lead}{f.critico ? "★" : ""}</td>
                   <td className="px-2 py-1.5 text-center"><span className={`px-1.5 py-0.5 rounded border text-[10px] ${HITO_UI[f.hito]?.chip || ""}`}>{f.hito}</span></td>
                   <td className="px-3 py-1.5 font-mono">{f.sku || "—"}</td>
@@ -3912,7 +3944,7 @@ function MRP({ catalogo, setAviso }) {
                 <span className="text-sm font-semibold">{g.meta?.nombre || ""}</span>
               </div>
               <div className="text-[11px] text-stone-500">
-                lead {g.leadHito} d · comprar ≥ <b className="font-mono">{g.ventana.fechaCompra || "—"}</b> · en sitio ≤ <b className="font-mono">{g.ventana.fechaInstalacion || "—"}</b> · por comprar <b className="text-red-700">{nfMrp.format(g.totPorComprar)}</b>
+                lead {g.leadHito} d · comprar ≥ <b>{fechaCortaMrp(g.ventana.fechaCompra)}</b> <span className={urgMrp(diasMrp(g.ventana.fechaCompra, HOY))}>({urgTxt(diasMrp(g.ventana.fechaCompra, HOY))})</span> · en sitio ≤ <b>{fechaCortaMrp(g.ventana.fechaInstalacion)}</b> · por comprar <b className="text-red-700">{nfMrp.format(g.totPorComprar)}</b>
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -3921,7 +3953,7 @@ function MRP({ catalogo, setAviso }) {
                   {g.materiales.map((m, i) => (
                     <tr key={i} className="border-t hover:bg-stone-50">
                       <td className="px-3 py-1.5 font-mono w-28">{m.sku || "—"}</td>
-                      <td className="px-3 py-1.5">{m.desc}{m.critico ? <span className="ml-1 text-[10px] text-violet-700">★ crítico</span> : null}<span className="ml-1 text-[10px] text-stone-400">({m.proyectos.length} obra{m.proyectos.length !== 1 ? "s" : ""})</span></td>
+                      <td className="px-3 py-1.5">{m.desc}{m.critico ? <span className="ml-1 px-1 rounded bg-rose-600 text-white text-[9px] font-bold align-middle">CRÍTICO</span> : null}<span className="ml-1 text-[10px] text-stone-400">({m.proyectos.length} obra{m.proyectos.length !== 1 ? "s" : ""})</span></td>
                       <td className="px-2 py-1.5 text-right tabular-nums w-16">{nfMrp.format(m.requerido)}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-stone-500 w-16">{nfMrp.format(m.stock)}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-stone-500 w-16">{nfMrp.format(m.enTransito)}</td>
@@ -3955,6 +3987,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [invCargando, setInvCargando] = useState(false);
   const [invProg, setInvProg] = useState("");
   const invRef = useRef(false);
+  const [verOtros, setVerOtros] = useState(false);   // mostrar/ocultar almacenes no-fiscales
+  const [soloMrp, setSoloMrp] = useState(false);      // filtrar: solo SKU en proyectos activos
+  const [mrpSkus, setMrpSkus] = useState({});         // sku(may) -> [{ov,name}] de proyectos activos del feed IS-PMT
   const noConn = typeof window.zohoBooks !== "function";
   const costoSku = (it) => { const cv = catalogo[it.sku] ? +catalogo[it.sku].costoVigente : NaN; return isFinite(cv) && cv > 0 ? cv : (+it.purchase_rate || 0); };
   const refrescarInv = async () => {
@@ -4002,10 +4037,30 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     })();
   }, []);
 
-  const colAlmacenes = (inv?.almacenes || []).map((a) => a.nombre);
+  // Proyectos activos del feed IS-PMT: qué SKU aparece en qué obra (para la columna MRP).
+  useEffect(() => {
+    if (typeof window.mrpFeed !== "function") return;
+    (async () => {
+      try {
+        const d = await window.mrpFeed();
+        const m = {};
+        for (const p of d.proyectos || []) for (const mat of p.materiales || []) {
+          if (!mat.sku) continue;
+          const k = String(mat.sku).toUpperCase();
+          (m[k] = m[k] || []).push({ ov: p.ov, name: p.name });
+        }
+        setMrpSkus(m);
+      } catch { /* si el feed no está, la columna MRP queda vacía */ }
+    })();
+  }, []);
+
+  const almObj = inv?.almacenes || [];
+  const colAlmacenes = (verOtros ? almObj : almObj.filter((a) => a.fiscal)).map((a) => a.nombre);
+  const mrpDe = (sku) => mrpSkus[String(sku).toUpperCase()] || null;
   const invRows = inv ? Object.entries(inv.porSku)
     .filter(([sku, x]) => !q || sku.toLowerCase().includes(q) || (x.desc || "").toLowerCase().includes(q))
-    .map(([sku, x]) => [sku, x, x.tot * (x.cost || 0)])
+    .filter(([sku]) => !soloMrp || mrpDe(sku))
+    .map(([sku, x]) => [sku, x, (x.w?.Central || 0) * (x.cost || 0)])  // Valor = SOLO existencias físicas de Central
     .sort((a, b) => b[2] - a[2]) : [];
 
   if (modo === "recepcion")
@@ -4016,8 +4071,8 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div>
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor total del inventario físico (hoy)</p>
-            <p className="text-2xl font-bold font-mono leading-tight">{inv == null ? "—" : `$${mx0(inv.total)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor del inventario físico · Central (fiscal)</p>
+            <p className="text-2xl font-bold font-mono leading-tight">{inv == null ? "—" : `$${mx0((inv.almacenes || []).find((a) => a.fiscal)?.valor || 0)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
           </div>
           <div className="text-right">
             <p className="text-xs text-emerald-100">{invCargando ? (invProg || "Valuando…") : (invFecha ? `al ${invFecha}` : "sin datos")}</p>
@@ -4025,7 +4080,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-          {(inv?.almacenes || []).map((a) => (
+          {(inv?.almacenes || []).filter((a) => a.fiscal || verOtros).map((a) => (
             <div key={a.nombre} className={`rounded-lg p-2.5 ${a.fiscal ? "bg-white/20 ring-1 ring-white/40" : "bg-white/10"}`}>
               <p className="text-[10px] uppercase tracking-widest text-emerald-100">{a.nombre}{a.fiscal ? " · fiscal" : ""}</p>
               <p className="text-sm font-bold font-mono leading-tight">${mx0(a.valor)}</p>
@@ -4033,7 +4088,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
             </div>
           ))}
         </div>
-        <p className="text-[10px] text-emerald-100/80 mt-2">Stock físico ("en existencia") de Zoho × costo del SKU. <b>Central</b> es lo que se reporta fiscalmente.</p>
+        <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
+          <p className="text-[10px] text-emerald-100/80">La valuación es <b>solo existencias físicas de Central</b> (fiscal). Los demás almacenes son referencia.</p>
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-emerald-50 whitespace-nowrap cursor-pointer"><input type="checkbox" checked={verOtros} onChange={(e) => setVerOtros(e.target.checked)} /> Ver otros almacenes</label>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -4044,36 +4102,46 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         <button onClick={() => setModo("recepcion")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">📷 Recepción por cámara</button>
       </div>
 
-      <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
-        className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
+      <div className="flex flex-wrap items-center gap-3">
+        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
+          className="flex-1 min-w-[200px] px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
+        <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 whitespace-nowrap cursor-pointer"><input type="checkbox" checked={soloMrp} onChange={(e) => setSoloMrp(e.target.checked)} /> Solo en proyectos activos</label>
+      </div>
       {inv == null ? (
         <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{invCargando ? (invProg || "Leyendo inventario de Zoho…") : "Dale ↻ Actualizar para traer el inventario por almacén."}</div>
       ) : (
         <>
           <p className="text-[11px] font-mono text-stone-500">{invRows.length} SKU con existencia · ordenado por valor{invRows.length > 500 ? " · mostrando 500 (usa el buscador para el resto)" : ""}.</p>
           <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: 560 + colAlmacenes.length * 82 }}>
+            <table className="w-full text-sm" style={{ minWidth: 620 + colAlmacenes.length * 82 }}>
               <thead className="bg-stone-50 border-b border-stone-200">
                 <tr className="text-[10px] uppercase tracking-widest text-stone-500">
                   <th className="text-left px-3 py-2">SKU</th>
                   <th className="text-left px-3 py-2">Artículo</th>
+                  <th className="text-center px-2 py-2 whitespace-nowrap">MRP</th>
                   {colAlmacenes.map((n) => <th key={n} className="text-right px-2 py-2 whitespace-nowrap">{n}</th>)}
-                  <th className="text-right px-3 py-2">Total</th>
+                  <th className="text-right px-3 py-2">Total{verOtros ? "" : " (Central)"}</th>
                   <th className="text-right px-3 py-2">Costo</th>
-                  <th className="text-right px-3 py-2">Valor</th>
+                  <th className="text-right px-3 py-2">Valor (Central)</th>
                 </tr>
               </thead>
               <tbody>
-                {invRows.slice(0, 500).map(([sku, x, val]) => (
+                {invRows.slice(0, 500).map(([sku, x, val]) => {
+                  const proj = mrpDe(sku);
+                  const ovs = proj ? [...new Set(proj.map((p) => p.ov || p.name).filter(Boolean))] : [];
+                  const totVis = colAlmacenes.reduce((s, n) => s + (x.w[n] || 0), 0);
+                  return (
                   <tr key={sku} className="border-b border-stone-100">
                     <td className="px-3 py-2 font-mono text-xs font-semibold">{sku}</td>
                     <td className="px-3 py-2 text-stone-600 text-xs">{x.desc}</td>
+                    <td className="px-2 py-2 text-center">{proj ? <span title={`En obra: ${ovs.join(", ")}`} className="inline-block px-1.5 py-0.5 rounded bg-violet-600 text-white text-[10px] font-bold">{ovs.length || proj.length}</span> : <span className="text-stone-300">—</span>}</td>
                     {colAlmacenes.map((n) => <td key={n} className={`px-2 py-2 text-right font-mono ${n === "Central" ? "font-semibold text-stone-800" : "text-stone-500"}`}>{x.w[n] || 0}</td>)}
-                    <td className="px-3 py-2 text-right font-mono">{x.tot}</td>
+                    <td className="px-3 py-2 text-right font-mono">{totVis}</td>
                     <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(x.cost || 0)}</td>
                     <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(val)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
