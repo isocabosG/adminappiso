@@ -3768,7 +3768,7 @@ function MRP({ catalogo, setAviso }) {
   const [transProg, setTransProg] = useState("");
   const [mes, setMes] = useState("");                // "" = todos los meses
   const [soloFaltante, setSoloFaltante] = useState(true);
-  const [proyectoSel, setProyectoSel] = useState(""); // "" = todos los proyectos
+  const [proyectosSel, setProyectosSel] = useState(() => new Set()); // vacío = todos los proyectos
   const [ovMats, setOvMats] = useState({});          // projectId -> materiales provisionales de la OV
   const [ovProg, setOvProg] = useState("");
   const [sel, setSel] = useState(() => new Set());   // claves seleccionadas para orden de compra
@@ -3859,7 +3859,8 @@ function MRP({ catalogo, setAviso }) {
 
   const HOY = hoy();
   const proyectosLista = useMemo(() => (feed?.proyectos || []).map((p) => ({ id: String(p.id), name: p.name, ov: p.ov })), [feed]);
-  const proyFiltrados = useMemo(() => (proyectoSel ? proyNorm.filter((p) => String(p.id) === proyectoSel) : proyNorm), [proyNorm, proyectoSel]);
+  const proyFiltrados = useMemo(() => (proyectosSel.size ? proyNorm.filter((p) => proyectosSel.has(String(p.id))) : proyNorm), [proyNorm, proyectosSel]);
+  const toggleProy = (id) => setProyectosSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const meses = useMemo(() => {
     const s = new Set();
@@ -3913,11 +3914,11 @@ function MRP({ catalogo, setAviso }) {
   const toggleSel = (k) => setSel((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const selTodos = () => setSel((s) => (s.size === calendario.length ? new Set() : new Set(calendario.map(keyDe))));
   const exportarSeleccion = () => {
-    const filas = calendario.filter((f) => sel.has(keyDe(f)));
+    const filas = calendario.filter((f) => sel.has(keyDe(f))).sort((a, b) => a.hito - b.hito || b.lead - a.lead);
     if (!filas.length) { setAviso({ t: "err", m: "No hay partidas seleccionadas." }); return; }
     const esc = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const head = ["Comprar antes", "Hito", "SKU", "Descripción", "Requerido", "Stock", "Tránsito", "Por comprar", "Provisional", "Obras"];
-    const rows = filas.map((f) => [f.fechaCompra || "", f.hito, f.sku || "", f.desc, f.requerido, f.stock, f.enTransito, f.porComprar, f.provisional ? "SÍ" : "", (f.obras || []).join(" / ")]);
+    const head = ["Comprar antes", "Hito", "Etapa", "SKU", "Descripción", "Requerido", "Stock", "Tránsito", "Por comprar", "Provisional", "Obras"];
+    const rows = filas.map((f) => [f.fechaCompra || "", f.hito, f.hitoNombre || "", f.sku || "", f.desc, f.requerido, f.stock, f.enTransito, f.porComprar, f.provisional ? "SÍ" : "", (f.obras || []).join(" / ")]);
     const csv = "﻿" + [head, ...rows].map((r) => r.map(esc).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -3937,7 +3938,7 @@ function MRP({ catalogo, setAviso }) {
           </div>
           <div className="text-right">
             <p className="text-xs text-violet-100">{cargando ? "Leyendo feed…" : (feed?.generated_at ? `feed al ${String(feed.generated_at).slice(0, 16).replace("T", " ")}` : "sin datos")}</p>
-            <button onClick={cargarFeed} disabled={cargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar feed</button>
+            <button onClick={() => { cargarStock(); cargarFeed(); }} disabled={cargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar"}</button>
           </div>
         </div>
         <p className="text-[10px] text-violet-100/80 mt-2">El número del hito es el orden en que <b>llega a obra</b>, no en que se compra: las baterías son Hito 3 pero se piden primero (lead {LEAD_EQUIPO_CRITICO} d). El calendario ordena por lead descendente.</p>
@@ -3963,12 +3964,15 @@ function MRP({ catalogo, setAviso }) {
 
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs text-stone-600">Proyecto
-            <select value={proyectoSel} onChange={(e) => setProyectoSel(e.target.value)} className="mt-1 block px-2 py-1.5 rounded text-xs bg-white border border-stone-300 text-stone-800">
-              <option value="">Todos los proyectos</option>
-              {proyectosLista.map((p) => <option key={p.id} value={p.id}>{p.name}{p.ov ? ` · ${p.ov}` : ""}</option>)}
-            </select>
-          </label>
+          <div className="text-xs text-stone-600">
+            <div className="mb-1">Proyectos <span className="text-stone-400">(marca uno o varios)</span></div>
+            <div className="flex flex-wrap gap-1 max-w-2xl">
+              <button onClick={() => setProyectosSel(new Set())} className={`px-2 py-1 rounded border text-[11px] ${proyectosSel.size === 0 ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-300 hover:bg-black/5"}`}>Todos</button>
+              {proyectosLista.map((p) => { const on = proyectosSel.has(p.id); return (
+                <button key={p.id} onClick={() => toggleProy(p.id)} title={p.ov || ""} className={`px-2 py-1 rounded border text-[11px] ${on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-300 hover:bg-black/5"}`}>{p.name}</button>
+              ); })}
+            </div>
+          </div>
           <label className="text-xs text-stone-600">Mes de compra
             <select value={mes} onChange={(e) => setMes(e.target.value)} className="mt-1 block px-2 py-1.5 rounded text-xs bg-white border border-stone-300 text-stone-800">
               <option value="">Todos</option>
@@ -3990,7 +3994,7 @@ function MRP({ catalogo, setAviso }) {
       {/* Calendario de compra: lista accionable + selección para orden de compra */}
       <div className="bg-white rounded-lg border overflow-hidden">
         <div className="px-3 py-2 border-b bg-stone-50 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm font-semibold">Calendario de compra <span className="font-normal text-stone-500">· ordenado por lead · marca lo que vas a pedir</span></div>
+          <div className="text-sm font-semibold">Calendario de compra <span className="font-normal text-stone-500">· todas las etapas juntas · lo que se pide primero (mayor anticipación) arriba · marca lo que vas a pedir</span></div>
           <button onClick={exportarSeleccion} disabled={!sel.size} className="px-2.5 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">⬇ Exportar selección{sel.size ? ` (${sel.size})` : ""}</button>
         </div>
         <div className="overflow-x-auto">
@@ -4025,6 +4029,7 @@ function MRP({ catalogo, setAviso }) {
       </div>
 
       {/* Desglose por hito */}
+      <div className="text-sm font-semibold pt-1">Desglose por etapa <span className="font-normal text-stone-500">· la misma info, agrupada por hito (1 preparación → 5 puesta en marcha) · también puedes marcar aquí</span></div>
       <div className="space-y-3">
         {grupos.map((g) => (
           <div key={g.hito} className="bg-white rounded-lg border overflow-hidden">
@@ -4040,12 +4045,14 @@ function MRP({ catalogo, setAviso }) {
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="bg-stone-50/60 text-stone-500"><tr>
+                  <th className="px-2 py-1.5 w-8"></th>
                   <th className="px-3 py-1.5 text-left whitespace-nowrap">Comprar antes</th><th className="px-3 py-1.5 text-left">SKU</th><th className="px-3 py-1.5 text-left">Descripción</th>
                   <th className="px-2 py-1.5 text-right">Req.</th><th className="px-2 py-1.5 text-right">Stock</th><th className="px-2 py-1.5 text-right">Tránsito</th><th className="px-2 py-1.5 text-right">Por comprar</th>
                 </tr></thead>
                 <tbody>
-                  {g.materiales.map((m, i) => { const fc = m.proyectos.map((p) => p.fechaCompra).filter(Boolean).sort()[0] || null; return (
+                  {g.materiales.map((m, i) => { const fc = m.proyectos.map((p) => p.fechaCompra).filter(Boolean).sort()[0] || null; const k = `${g.hito}|${m.sku || m.desc}`; return (
                     <tr key={i} className="border-t hover:bg-white/10">
+                      <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={sel.has(k)} onChange={() => toggleSel(k)} /></td>
                       <td className="px-3 py-1.5 whitespace-nowrap"><span className="tabular-nums">{fechaCortaMrp(fc)}</span> <span className={`text-[10px] ${urgMrp(diasMrp(fc, HOY))}`}>{urgTxt(diasMrp(fc, HOY))}</span></td>
                       <td className="px-3 py-1.5 font-mono whitespace-nowrap">{m.sku || "—"}</td>
                       <td className="px-3 py-1.5">{m.desc}{m.critico ? <span className="ml-1 px-1 rounded bg-rose-600 text-white text-[9px] font-bold align-middle">CRÍTICO</span> : null}{m.provisional ? <span className="ml-1 px-1 rounded bg-amber-500 text-white text-[9px] font-bold align-middle">OV</span> : null} <span className="text-[10px] text-stone-400">({m.proyectos.length} obra{m.proyectos.length !== 1 ? "s" : ""})</span></td>
