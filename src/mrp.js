@@ -51,6 +51,7 @@ export function lineasDeProyecto(p) {
       sku: m.sku || null, descripcion: m.descripcion || '', seccion: m.seccion || null,
       hito, lead, fechaCompra: fechaPedido(D, lead),
       critico: lead >= LEAD_EQUIPO_CRITICO,
+      provisional: !!m.provisional, // true = viene de la OV (sin BOM sincronizado)
       requerido: reqDe(m), pedido: num(m.cant_pedida), entregado: num(m.cant_entregada),
     }
   })
@@ -73,7 +74,7 @@ export function buildMRP(proyectos, invPorSku = {}, opts = {}) {
         porHito[h].materiales[key] ||
         (porHito[h].materiales[key] = {
           sku: l.sku, desc: l.descripcion || inv.desc || '', hito: h, seccion: l.seccion,
-          lead: 0, critico: false,
+          lead: 0, critico: false, provisional: false,
           requerido: 0, pedido: 0,
           stock: num(inv.stock), comprometido: num(inv.comprometido), enTransito: num(inv.enTransito),
           proyectos: [],
@@ -82,6 +83,7 @@ export function buildMRP(proyectos, invPorSku = {}, opts = {}) {
       cel.pedido += l.pedido
       cel.lead = Math.max(cel.lead, l.lead)
       cel.critico = cel.critico || l.critico
+      cel.provisional = cel.provisional || l.provisional
       cel.proyectos.push({ ov: l.ov, name: l.proyecto, qty: l.requerido, fechaCompra: l.fechaCompra, fechaInstalacion: l.D, lead: l.lead })
     }
   }
@@ -121,8 +123,9 @@ export function calendarioCompra(proyectos, invPorSku = {}, opts = {}) {
   const grupos = buildMRP(proyectos, invPorSku, opts)
   const filas = grupos.flatMap((g) => g.materiales.map((m) => ({
     hito: g.hito, hitoNombre: g.meta?.corto || '', sku: m.sku, desc: m.desc,
-    lead: m.lead, critico: m.critico,
+    lead: m.lead, critico: m.critico, provisional: m.provisional,
     fechaCompra: (m.proyectos.map((p) => p.fechaCompra).filter(Boolean).sort()[0]) || null,
+    obras: [...new Set(m.proyectos.map((p) => p.ov || p.name).filter(Boolean))],
     requerido: m.requerido, stock: m.stock, enTransito: m.enTransito,
     faltante: m.faltante, porComprar: m.porComprar,
   })))

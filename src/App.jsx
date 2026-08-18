@@ -3745,6 +3745,19 @@ const diasMrp = (iso, hoyISO) => { if (!iso) return null; const a = Date.parse(S
 const urgMrp = (dias) => dias == null ? "text-stone-400" : dias <= 14 ? "text-red-700 font-semibold" : dias <= 30 ? "text-amber-600 font-semibold" : "text-stone-500";
 const urgTxt = (dias) => dias == null ? "" : dias < 0 ? `vencido ${-dias} d` : dias === 0 ? "hoy" : `en ${dias} d`;
 
+// Clasificación mínima para equipos que vienen de la OV (sin milestone_id de la BD).
+// La OV trae equipos de alto nivel; leadDe() del motor deriva el crítico (baterías 150 d) del texto.
+const hitoDeOV = (txt) => {
+  const t = String(txt || "").toLowerCase();
+  if (/bater|renon|blue planet|pytes|ecube|extreme|brel|breh|brch|mpack/.test(t)) return 3;
+  if (/inversor|inverter|sol-?ark|sol ark/.test(t)) return 3;
+  if (/cerebro|control|gabinete|fuente|generador|kohler/.test(t)) return 3;
+  if (/panel|módulo|modulo/.test(t)) return 2;
+  if (/estructura|racking|riel|clamp/.test(t)) return 2;
+  return 3; // la OV suele ser equipos → default Equipos
+};
+const esServicioMrp = (l) => (l.line_item_type === "service" || l.product_type === "service") || String(l.sku || "").toUpperCase().startsWith("INST") || /suministro\s*e?\s*instalaci/i.test(`${l.name || ""} ${l.description || ""}`);
+
 function MRP({ catalogo, setAviso }) {
   const noFeed = typeof window.mrpFeed !== "function";
   const noZoho = typeof window.zohoBooks !== "function";
@@ -3756,6 +3769,9 @@ function MRP({ catalogo, setAviso }) {
   const [mes, setMes] = useState("");                // "" = todos los meses
   const [soloFaltante, setSoloFaltante] = useState(true);
   const [proyectoSel, setProyectoSel] = useState(""); // "" = todos los proyectos
+  const [ovMats, setOvMats] = useState({});          // projectId -> materiales provisionales de la OV
+  const [ovProg, setOvProg] = useState("");
+  const [sel, setSel] = useState(() => new Set());   // claves seleccionadas para orden de compra
   const cargaRef = useRef(false);
 
   // Stock físico: del cache que arma la pestaña Inventario (stock_on_hand por SKU).
@@ -3835,9 +3851,11 @@ function MRP({ catalogo, setAviso }) {
   }, [stockBySku, transito, catalogo]);
 
   // Proyectos normalizados (SKU en mayúsculas para cuadrar con el inventario).
-  const proyNorm = useMemo(() => (feed?.proyectos || []).map((p) => ({
-    ...p, materiales: (p.materiales || []).map((x) => ({ ...x, sku: x.sku ? upMrp(x.sku) : null })),
-  })), [feed]);
+  // Si el proyecto tiene BOM, se usa; si no, se cae a los equipos de la OV (provisional).
+  const proyNorm = useMemo(() => (feed?.proyectos || []).map((p) => {
+    const base = (p.materiales || []).length ? p.materiales : (ovMats[p.id] || []);
+    return { ...p, materiales: base.map((x) => ({ ...x, sku: x.sku ? upMrp(x.sku) : null })) };
+  }), [feed, ovMats]);
 
   const HOY = hoy();
   const proyectosLista = useMemo(() => (feed?.proyectos || []).map((p) => ({ id: String(p.id), name: p.name, ov: p.ov })), [feed]);
@@ -3856,6 +3874,58 @@ function MRP({ catalogo, setAviso }) {
   const sinTransito = Object.keys(transito).length === 0;
   const totComprar = grupos.reduce((a, g) => a + g.totPorComprar, 0);
 
+  const conBom = (feed?.proyectos || []).filter((p) => (p.materiales || []).length).length;
+  const proyectosSinBom = (feed?.proyectos || []).filter((p) => !(p.materiales || []).length);
+  const sinBom = proyectosSinBom.length;
+  const conOV = proyectosSinBom.filter((p) => (ovMats[p.id] || []).length).length;
+
+  // Jala los equipos de la orden de venta (Zoho) para proyectos sin BOM, como provisional.
+  const jalarOV = async () => {
+    if (noZoho) { setAviso({ t: "err", m: "La conexión a Zoho no está disponible." }); return; }
+    const pend = proyectosSinBom.filter((p) => p.zoho_so_id);
+    if (!pend.length) { setAviso({ t: "err", m: "No hay proyectos sin BOM con OV ligada (zoho_so_id)." }); return; }
+    setOvProg("Leyendo OV…");
+    try {
+      const next = {};
+      let i = 0;
+      for (const p of pend) {
+        i++; setOvProg(`Leyendo OV ${i}/${pend.length}…`);
+        try {
+          const d = await window.zohoBooks({ action: "get_sales_order", params: { salesorder_id: p.zoho_so_id } });
+          const mats = (d.salesorder?.line_items || []).filter((l) => !esServicioMrp(l)).map((l) => ({
+            sku: l.sku || null, descripcion: l.name || l.description || "",
+            milestone_id: hitoDeOV(`${l.name || ""} ${l.description || ""} ${l.sku || ""}`),
+            cant_disenada: +l.quantity || 0, cant_pedida: 0, cant_entregada: 0, provisional: true,
+          })).filter((m) => m.cant_disenada > 0);
+          if (mats.length) next[p.id] = mats;
+        } catch { /* si una OV falla, seguimos con las demás */ }
+      }
+      setOvMats((prev) => ({ ...prev, ...next }));
+      setAviso({ t: "ok", m: `Equipos de OV cargados (provisional) para ${Object.keys(next).length} proyecto(s).` });
+    } catch (e) {
+      setAviso({ t: "err", m: "No se pudieron jalar los equipos de OV: " + (e.message || e) });
+    }
+    setOvProg("");
+  };
+
+  // Selección de partidas → exportar a Excel (CSV con BOM, se abre directo en Excel).
+  const keyDe = (f) => `${f.hito}|${f.sku || f.desc}`;
+  const toggleSel = (k) => setSel((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const selTodos = () => setSel((s) => (s.size === calendario.length ? new Set() : new Set(calendario.map(keyDe))));
+  const exportarSeleccion = () => {
+    const filas = calendario.filter((f) => sel.has(keyDe(f)));
+    if (!filas.length) { setAviso({ t: "err", m: "No hay partidas seleccionadas." }); return; }
+    const esc = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const head = ["Comprar antes", "Hito", "SKU", "Descripción", "Requerido", "Stock", "Tránsito", "Por comprar", "Provisional", "Obras"];
+    const rows = filas.map((f) => [f.fechaCompra || "", f.hito, f.sku || "", f.desc, f.requerido, f.stock, f.enTransito, f.porComprar, f.provisional ? "SÍ" : "", (f.obras || []).join(" / ")]);
+    const csv = "﻿" + [head, ...rows].map((r) => r.map(esc).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `orden-compra-${HOY}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    setAviso({ t: "ok", m: `${filas.length} partidas exportadas a Excel (CSV).` });
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-gradient-to-r from-violet-800 to-violet-600 text-white rounded-lg p-4">
@@ -3863,7 +3933,7 @@ function MRP({ catalogo, setAviso }) {
           <div>
             <p className="text-[10px] uppercase tracking-widest text-violet-100">MRP de compras por hito · fuente IS-PMT</p>
             <p className="text-2xl font-bold leading-tight">{feed ? `${feed.proyectos.length} proyectos` : "—"} <span className="text-sm font-normal text-violet-100">calendarizados</span></p>
-            <p className="text-[11px] text-violet-100/90 mt-0.5">Por comprar (total filtrado): <b>{nfMrp.format(totComprar)}</b> pzas</p>
+            <p className="text-[11px] text-violet-100/90 mt-0.5">{conBom} con BOM · {sinBom} sin BOM{conOV ? ` (${conOV} desde OV)` : ""} · por comprar <b>{nfMrp.format(totComprar)}</b> pzas</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-violet-100">{cargando ? "Leyendo feed…" : (feed?.generated_at ? `feed al ${String(feed.generated_at).slice(0, 16).replace("T", " ")}` : "sin datos")}</p>
@@ -3876,6 +3946,13 @@ function MRP({ catalogo, setAviso }) {
       {noFeed && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">El feed del MRP no está disponible en esta versión de la app (falta la Edge Function <code>mrp-feed</code>).</div>}
       {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b>. El MRP usa <b>solo la existencia física del almacén Central (fiscal)</b> como stock; mientras, se toma 0.</div>}
       {!sinStock && <p className="text-[11px] text-stone-500">Stock = existencia física del almacén <b>Central (fiscal)</b> únicamente. Los demás almacenes (Semi-OK, Deshecho, Perezgrovas, Cargo Baja) no cuentan para comprar.</p>}
+
+      {sinBom > 0 && (
+        <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900 flex flex-wrap items-center justify-between gap-2">
+          <div><b>{sinBom}</b> calendarizado(s) sin BOM sincronizado{conOV ? ` · ${conOV} con equipos de OV (provisional)` : ""}: <span className="text-[12px]">{proyectosSinBom.map((p) => p.ov || p.name).filter(Boolean).join(", ")}</span></div>
+          <button onClick={jalarOV} disabled={!!ovProg || noZoho} className="px-2.5 py-1.5 bg-amber-600 text-white text-xs font-medium rounded hover:bg-amber-700 disabled:opacity-40 whitespace-nowrap">{ovProg || "Jalar equipos de OV (provisional)"}</button>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -3903,33 +3980,38 @@ function MRP({ catalogo, setAviso }) {
         </div>
       </div>
 
-      {/* Calendario de compra: lista accionable, lo más lento arriba */}
+      {/* Calendario de compra: lista accionable + selección para orden de compra */}
       <div className="bg-white rounded-lg border overflow-hidden">
-        <div className="px-3 py-2 border-b bg-stone-50 text-sm font-semibold">Calendario de compra <span className="font-normal text-stone-500">· ordenado por anticipación (lead)</span></div>
+        <div className="px-3 py-2 border-b bg-stone-50 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold">Calendario de compra <span className="font-normal text-stone-500">· ordenado por lead · marca lo que vas a pedir</span></div>
+          <button onClick={exportarSeleccion} disabled={!sel.size} className="px-2.5 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">⬇ Exportar selección{sel.size ? ` (${sel.size})` : ""}</button>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="bg-stone-50 text-stone-500">
               <tr>
+                <th className="px-2 py-2 text-center w-8"><input type="checkbox" checked={sel.size > 0 && sel.size === calendario.length} onChange={selTodos} title="Seleccionar todo" /></th>
                 <th className="px-3 py-2 text-left">Comprar antes</th><th className="px-2 py-2 text-center">Lead</th><th className="px-2 py-2 text-center">Hito</th>
                 <th className="px-3 py-2 text-left">SKU</th><th className="px-3 py-2 text-left">Descripción</th>
                 <th className="px-2 py-2 text-right">Req.</th><th className="px-2 py-2 text-right">Stock</th><th className="px-2 py-2 text-right">Tránsito</th><th className="px-2 py-2 text-right">Por comprar</th>
               </tr>
             </thead>
             <tbody>
-              {calendario.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-stone-400">Sin partidas para el filtro actual.</td></tr>}
-              {calendario.map((f, i) => (
-                <tr key={i} className="border-t hover:bg-stone-50">
+              {calendario.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-stone-400">Sin partidas para el filtro actual.</td></tr>}
+              {calendario.map((f) => { const k = keyDe(f); return (
+                <tr key={k} className="border-t hover:bg-white/10">
+                  <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={sel.has(k)} onChange={() => toggleSel(k)} /></td>
                   <td className="px-3 py-1.5 whitespace-nowrap"><div className="tabular-nums">{fechaCortaMrp(f.fechaCompra)}</div><div className={`text-[10px] ${urgMrp(diasMrp(f.fechaCompra, HOY))}`}>{urgTxt(diasMrp(f.fechaCompra, HOY))}</div></td>
                   <td className="px-2 py-1.5 text-center tabular-nums">{f.lead}{f.critico ? "★" : ""}</td>
                   <td className="px-2 py-1.5 text-center"><span className={`px-1.5 py-0.5 rounded border text-[10px] ${HITO_UI[f.hito]?.chip || ""}`}>{f.hito}</span></td>
-                  <td className="px-3 py-1.5 font-mono">{f.sku || "—"}</td>
-                  <td className="px-3 py-1.5">{f.desc}</td>
+                  <td className="px-3 py-1.5 font-mono whitespace-nowrap">{f.sku || "—"}</td>
+                  <td className="px-3 py-1.5">{f.desc}{f.provisional ? <span className="ml-1 px-1 rounded bg-amber-500 text-white text-[9px] font-bold align-middle">OV</span> : null}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{nfMrp.format(f.requerido)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(f.stock)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(f.enTransito)}</td>
                   <td className={`px-2 py-1.5 text-right tabular-nums font-semibold ${f.porComprar > 0 ? "text-red-700" : "text-emerald-700"}`}>{nfMrp.format(f.porComprar)}</td>
                 </tr>
-              ))}
+              ); })}
             </tbody>
           </table>
         </div>
@@ -3950,17 +4032,22 @@ function MRP({ catalogo, setAviso }) {
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
+                <thead className="bg-stone-50/60 text-stone-500"><tr>
+                  <th className="px-3 py-1.5 text-left whitespace-nowrap">Comprar antes</th><th className="px-3 py-1.5 text-left">SKU</th><th className="px-3 py-1.5 text-left">Descripción</th>
+                  <th className="px-2 py-1.5 text-right">Req.</th><th className="px-2 py-1.5 text-right">Stock</th><th className="px-2 py-1.5 text-right">Tránsito</th><th className="px-2 py-1.5 text-right">Por comprar</th>
+                </tr></thead>
                 <tbody>
-                  {g.materiales.map((m, i) => (
-                    <tr key={i} className="border-t hover:bg-stone-50">
-                      <td className="px-3 py-1.5 font-mono w-28">{m.sku || "—"}</td>
-                      <td className="px-3 py-1.5">{m.desc}{m.critico ? <span className="ml-1 px-1 rounded bg-rose-600 text-white text-[9px] font-bold align-middle">CRÍTICO</span> : null}<span className="ml-1 text-[10px] text-stone-400">({m.proyectos.length} obra{m.proyectos.length !== 1 ? "s" : ""})</span></td>
-                      <td className="px-2 py-1.5 text-right tabular-nums w-16">{nfMrp.format(m.requerido)}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-stone-500 w-16">{nfMrp.format(m.stock)}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums text-stone-500 w-16">{nfMrp.format(m.enTransito)}</td>
-                      <td className={`px-2 py-1.5 text-right tabular-nums font-semibold w-20 ${m.porComprar > 0 ? "text-red-700" : "text-emerald-700"}`}>{nfMrp.format(m.porComprar)}</td>
+                  {g.materiales.map((m, i) => { const fc = m.proyectos.map((p) => p.fechaCompra).filter(Boolean).sort()[0] || null; return (
+                    <tr key={i} className="border-t hover:bg-white/10">
+                      <td className="px-3 py-1.5 whitespace-nowrap"><span className="tabular-nums">{fechaCortaMrp(fc)}</span> <span className={`text-[10px] ${urgMrp(diasMrp(fc, HOY))}`}>{urgTxt(diasMrp(fc, HOY))}</span></td>
+                      <td className="px-3 py-1.5 font-mono whitespace-nowrap">{m.sku || "—"}</td>
+                      <td className="px-3 py-1.5">{m.desc}{m.critico ? <span className="ml-1 px-1 rounded bg-rose-600 text-white text-[9px] font-bold align-middle">CRÍTICO</span> : null}{m.provisional ? <span className="ml-1 px-1 rounded bg-amber-500 text-white text-[9px] font-bold align-middle">OV</span> : null} <span className="text-[10px] text-stone-400">({m.proyectos.length} obra{m.proyectos.length !== 1 ? "s" : ""})</span></td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">{nfMrp.format(m.requerido)}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(m.stock)}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(m.enTransito)}</td>
+                      <td className={`px-2 py-1.5 text-right tabular-nums font-semibold ${m.porComprar > 0 ? "text-red-700" : "text-emerald-700"}`}>{nfMrp.format(m.porComprar)}</td>
                     </tr>
-                  ))}
+                  ); })}
                 </tbody>
               </table>
             </div>
