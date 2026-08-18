@@ -3778,7 +3778,7 @@ function MRP({ catalogo, setAviso }) {
   // Stock físico: del cache que arma la pestaña Inventario (stock_on_hand por SKU).
   const cargarStock = async () => {
     try {
-      const r = await window.storage?.get("iso3-inventario-cache");
+      const r = await window.storage?.get("iso3-inventario-cache-v2");
       if (r?.value) {
         const c = JSON.parse(r.value);
         const m = {};
@@ -4216,7 +4216,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       const fecha = hoy();
       const data = { total, almacenes, porSku };
       setInv(data); setInvFecha(fecha);
-      try { await window.storage?.set("iso3-inventario-cache", JSON.stringify({ fecha, ...data })); } catch {}
+      try { await window.storage?.set("iso3-inventario-cache-v2", JSON.stringify({ fecha, ...data })); } catch {}
       const central = almacenes.find((a) => a.fiscal);
       setAviso({ t: "ok", m: `Inventario valuado: $${mx0(total)} MXN · Central (fiscal): $${mx0(central ? central.valor : 0)}.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudo valuar el inventario: " + (e.message || e) }); }
@@ -4225,7 +4225,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   useEffect(() => {
     (async () => {
       let cache = null;
-      try { const r = await window.storage?.get("iso3-inventario-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
+      try { const r = await window.storage?.get("iso3-inventario-cache-v2"); if (r?.value) cache = JSON.parse(r.value); } catch {}
       if (cache && cache.porSku) { setInv({ total: cache.total, almacenes: cache.almacenes || [], porSku: cache.porSku }); setInvFecha(cache.fecha || ""); }
       if ((!cache || cache.fecha !== hoy()) && !noConn) refrescarInv();
     })();
