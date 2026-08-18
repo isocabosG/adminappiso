@@ -4196,7 +4196,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         while (more && page <= 30) {
           const d = await window.zohoBooks({ action: "list_items", params: { warehouse_id: a.id, per_page: "200", page: String(page), filter_by: "Status.Active" } });
           for (const it of (d.items || [])) {
-            const stock = +it.stock_on_hand || 0;
+            // FÍSICO disponible (actual_available_stock), NO el contable (stock_on_hand):
+            // stock_on_hand infla con lo comprometido y no refleja lo que hay en piso.
+            const stock = Math.max(0, +it.actual_available_stock || 0);
             if (stock <= 0) continue;
             const cost = costoSku(it);
             if (!porSku[it.sku]) porSku[it.sku] = { desc: it.name || it.sku, cost, tot: 0, w: {} };
