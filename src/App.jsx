@@ -3948,9 +3948,16 @@ function MRP({ catalogo, setAviso }) {
       {!sinStock && <p className="text-[11px] text-stone-500">Stock = existencia física del almacén <b>Central (fiscal)</b> únicamente. Los demás almacenes (Semi-OK, Deshecho, Perezgrovas, Cargo Baja) no cuentan para comprar.</p>}
 
       {sinBom > 0 && (
-        <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900 flex flex-wrap items-center justify-between gap-2">
-          <div><b>{sinBom}</b> calendarizado(s) sin BOM sincronizado{conOV ? ` · ${conOV} con equipos de OV (provisional)` : ""}: <span className="text-[12px]">{proyectosSinBom.map((p) => p.ov || p.name).filter(Boolean).join(", ")}</span></div>
-          <button onClick={jalarOV} disabled={!!ovProg || noZoho} className="px-2.5 py-1.5 bg-amber-600 text-white text-xs font-medium rounded hover:bg-amber-700 disabled:opacity-40 whitespace-nowrap">{ovProg || "Jalar equipos de OV (provisional)"}</button>
+        <div className="bg-white rounded-lg border px-3 py-2 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs text-stone-600 min-w-0">
+            <b className="text-stone-800">{sinBom}</b> calendarizado(s) sin BOM sincronizado{conOV ? ` · ${conOV} con equipos de OV` : ""}.{" "}
+            <span className="text-stone-400">{(() => { const l = proyectosSinBom.map((p) => p.ov || p.name).filter(Boolean); return l.slice(0, 12).join(", ") + (l.length > 12 ? ` …y ${l.length - 12} más` : ""); })()}</span>
+            <span className="block text-[10px] text-stone-400 mt-0.5">Provisional: en cuanto se sincronice el BOM de una obra, el BOM manda automáticamente (la OV solo se usa mientras no hay BOM).</span>
+          </div>
+          <div className="flex items-center gap-2 whitespace-nowrap">
+            {conOV > 0 && <button onClick={() => setOvMats({})} className="px-2.5 py-1.5 text-xs font-medium rounded border border-stone-300 text-stone-600 hover:bg-black/5">Quitar OV</button>}
+            <button onClick={jalarOV} disabled={!!ovProg || noZoho} className="px-2.5 py-1.5 bg-amber-600 text-white text-xs font-medium rounded hover:bg-amber-700 disabled:opacity-40">{ovProg || "Jalar equipos de OV (provisional)"}</button>
+          </div>
         </div>
       )}
 
