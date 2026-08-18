@@ -3859,6 +3859,20 @@ function MRP({ catalogo, setAviso }) {
 
   const HOY = hoy();
   const proyectosLista = useMemo(() => (feed?.proyectos || []).map((p) => ({ id: String(p.id), name: p.name, ov: p.ov })), [feed]);
+
+  // Mini-calendario de instalaciones: proyectos agrupados por mes de instalación (como en IS-PMT).
+  const mesesInstall = useMemo(() => {
+    const byMonth = {};
+    for (const p of (feed?.proyectos || [])) {
+      const f = p.fecha_instalacion; if (!f) continue;
+      const mk = String(f).slice(0, 7);
+      (byMonth[mk] = byMonth[mk] || []).push({ id: String(p.id), name: p.name, ov: p.ov, fecha: String(f).slice(0, 10), dia: String(f).slice(8, 10) });
+    }
+    return Object.keys(byMonth).sort().map((mk) => {
+      const [y, m] = mk.split("-");
+      return { key: mk, label: `${MESES_MRP[+m - 1]} ${y}`, proyectos: byMonth[mk].sort((a, b) => a.fecha.localeCompare(b.fecha)) };
+    });
+  }, [feed]);
   const proyFiltrados = useMemo(() => (proyectosSel.size ? proyNorm.filter((p) => proyectosSel.has(String(p.id))) : proyNorm), [proyNorm, proyectosSel]);
   const toggleProy = (id) => setProyectosSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
@@ -3962,17 +3976,30 @@ function MRP({ catalogo, setAviso }) {
         </div>
       )}
 
+      {/* Mini-calendario de instalaciones (por mes) — marca obras para ver qué comprar */}
+      <div className="bg-white rounded-lg border p-3">
+        <div className="flex items-center justify-between mb-2 gap-2">
+          <div className="text-xs font-semibold text-stone-700">Calendario de instalaciones <span className="font-normal text-stone-400">· como en IS-PMT · marca obras para ver qué comprar</span></div>
+          <button onClick={() => setProyectosSel(new Set())} className={`px-2 py-1 rounded border text-[11px] whitespace-nowrap ${proyectosSel.size === 0 ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-600 border-stone-300 hover:bg-black/5"}`}>Todas ({proyectosLista.length})</button>
+        </div>
+        {mesesInstall.length === 0 ? <p className="text-[11px] text-stone-400">Sin instalaciones calendarizadas.</p> : (
+          <div className="flex gap-3 overflow-x-auto pb-1">
+            {mesesInstall.map((mc) => (
+              <div key={mc.key} className="min-w-[168px] shrink-0">
+                <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-1 border-b pb-1">{mc.label} <span className="text-stone-400">· {mc.proyectos.length}</span></div>
+                <div className="flex flex-col gap-1">
+                  {mc.proyectos.map((p) => { const on = proyectosSel.has(p.id); return (
+                    <button key={p.id} onClick={() => toggleProy(p.id)} title={`${p.name}${p.ov ? " · " + p.ov : ""} · instala ${p.fecha}`} className={`text-left px-2 py-1 rounded border text-[11px] leading-tight ${on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-200 hover:bg-black/5"}`}><span className="tabular-nums opacity-60">{p.dia}</span> {p.name}</button>
+                  ); })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="text-xs text-stone-600">
-            <div className="mb-1">Proyectos <span className="text-stone-400">(marca uno o varios)</span></div>
-            <div className="flex flex-wrap gap-1 max-w-2xl">
-              <button onClick={() => setProyectosSel(new Set())} className={`px-2 py-1 rounded border text-[11px] ${proyectosSel.size === 0 ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-300 hover:bg-black/5"}`}>Todos</button>
-              {proyectosLista.map((p) => { const on = proyectosSel.has(p.id); return (
-                <button key={p.id} onClick={() => toggleProy(p.id)} title={p.ov || ""} className={`px-2 py-1 rounded border text-[11px] ${on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-300 hover:bg-black/5"}`}>{p.name}</button>
-              ); })}
-            </div>
-          </div>
           <label className="text-xs text-stone-600">Mes de compra
             <select value={mes} onChange={(e) => setMes(e.target.value)} className="mt-1 block px-2 py-1.5 rounded text-xs bg-white border border-stone-300 text-stone-800">
               <option value="">Todos</option>
@@ -4013,10 +4040,10 @@ function MRP({ catalogo, setAviso }) {
                 <tr key={k} className="border-t hover:bg-white/10">
                   <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={sel.has(k)} onChange={() => toggleSel(k)} /></td>
                   <td className="px-3 py-1.5 whitespace-nowrap"><div className="tabular-nums">{fechaCortaMrp(f.fechaCompra)}</div><div className={`text-[10px] ${urgMrp(diasMrp(f.fechaCompra, HOY))}`}>{urgTxt(diasMrp(f.fechaCompra, HOY))}</div></td>
-                  <td className="px-2 py-1.5 text-center tabular-nums">{f.lead}{f.critico ? "★" : ""}</td>
+                  <td className="px-2 py-1.5 text-center tabular-nums">{f.lead}{f.critico ? <span className="text-red-600 font-bold"> ★</span> : ""}</td>
                   <td className="px-2 py-1.5 text-center"><span className={`px-1.5 py-0.5 rounded border text-[10px] ${HITO_UI[f.hito]?.chip || ""}`}>{f.hito}</span></td>
                   <td className="px-3 py-1.5 font-mono whitespace-nowrap">{f.sku || "—"}</td>
-                  <td className="px-3 py-1.5">{f.desc}{f.provisional ? <span className="ml-1 px-1 rounded bg-amber-500 text-white text-[9px] font-bold align-middle">OV</span> : null}</td>
+                  <td className="px-3 py-1.5">{f.desc}{f.critico ? <span className="ml-1 px-1 rounded bg-rose-600 text-white text-[9px] font-bold align-middle">CRÍTICO</span> : null}{f.provisional ? <span className="ml-1 px-1 rounded bg-amber-500 text-white text-[9px] font-bold align-middle">OV</span> : null}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{nfMrp.format(f.requerido)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(f.stock)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-stone-500">{nfMrp.format(f.enTransito)}</td>
