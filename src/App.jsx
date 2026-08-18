@@ -3865,8 +3865,9 @@ function MRP({ catalogo, setAviso }) {
     const byMonth = {};
     for (const p of (feed?.proyectos || [])) {
       const f = p.fecha_instalacion; if (!f) continue;
-      const mk = String(f).slice(0, 7);
-      (byMonth[mk] = byMonth[mk] || []).push({ id: String(p.id), name: p.name, ov: p.ov, fecha: String(f).slice(0, 10), dia: String(f).slice(8, 10) });
+      const s = String(f).slice(0, 10);
+      const mk = s.slice(0, 7);
+      (byMonth[mk] = byMonth[mk] || []).push({ id: String(p.id), name: p.name, ov: p.ov, fecha: s, dia: s.slice(8, 10), diaMes: `${s.slice(8, 10)} ${MESES_MRP[+s.slice(5, 7) - 1]}` });
     }
     return Object.keys(byMonth).sort().map((mk) => {
       const [y, m] = mk.split("-");
@@ -3980,7 +3981,10 @@ function MRP({ catalogo, setAviso }) {
       <div className="bg-white rounded-lg border p-3">
         <div className="flex items-center justify-between mb-2 gap-2">
           <div className="text-xs font-semibold text-stone-700">Calendario de instalaciones <span className="font-normal text-stone-400">· como en IS-PMT · marca obras para ver qué comprar</span></div>
-          <button onClick={() => setProyectosSel(new Set())} className={`px-2 py-1 rounded border text-[11px] whitespace-nowrap ${proyectosSel.size === 0 ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-600 border-stone-300 hover:bg-black/5"}`}>Todas ({proyectosLista.length})</button>
+          <div className="flex gap-1 whitespace-nowrap">
+            <button onClick={() => setProyectosSel(new Set(proyectosLista.map((p) => p.id)))} className="px-2 py-1 rounded border text-[11px] bg-white text-stone-600 border-stone-300 hover:bg-black/5">Marcar todas ({proyectosLista.length})</button>
+            <button onClick={() => setProyectosSel(new Set())} className={`px-2 py-1 rounded border text-[11px] ${proyectosSel.size === 0 ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-600 border-stone-300 hover:bg-black/5"}`}>Limpiar</button>
+          </div>
         </div>
         {mesesInstall.length === 0 ? <p className="text-[11px] text-stone-400">Sin instalaciones calendarizadas.</p> : (
           <div className="flex gap-3 overflow-x-auto pb-1">
@@ -3989,7 +3993,7 @@ function MRP({ catalogo, setAviso }) {
                 <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-1 border-b pb-1">{mc.label} <span className="text-stone-400">· {mc.proyectos.length}</span></div>
                 <div className="flex flex-col gap-1">
                   {mc.proyectos.map((p) => { const on = proyectosSel.has(p.id); return (
-                    <button key={p.id} onClick={() => toggleProy(p.id)} title={`${p.name}${p.ov ? " · " + p.ov : ""} · instala ${p.fecha}`} className={`text-left px-2 py-1 rounded border text-[11px] leading-tight ${on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-200 hover:bg-black/5"}`}><span className="tabular-nums opacity-60">{p.dia}</span> {p.name}</button>
+                    <button key={p.id} onClick={() => toggleProy(p.id)} title={`${p.name}${p.ov ? " · " + p.ov : ""} · instala ${p.fecha}`} className={`text-left px-2 py-1 rounded border leading-tight ${on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-200 hover:bg-black/5"}`}><div className="text-[10px] tabular-nums opacity-70">📅 {p.diaMes}{p.ov ? ` · ${p.ov}` : ""}</div><div className="text-[11px] font-medium">{p.name}</div></button>
                   ); })}
                 </div>
               </div>
