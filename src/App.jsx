@@ -3765,6 +3765,7 @@ function MRP({ catalogo, setAviso }) {
   const [cargando, setCargando] = useState(false);
   const [stockBySku, setStockBySku] = useState({});  // sku(may) -> stock físico
   const [transito, setTransito] = useState({});      // sku(may) -> en tránsito (OC abiertas)
+  const [proveedorPorSku, setProveedorPorSku] = useState({}); // sku(may) -> proveedor (de la OC más reciente)
   const [transProg, setTransProg] = useState("");
   const [mes, setMes] = useState("");                // "" = todos los meses
   const [soloFaltante, setSoloFaltante] = useState(true);
@@ -3803,7 +3804,16 @@ function MRP({ catalogo, setAviso }) {
     cargaRef.current = false; setCargando(false);
   };
 
-  useEffect(() => { cargarStock(); cargarFeed(); }, []);
+  useEffect(() => {
+    cargarStock(); cargarFeed();
+    (async () => {
+      let cache = null;
+      try { const r = await window.storage?.get("iso3-mrp-oc-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
+      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); }
+      // Tránsito + proveedor: automático, pero solo si el cache no es de hoy (evita pegarle a Zoho en cada carga).
+      if ((!cache || cache.fecha !== hoy()) && typeof window.zohoBooks === "function") calcularTransito();
+    })();
+  }, []);
 
   // En tránsito: órdenes de compra abiertas de Zoho, sumadas por SKU. Detrás de un
   // botón porque son N llamadas a Books (una por OC) y no queremos pegarle en cada carga.
@@ -3811,34 +3821,40 @@ function MRP({ catalogo, setAviso }) {
     if (noZoho) { setAviso({ t: "err", m: "La conexión a Zoho no está disponible." }); return; }
     setTransProg("Leyendo órdenes de compra…");
     try {
-      const abiertas = [];
+      const pos = [];
       let page = 1, more = true;
-      while (more && page <= 20) {
+      while (more && page <= 25 && pos.length < 250) {
         const d = await window.zohoBooks({ action: "list_purchase_orders", params: { filter_by: "Status.All", per_page: "100", page: String(page), sort_column: "date", sort_order: "D" } });
         for (const po of (d.purchaseorders || [])) {
-          const pend = (+po.quantity_yet_to_receive || 0) > 0 || (po.received_status && po.received_status !== "received");
           const st = (po.status || "").toLowerCase();
-          if (pend && st !== "cancelled" && st !== "draft") abiertas.push(po.purchaseorder_id);
+          if (st === "cancelled" || st === "draft") continue;
+          const abierta = (+po.quantity_yet_to_receive || 0) > 0 || (po.received_status && po.received_status !== "received");
+          pos.push({ id: po.purchaseorder_id, vendor: po.vendor_name || "", abierta });
         }
         more = d.page_context?.has_more_page; page++;
       }
-      const map = {};
+      const lote = pos.slice(0, 250);
+      const trans = {}, prov = {};
       let i = 0;
-      for (const id of abiertas) {
-        i++; setTransProg(`Leyendo OC ${i}/${abiertas.length}…`);
+      for (const po of lote) {
+        i++; setTransProg(`Leyendo OC ${i}/${lote.length}…`);
         try {
-          const d = await window.zohoBooks({ action: "get_purchase_order", params: { purchaseorder_id: id } });
+          const d = await window.zohoBooks({ action: "get_purchase_order", params: { purchaseorder_id: po.id } });
           for (const li of (d.purchaseorder?.line_items || [])) {
             const sku = upMrp(li.sku); if (!sku) continue;
-            const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
-            if (q > 0) map[sku] = (map[sku] || 0) + q;
+            if (!prov[sku] && po.vendor) prov[sku] = po.vendor;           // primero visto = OC más reciente
+            if (po.abierta) {
+              const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
+              if (q > 0) trans[sku] = (trans[sku] || 0) + q;
+            }
           }
-        } catch {}
+        } catch { /* si una OC falla, seguimos con las demás */ }
       }
-      setTransito(map);
-      setAviso({ t: "ok", m: `En tránsito calculado sobre ${abiertas.length} órdenes de compra abiertas.` });
+      setTransito(trans); setProveedorPorSku(prov);
+      try { await window.storage?.set("iso3-mrp-oc-cache", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov })); } catch {}
+      setAviso({ t: "ok", m: `OC analizadas: ${lote.length}. Proveedor de ${Object.keys(prov).length} SKU · en tránsito de ${Object.keys(trans).length}.` });
     } catch (e) {
-      setAviso({ t: "err", m: "No se pudo calcular en tránsito: " + (e.message || e) });
+      setAviso({ t: "err", m: "No se pudieron analizar las OC: " + (e.message || e) });
     }
     setTransProg("");
   };
@@ -3929,11 +3945,12 @@ function MRP({ catalogo, setAviso }) {
   const toggleSel = (k) => setSel((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const selTodos = () => setSel((s) => (s.size === calendario.length ? new Set() : new Set(calendario.map(keyDe))));
   const exportarSeleccion = () => {
-    const filas = calendario.filter((f) => sel.has(keyDe(f))).sort((a, b) => a.hito - b.hito || b.lead - a.lead);
+    const provDe = (f) => (f.sku && proveedorPorSku[f.sku]) || "";
+    const filas = calendario.filter((f) => sel.has(keyDe(f))).sort((a, b) => (provDe(a) || "~").localeCompare(provDe(b) || "~") || a.hito - b.hito || b.lead - a.lead);
     if (!filas.length) { setAviso({ t: "err", m: "No hay partidas seleccionadas." }); return; }
     const esc = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const head = ["Comprar antes", "Hito", "Etapa", "SKU", "Descripción", "Requerido", "Stock", "Tránsito", "Por comprar", "Provisional", "Obras"];
-    const rows = filas.map((f) => [f.fechaCompra || "", f.hito, f.hitoNombre || "", f.sku || "", f.desc, f.requerido, f.stock, f.enTransito, f.porComprar, f.provisional ? "SÍ" : "", (f.obras || []).join(" / ")]);
+    const head = ["Proveedor", "Comprar antes", "Hito", "Etapa", "SKU", "Descripción", "Requerido", "Stock", "Tránsito", "Por comprar", "Provisional", "Obras"];
+    const rows = filas.map((f) => [provDe(f), f.fechaCompra || "", f.hito, f.hitoNombre || "", f.sku || "", f.desc, f.requerido, f.stock, f.enTransito, f.porComprar, f.provisional ? "SÍ" : "", (f.obras || []).join(" / ")]);
     const csv = "﻿" + [head, ...rows].map((r) => r.map(esc).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -3941,6 +3958,19 @@ function MRP({ catalogo, setAviso }) {
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     setAviso({ t: "ok", m: `${filas.length} partidas exportadas a Excel (CSV).` });
   };
+
+  // Resumen por proveedor de lo SELECCIONADO (lo que hay que pedir a cada quien).
+  const porProveedor = useMemo(() => {
+    const sels = calendario.filter((f) => sel.has(keyDe(f)) && f.porComprar > 0);
+    const g = {};
+    for (const f of sels) {
+      const prov = (f.sku && proveedorPorSku[f.sku]) || "(sin proveedor)";
+      (g[prov] = g[prov] || []).push(f);
+    }
+    return Object.entries(g)
+      .sort((a, b) => (a[0] === "(sin proveedor)" ? 1 : b[0] === "(sin proveedor)" ? -1 : a[0].localeCompare(b[0])))
+      .map(([prov, items]) => ({ prov, items, tot: items.reduce((s, x) => s + x.porComprar, 0) }));
+  }, [calendario, sel, proveedorPorSku]);
 
   return (
     <div className="space-y-4">
@@ -4016,9 +4046,9 @@ function MRP({ catalogo, setAviso }) {
         </div>
         <div className="text-right">
           <button onClick={calcularTransito} disabled={!!transProg || noZoho} className="px-3 py-2 bg-violet-700 text-white text-xs font-medium rounded hover:bg-violet-800 disabled:opacity-40">
-            {transProg || (sinTransito ? "Calcular en tránsito (OC)" : "↻ Recalcular en tránsito")}
+            {transProg || "↻ Reanalizar OC (tránsito + proveedor)"}
           </button>
-          {sinTransito && !transProg && <p className="text-[10px] text-stone-500 mt-1">En tránsito = 0 hasta calcularlo desde las OC abiertas.</p>}
+          <p className="text-[10px] text-stone-500 mt-1">{transProg || "Tránsito y proveedor se calculan solos (1×/día). Reanaliza para forzar."}</p>
         </div>
       </div>
 
@@ -4058,6 +4088,35 @@ function MRP({ catalogo, setAviso }) {
           </table>
         </div>
       </div>
+
+      {/* Por proveedor (de lo seleccionado) */}
+      {sel.size > 0 && (
+        <div className="bg-white rounded-lg border overflow-hidden">
+          <div className="px-3 py-2 border-b bg-stone-50 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-semibold">Por proveedor <span className="font-normal text-stone-500">· de tu selección · lo que hay que pedir a cada quien</span></div>
+            <button onClick={exportarSeleccion} disabled={!sel.size} className="px-2.5 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">⬇ Exportar</button>
+          </div>
+          {Object.keys(proveedorPorSku).length === 0 && <div className="px-3 py-2 text-[11px] text-amber-700">Aún no hay proveedores cargados: pulsa <b>Reanalizar OC</b> para traerlos de Zoho.</div>}
+          <div className="divide-y">
+            {porProveedor.map((pv) => (
+              <div key={pv.prov} className="px-3 py-2">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="text-xs font-semibold">{pv.prov} <span className="font-normal text-stone-400">· {pv.items.length} SKU</span></div>
+                  <div className="text-xs text-stone-500">a pedir: <b className="text-red-700">{nfMrp.format(pv.tot)}</b> pzas</div>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  {pv.items.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                      <div className="min-w-0 truncate"><span className="font-mono text-stone-500">{f.sku || "—"}</span> {f.desc}{f.provisional ? <span className="ml-1 px-1 rounded bg-amber-500 text-white text-[9px] font-bold align-middle">OV</span> : null}</div>
+                      <div className="tabular-nums whitespace-nowrap text-red-700 font-semibold">{nfMrp.format(f.porComprar)} <span className="text-stone-400 font-normal">· {fechaCortaMrp(f.fechaCompra)}</span></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Desglose por hito */}
       <div className="text-sm font-semibold pt-1">Desglose por etapa <span className="font-normal text-stone-500">· la misma info, agrupada por hito (1 preparación → 5 puesta en marcha) · también puedes marcar aquí</span></div>
