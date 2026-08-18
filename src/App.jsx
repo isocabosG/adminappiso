@@ -3,6 +3,7 @@ import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
 import { buildMRP, calendarioCompra } from "./mrp.js";
 import { hitoById, LEAD_EQUIPO_CRITICO } from "./hitos.js";
+import { CAMARO_IMG } from "./camaroImg.js";
 
 // Chevrolet Camaro (broma para Jesús 🏎️): corre bajo el título del header.
 function CamaroCar({ className = "" }) {
@@ -2026,11 +2027,11 @@ function App() {
             <div>
               <h1 className="text-base font-semibold tracking-tight">AdminAppISO</h1>
               <p className="text-[10px] font-mono tracking-[0.2em] text-emerald-200">INNOVACIÓN SOLAR</p>
-              <div className="camaro-track"><CamaroCar className="camaro-run" /></div>
+              <div className="camaro-track"><img src={CAMARO_IMG} alt="Camaro" className="camaro-run" /></div>
               <style>{`
-                .camaro-track{position:relative;height:16px;width:190px;overflow:hidden;margin-top:1px}
-                .camaro-run{position:absolute;top:0;left:0;height:16px;width:auto;animation:camaroRun 4.5s linear infinite;will-change:transform}
-                @keyframes camaroRun{0%{transform:translateX(-46px)}100%{transform:translateX(200px)}}
+                .camaro-track{position:relative;height:24px;width:200px;overflow:hidden;margin-top:2px}
+                .camaro-run{position:absolute;top:0;height:22px;width:auto;animation:camaroRun 5s linear infinite;will-change:transform}
+                @keyframes camaroRun{0%{transform:translateX(200px)}92%{transform:translateX(-58px)}100%{transform:translateX(-58px)}}
               `}</style>
             </div>
           </div>
