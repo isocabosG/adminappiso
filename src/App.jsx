@@ -3769,6 +3769,7 @@ const esServicioMrp = (l) => (l.line_item_type === "service" || l.product_type =
    llamada por SKU. Verificado contra la API el 21-sep-2026.
 --------------------------------------------------------------------------- */
 const INV_FISICO_KEY = "iso3-inventario-fisico";
+const OV_BOM_KEY = "iso3-mrp-ov-bom";   // BOM provisional jalado de la OV, por proyecto
 const LOTE_GET_ITEM = 6;   // llamadas en paralelo; subirlo arriesga el rate-limit de Zoho
 
 // Pasada 1 (~10 llamadas): a mano fisico de todo el catalogo.
@@ -3888,6 +3889,21 @@ function MRP({ catalogo, setAviso }) {
     })();
   }, []);
 
+  // BOM de la OV: automatico. La mayoria de los proyectos calendarizados llegan del feed
+  // sin materiales, asi que sin esto el MRP no tiene nada que calcular. Se cachea 1x/dia.
+  const ovAutoRef = useRef(false);
+  useEffect(() => {
+    if (!feed?.proyectos?.length || ovAutoRef.current) return;
+    ovAutoRef.current = true;
+    (async () => {
+      let c = null;
+      try { const r = await window.storage?.get(OV_BOM_KEY); if (r?.value) c = JSON.parse(r.value); } catch {}
+      if (c?.porProyecto) setOvMats(c.porProyecto);
+      const faltan = feed.proyectos.filter((p) => !(p.materiales || []).length && p.zoho_so_id);
+      if (faltan.length && (!c || c.fecha !== hoy()) && !noZoho) jalarOV();
+    })();
+  }, [feed]);
+
   // En tránsito: órdenes de compra abiertas de Zoho, sumadas por SKU. Detrás de un
   // botón porque son N llamadas a Books (una por OC) y no queremos pegarle en cada carga.
   const calcularTransito = async () => {
@@ -4000,12 +4016,22 @@ function MRP({ catalogo, setAviso }) {
           const mats = (d.salesorder?.line_items || []).filter((l) => !esServicioMrp(l)).map((l) => ({
             sku: l.sku || null, descripcion: l.name || l.description || "",
             milestone_id: hitoDeOV(`${l.name || ""} ${l.description || ""} ${l.sku || ""}`),
-            cant_disenada: +l.quantity || 0, cant_pedida: 0, cant_entregada: 0, provisional: true,
+            // cant_entregada viene de Zoho (quantity_delivered). Hoy suele ser 0 porque no se
+            // registran envios contra la OV, pero se lee para que funcione cuando se registren.
+            cant_disenada: +l.quantity || 0,
+            cant_pedida: +l.quantity_packed || 0,
+            cant_entregada: +l.quantity_delivered || 0,
+            provisional: true,
           })).filter((m) => m.cant_disenada > 0);
           if (mats.length) next[p.id] = mats;
         } catch { /* si una OV falla, seguimos con las demás */ }
       }
-      setOvMats((prev) => ({ ...prev, ...next }));
+      setOvMats((prev) => {
+        const todo = { ...prev, ...next };
+        // Se persiste para que no se pierda al recargar (antes vivia solo en memoria).
+        try { window.storage?.set(OV_BOM_KEY, JSON.stringify({ fecha: hoy(), porProyecto: todo })); } catch {}
+        return todo;
+      });
       setAviso({ t: "ok", m: `Equipos de OV cargados (provisional) para ${Object.keys(next).length} proyecto(s).` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudieron jalar los equipos de OV: " + (e.message || e) });
@@ -4855,10 +4881,131 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
   );
 }
 
+/* ---------------------------------------------------------------------------
+   Saldos REALES de tesoreria, leidos de Zoho Books.
+
+   Los saldos que la app traia eran semillas capturadas a mano (fechadas
+   13-jul-2026) y no se concilian con nada. Zoho es donde administracion
+   captura los movimientos hoy, asi que de ahi salen los numeros buenos.
+--------------------------------------------------------------------------- */
+const BANCOS_KEY = "iso3-bancos-zoho";
+
+async function leerBancosZoho() {
+  const d = await window.zohoBooks({ action: "list_bank_accounts", params: { filter_by: "Status.Active", per_page: "200" } });
+  const cuentas = (d.bankaccounts || []).map((b) => ({
+    id: b.account_id,
+    nombre: b.account_name,
+    moneda: b.currency_code,
+    tipo: b.account_type,              // bank | cash | credit_card
+    banco: b.bank_name || "",
+    saldo: +b.balance || 0,
+  }));
+  const fecha = hoy();
+  try { await window.storage?.set(BANCOS_KEY, JSON.stringify({ fecha, cuentas })); } catch {}
+  return { fecha, cuentas };
+}
+
+function SaldosZoho({ tcFix }) {
+  const [z, setZ] = useState(null);
+  const [fecha, setFecha] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [err, setErr] = useState("");
+  const ref = useRef(false);
+  const noConn = typeof window.zohoBooks !== "function";
+
+  const refrescar = async () => {
+    if (noConn || ref.current) return;
+    ref.current = true; setCargando(true); setErr("");
+    try { const r = await leerBancosZoho(); setZ(r.cuentas); setFecha(r.fecha); }
+    catch (e) { setErr("No se pudieron leer los saldos de Zoho: " + (e.message || e)); }
+    ref.current = false; setCargando(false);
+  };
+
+  useEffect(() => {
+    (async () => {
+      let c = null;
+      try { const r = await window.storage?.get(BANCOS_KEY); if (r?.value) c = JSON.parse(r.value); } catch {}
+      if (c?.cuentas) { setZ(c.cuentas); setFecha(c.fecha || ""); }
+      if ((!c || c.fecha !== hoy()) && !noConn) refrescar();
+    })();
+  }, []);
+
+  const disp  = (z || []).filter((c) => c.tipo === "bank" || c.tipo === "cash");
+  const deuda = (z || []).filter((c) => c.tipo === "credit_card");
+  const totUSD   = disp.reduce((s, c) => s + enUSD(c.saldo, c.moneda, tcFix), 0);
+  const deudaUSD = deuda.reduce((s, c) => s + enUSD(c.saldo, c.moneda, tcFix), 0);
+  const filas = [...disp].sort((a, b) => enUSD(b.saldo, b.moneda, tcFix) - enUSD(a.saldo, a.moneda, tcFix));
+
+  return (
+    <div className="space-y-2">
+      <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Disponible según Zoho</p>
+            <p className="text-2xl font-bold font-mono leading-tight">{z ? `$${mx(totUSD)}` : "—"} <span className="text-sm font-normal text-emerald-100">USD</span></p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-emerald-100">{cargando ? "Leyendo Zoho…" : (fecha ? `al ${fecha}` : "sin datos")}</p>
+            <button onClick={refrescar} disabled={cargando || noConn} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+          </div>
+        </div>
+        {deuda.length > 0 && (
+          <div className="mt-3 rounded-lg p-2.5 bg-red-500/25 ring-1 ring-red-200/50">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-50">Deuda (préstamos y tarjetas) · {deuda.length} cuentas</p>
+            <p className="text-sm font-bold font-mono">${mx(deudaUSD)} USD</p>
+          </div>
+        )}
+        <p className="text-[10px] text-emerald-100/80 mt-2">Saldos como los reporta <b>Zoho Books</b>, convertidos a USD al TC fix. {disp.length} cuentas de banco y efectivo.</p>
+      </div>
+
+      {err && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">{err}</div>}
+
+      {z && (
+        <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
+          <table className="w-full min-w-[520px] text-sm">
+            <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
+              <th className="text-left px-3 py-2">Cuenta (Zoho)</th><th className="text-left px-3 py-2">Moneda</th>
+              <th className="text-right px-3 py-2">Saldo</th><th className="text-right px-3 py-2">USD equiv.</th>
+            </tr></thead>
+            <tbody>
+              {filas.map((c) => (
+                <tr key={c.id} className="border-b border-stone-100">
+                  <td className="px-3 py-2 font-medium">{c.nombre}{c.tipo === "cash" ? <span className="ml-1 text-[10px] text-stone-400">efectivo</span> : null}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-stone-500">{c.moneda}</td>
+                  <td className="px-3 py-2 text-right font-mono">{mx(c.saldo)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(enUSD(c.saldo, c.moneda, tcFix))}</td>
+                </tr>
+              ))}
+              {deuda.map((c) => (
+                <tr key={c.id} className="border-b border-stone-100 bg-red-50">
+                  <td className="px-3 py-2 font-medium text-red-800">{c.nombre} <span className="text-[10px]">deuda</span></td>
+                  <td className="px-3 py-2 font-mono text-xs text-stone-500">{c.moneda}</td>
+                  <td className="px-3 py-2 text-right font-mono text-red-700">{mx(c.saldo)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-red-600">${mx(enUSD(c.saldo, c.moneda, tcFix))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix }) {
   return (
     <div className="space-y-4">
-      {/* Consolidado + TC */}
+      {/* Saldos REALES de Zoho — es el numero bueno */}
+      <SaldosZoho tcFix={tcFix} />
+
+      {/* Libreta interna de la app (saldos semilla + movimientos capturados a mano).
+          NO se concilia con Zoho ni con el banco: se deja visible para no perder lo
+          que ya se habia capturado, pero marcada como lo que es. */}
+      <details className="bg-white border border-stone-200 rounded-lg">
+        <summary className="px-3 py-2 text-xs font-medium text-stone-600 cursor-pointer">
+          ▸ Libreta interna de la app <span className="font-normal text-stone-400">— saldos capturados a mano, no conciliados con Zoho</span>
+        </summary>
+        <div className="p-3 pt-0">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
         <div className="md:col-span-2 bg-emerald-700 text-white rounded-lg p-4 flex items-end justify-between">
           <div>
@@ -4894,7 +5041,9 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-stone-500">La proyección semana a semana está en la pestaña <strong>Flujo semanal</strong>.</p>
+        </div>
+      </details>
+      <p className="text-xs text-stone-500">La proyección semana a semana está en la pestaña <strong>Flujo semanal</strong> y se calcula sobre la libreta interna, no sobre Zoho.</p>
     </div>
   );
 }

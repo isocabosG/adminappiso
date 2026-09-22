@@ -125,7 +125,8 @@ Deno.serve(async (req) => {
     else if (action === "list_sales_orders") { path = "/salesorders"; } // proyectos
     else if (action === "get_sales_order") { path = `/salesorders/${salesorder_id}`; qsParams = restParams; } // trae line_items, payments[], invoices[], cf_proyecto
     else if (action === "list_items") { path = "/items"; } // inventario: actual_available_stock (fisico a mano) + purchase_rate por SKU
-    else if (action === "get_item") { path = `/items/${item_id}`; qsParams = restParams; } // unico endpoint que trae actual_committed_stock y actual_available_for_sale_stock
+    else if (action === "get_item") { path = `/items/${item_id}`; qsParams = restParams; }
+    else if (action === "list_bank_accounts") { path = "/bankaccounts"; } // tesoreria: saldos reales por cuenta // unico endpoint que trae actual_committed_stock y actual_available_for_sale_stock
     else if (action === "list_invoices") { path = "/invoices"; } // facturas: balance real por OV (reference_number = número de OV)
     else if (action === "get_so_attachment") { path = `/salesorders/${salesorder_id}/attachment`; qsParams = document_id ? { document_id } : {}; binary = true; } // contrato/adjunto del proyecto
     else if (action === "get_so_pdf") { path = `/salesorders/${salesorder_id}`; qsParams = { accept: "pdf" }; binary = true; }        // OV en PDF
