@@ -220,10 +220,16 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
       })
       .filter((g) => g.materiales.length)
 
-    const obras = [...new Set(hitos.flatMap((g) => g.materiales.flatMap((m) => m.proyectos.map((p) => p.ov || p.name))).filter(Boolean))]
+    const mapObras = new Map()
+    for (const g of hitos) for (const m of g.materiales) for (const pr of m.proyectos) {
+      const k = pr.ov || pr.name
+      if (k && !mapObras.has(k)) mapObras.set(k, { ov: pr.ov || null, name: pr.name || '' })
+    }
+    const obras = [...mapObras.values()]
     return {
       fecha, hitos, obras,
       dias: diasEntreISO(hoyISO, fecha),
+      pasada: fecha < hoyISO,
       totPorComprar: hitos.reduce((a, g) => a + g.totPorComprar, 0),
       tarde: hitos.some((g) => g.materiales.some((m) => m.tarde)),
     }
