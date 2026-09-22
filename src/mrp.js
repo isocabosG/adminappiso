@@ -133,4 +133,99 @@ export function calendarioCompra(proyectos, invPorSku = {}, opts = {}) {
   return filas
 }
 
+// Días entre dos fechas ISO (b − a). Negativo = b ya pasó.
+function diasEntreISO(a, b) {
+  if (!a || !b) return null
+  const A = Date.parse(String(a).slice(0, 10) + 'T00:00:00')
+  const B = Date.parse(String(b).slice(0, 10) + 'T00:00:00')
+  return isNaN(A) || isNaN(B) ? null : Math.round((B - A) / 86400000)
+}
+
+// MRP FECHADO: agrupa por la fecha en que el material se NECESITA EN OBRA
+// (fecha_instalacion del proyecto), y dentro por hito. La fecha de pedido
+// (D − lead) deja de ser el eje y pasa a ser una alerta por renglón.
+//
+// Diferencia de fondo con buildMRP(): el stock se asigna a la fecha más
+// próxima primero. Si el mismo SKU se necesita en dos obras, las piezas que
+// hay cubren la primera y la segunda queda descubierta. Sin esa asignación el
+// mismo inventario se cuenta dos veces y el MRP manda comprar de menos.
+export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
+  const { soloFaltante = false, hoyISO = new Date().toISOString().slice(0, 10) } = opts
+  const porFecha = {}
+
+  for (const p of proyectos || []) {
+    for (const l of lineasDeProyecto(p)) {
+      if (!l.D) continue
+      const f = (porFecha[l.D] = porFecha[l.D] || { fecha: l.D, hitos: {} })
+      const g = (f.hitos[l.hito] = f.hitos[l.hito] || { hito: l.hito, materiales: {} })
+      const key = l.sku || '~' + l.descripcion.toLowerCase().trim()
+      const inv = (l.sku && invPorSku[l.sku]) || {}
+      const cel = g.materiales[key] || (g.materiales[key] = {
+        key, sku: l.sku, desc: l.descripcion || inv.desc || '', hito: l.hito,
+        lead: 0, critico: false, provisional: false, fechaCompra: null,
+        requerido: 0, pedido: 0, entregado: 0, proyectos: [],
+      })
+      cel.requerido += l.requerido
+      cel.pedido += l.pedido
+      cel.entregado += l.entregado
+      // manda la partida más lenta: es la que fija cuándo hay que levantar el pedido
+      if (l.lead > cel.lead) { cel.lead = l.lead; cel.fechaCompra = l.fechaCompra }
+      cel.critico = cel.critico || l.critico
+      cel.provisional = cel.provisional || l.provisional
+      cel.proyectos.push({ ov: l.ov, name: l.proyecto, qty: l.requerido })
+    }
+  }
+
+  const poolStock = {}, poolTransito = {}
+  return Object.keys(porFecha).sort().map((fecha) => {
+    const hitos = [1, 2, 3, 4, 5]
+      .filter((h) => porFecha[fecha].hitos[h])
+      .map((h) => {
+        let mats = Object.values(porFecha[fecha].hitos[h].materiales)
+          .sort((a, b) => b.lead - a.lead || b.requerido - a.requerido)
+          .map((m) => {
+            const k = m.sku || m.key
+            const inv = (m.sku && invPorSku[m.sku]) || {}
+            if (poolStock[k] == null) poolStock[k] = num(inv.stock)
+            if (poolTransito[k] == null) poolTransito[k] = num(inv.enTransito)
+            const deStock = Math.min(poolStock[k], m.requerido); poolStock[k] -= deStock
+            const resto = m.requerido - deStock
+            const deTransito = Math.min(poolTransito[k], resto); poolTransito[k] -= deTransito
+            const porComprar = Math.max(0, resto - deTransito)
+            return {
+              ...m, deStock, deTransito, porComprar,
+              cubierto: porComprar === 0,
+              // ya se pasó la fecha de levantar el pedido y todavía falta comprar
+              tarde: !!(m.fechaCompra && m.fechaCompra < hoyISO && porComprar > 0),
+            }
+          })
+        if (soloFaltante) mats = mats.filter((m) => m.porComprar > 0)
+        return { hito: h, meta: hitoById(h), materiales: mats, totPorComprar: mats.reduce((a, m) => a + m.porComprar, 0) }
+      })
+      .filter((g) => g.materiales.length)
+
+    const obras = [...new Set(hitos.flatMap((g) => g.materiales.flatMap((m) => m.proyectos.map((p) => p.ov || p.name))).filter(Boolean))]
+    return {
+      fecha, hitos, obras,
+      dias: diasEntreISO(hoyISO, fecha),
+      totPorComprar: hitos.reduce((a, g) => a + g.totPorComprar, 0),
+      tarde: hitos.some((g) => g.materiales.some((m) => m.tarde)),
+    }
+  }).filter((f) => f.hitos.length)
+}
+
+// BOM de UN proyecto agrupado por hito — para la ficha del proyecto.
+export function bomPorHito(p) {
+  const lineas = lineasDeProyecto(p)
+  return [1, 2, 3, 4, 5].map((h) => {
+    const mats = lineas.filter((l) => l.hito === h).sort((a, b) => b.lead - a.lead)
+    return {
+      hito: h, meta: hitoById(h), materiales: mats,
+      lead: mats.reduce((n, m) => Math.max(n, m.lead), 0),
+      fechaCompra: mats.map((m) => m.fechaCompra).filter(Boolean).sort()[0] || null,
+      piezas: mats.reduce((a, m) => a + m.requerido, 0),
+    }
+  }).filter((g) => g.materiales.length)
+}
+
 export { HITOS, hitoById }

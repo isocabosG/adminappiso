@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
 import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
-import { buildMRP, calendarioCompra } from "./mrp.js";
+import { buildMRP, calendarioCompra, buildMRPPorFecha, bomPorHito } from "./mrp.js";
 import { hitoById, LEAD_EQUIPO_CRITICO } from "./hitos.js";
 import { CAMARO_IMG } from "./camaroImg.js";
 
@@ -2291,7 +2291,31 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
     })();
   }, []);
 
-  if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo }} />;
+  // Calendario de obra (IS-PMT): qué proyectos están calendarizados y para cuándo.
+  // Se cruza con las OV de Zoho por `zoho_so_id`.
+  const [calById, setCalById] = useState({});
+  useEffect(() => {
+    if (typeof window.mrpFeed !== "function") return;
+    (async () => {
+      try {
+        const d = await window.mrpFeed();
+        const m = {};
+        for (const p of d.proyectos || []) if (p.zoho_so_id) m[String(p.zoho_so_id)] = p;
+        setCalById(m);
+      } catch { /* sin feed, la lista se comporta como antes */ }
+    })();
+  }, []);
+  const calDe = (s) => calById[String(s.salesorder_id)] || null;
+  // Primero los calendarizados, por fecha de obra ascendente. El resto después.
+  const ordenCal = (a, b) => {
+    const A = calDe(a), B = calDe(b);
+    if (A && !B) return -1;
+    if (!A && B) return 1;
+    if (A && B) return String(A.fecha_instalacion || "9999").localeCompare(String(B.fecha_instalacion || "9999"));
+    return 0;
+  };
+
+  if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: calById[String(modo.slice(3))] || null }} />;
 
   const q = busca.trim().toLowerCase();
   const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
@@ -2370,13 +2394,19 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
       ) : (
         <div className="space-y-2">
           <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
-          {rows.map((s) => {
+          {[...rows].sort(ordenCal).map((s) => {
             const pagadoManual = manualOf(s);
             const conFactura = !!facOf(s);
+            const cal = calDe(s);   // calendarizado en IS-PMT
             return (
-              <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)} className="w-full bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 hover:border-stone-400 text-left">
+              <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)}
+                className={`w-full bg-white rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left border ${cal ? "border-violet-500 ring-1 ring-violet-300 hover:border-violet-700" : "border-stone-200 hover:border-stone-400"}`}>
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2"><span className="font-mono text-xs font-semibold">{s.salesorder_number}</span><PagoBadge status={s.paid_status} /></div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-xs font-semibold">{s.salesorder_number}</span>
+                    <PagoBadge status={s.paid_status} />
+                    {cal && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-600 text-white font-medium">obra {cal.fecha_instalacion}</span>}
+                  </div>
                   <p className="text-sm text-stone-700 truncate max-w-[380px]">{s.reference_number || s.customer_name}</p>
                   <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
                 </div>
@@ -2393,7 +2423,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   );
 }
 
-function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo }) {
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy }) {
   const [so, setSo] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [lang, setLang] = useState("en");
@@ -2731,7 +2761,51 @@ ${porPagar >= 0
         </div>
       </Section>
 
-      <Section n="4" t="Control Presupuestal" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${utilidad >= 0 ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-700"}`}>Utilidad ${mx0(utilidad)} · {margen.toFixed(1)}%</span>}>
+      {/* Materiales de la obra, agrupados por hito. Sale del feed de IS-PMT
+          (project_materials con milestone_id). La fecha de pedido es
+          fecha de obra − lead del hito. */}
+      {feedProy && (
+        <Section n="4" t="Materiales por hito"
+          r={<span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-800">obra {feedProy.fecha_instalacion || "—"}</span>}>
+          {(() => {
+            const grupos = bomPorHito(feedProy);
+            if (!grupos.length) return <p className="px-3 py-4 text-xs text-stone-400">Este proyecto no tiene lista de materiales en IS-PMT todavía. El MRP jala los equipos de la orden de venta como provisional.</p>;
+            const hoyISO = hoy();
+            return (
+              <div className="p-3 space-y-3">
+                {grupos.map((g) => {
+                  const tarde = g.fechaCompra && g.fechaCompra < hoyISO;
+                  return (
+                    <div key={g.hito}>
+                      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+                        <p className="text-[10px] uppercase tracking-widest text-stone-500">Hito {g.hito} · {g.meta?.nombre}</p>
+                        <p className="text-[10px] font-mono text-stone-500">
+                          {nfMrp.format(g.piezas)} pzas · pedir antes de <b className={tarde ? "text-red-700" : "text-stone-700"}>{g.fechaCompra || "—"}</b>
+                          <span className="text-stone-400"> (lead {g.lead} d)</span>
+                        </p>
+                      </div>
+                      <table className="w-full text-xs">
+                        <tbody>
+                          {g.materiales.map((m, i) => (
+                            <tr key={(m.sku || "") + i} className="border-b border-stone-50">
+                              <td className="py-1 font-mono font-semibold w-[110px]">{m.sku || "—"}</td>
+                              <td className="py-1 text-stone-600">{m.descripcion}</td>
+                              <td className="py-1 text-right font-mono w-[70px]">{nfMrp.format(m.requerido)}</td>
+                              <td className="py-1 text-right font-mono text-stone-400 w-[90px]">{m.entregado > 0 ? `${nfMrp.format(m.entregado)} entreg.` : ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </Section>
+      )}
+
+      <Section n="5" t="Control Presupuestal" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${utilidad >= 0 ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-700"}`}>Utilidad ${mx0(utilidad)} · {margen.toFixed(1)}%</span>}>
         <div className="p-4 space-y-4">
           {/* Ingreso vs costo vs utilidad */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -3824,6 +3898,92 @@ async function completarComprometido(items, orden, onProg) {
   return items;
 }
 
+/* MRP fechado: "qué se necesita en obra y cuándo", agrupado por fecha de
+   instalación y dentro por hito. Es la vista que pidió Fran: no por fecha de
+   compra, sino por cuándo se necesita según el calendario. */
+function MrpPorFecha({ proyectos, invPorSku }) {
+  const [soloFalta, setSoloFalta] = useState(true);
+  const [abierta, setAbierta] = useState(null);
+  const hoyISO = hoy();
+  const fechas = useMemo(
+    () => buildMRPPorFecha(proyectos, invPorSku, { soloFaltante: soloFalta, hoyISO }),
+    [proyectos, invPorSku, soloFalta, hoyISO]);
+
+  if (!fechas.length) return (
+    <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">
+      {soloFalta ? "Nada por comprar: el stock y el material en tránsito cubren todas las obras calendarizadas." : "Sin obras calendarizadas con material."}
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] text-stone-500">{fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra · el stock se asigna a la obra <b>más próxima primero</b>.</p>
+        <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 cursor-pointer">
+          <input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta comprar
+        </label>
+      </div>
+
+      {fechas.map((f) => {
+        const open = abierta === f.fecha;
+        return (
+          <div key={f.fecha} className={`bg-white border rounded-lg overflow-hidden ${f.tarde ? "border-red-300" : "border-stone-200"}`}>
+            <button onClick={() => setAbierta(open ? null : f.fecha)} className="w-full px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left hover:bg-stone-50">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm font-semibold">{f.fecha}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${f.dias < 0 ? "bg-stone-200 text-stone-600" : f.dias <= 14 ? "bg-red-100 text-red-700" : f.dias <= 30 ? "bg-amber-100 text-amber-800" : "bg-stone-100 text-stone-600"}`}>
+                    {f.dias < 0 ? `hace ${-f.dias} d` : f.dias === 0 ? "hoy" : `en ${f.dias} d`}
+                  </span>
+                  {f.tarde && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold">PEDIDO VENCIDO</span>}
+                </div>
+                <p className="text-[11px] text-stone-500 truncate max-w-[520px]">{f.obras.join(" · ")}</p>
+              </div>
+              <div className="text-right font-mono text-xs">
+                <p className="text-stone-400">por comprar</p>
+                <p className={`text-base font-bold ${f.totPorComprar > 0 ? "text-violet-800" : "text-stone-400"}`}>{nfMrp.format(f.totPorComprar)}</p>
+              </div>
+            </button>
+
+            {open && (
+              <div className="border-t border-stone-200 px-3 py-2 space-y-3">
+                {f.hitos.map((g) => (
+                  <div key={g.hito}>
+                    <p className="text-[10px] uppercase tracking-widest text-stone-500 mb-1">
+                      Hito {g.hito} · {g.meta?.nombre} <span className="text-stone-400 normal-case tracking-normal">— {nfMrp.format(g.totPorComprar)} pzas por comprar</span>
+                    </p>
+                    <table className="w-full text-xs">
+                      <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
+                        <th className="text-left py-1">SKU</th><th className="text-left py-1">Material</th>
+                        <th className="text-right py-1">Req.</th><th className="text-right py-1">Stock</th>
+                        <th className="text-right py-1">Tránsito</th><th className="text-right py-1">Comprar</th>
+                        <th className="text-right py-1 whitespace-nowrap">Pedir antes de</th>
+                      </tr></thead>
+                      <tbody>
+                        {g.materiales.map((m) => (
+                          <tr key={m.key} className={`border-b border-stone-50 ${m.tarde ? "bg-red-50" : ""}`}>
+                            <td className="py-1 font-mono font-semibold">{m.sku || "—"}{m.provisional && <span title="viene de la OV, sin BOM sincronizado" className="ml-1 text-[9px] text-amber-600">OV</span>}</td>
+                            <td className="py-1 text-stone-600 truncate max-w-[260px]">{m.desc}</td>
+                            <td className="py-1 text-right font-mono">{nfMrp.format(m.requerido)}</td>
+                            <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deStock)}</td>
+                            <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deTransito)}</td>
+                            <td className={`py-1 text-right font-mono font-bold ${m.porComprar > 0 ? "text-violet-800" : "text-stone-300"}`}>{nfMrp.format(m.porComprar)}</td>
+                            <td className={`py-1 text-right font-mono ${m.tarde ? "text-red-700 font-bold" : "text-stone-500"}`}>{m.fechaCompra || "—"}{m.critico && <span title={`lead crítico ${m.lead} d`} className="ml-1 text-[9px] text-red-600">!</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MRP({ catalogo, setAviso }) {
   const noFeed = typeof window.mrpFeed !== "function";
   const noZoho = typeof window.zohoBooks !== "function";
@@ -4085,8 +4245,11 @@ function MRP({ catalogo, setAviso }) {
             <button onClick={() => { cargarStock(); cargarFeed(); }} disabled={cargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar"}</button>
           </div>
         </div>
-        <p className="text-[10px] text-violet-100/80 mt-2">El número del hito es el orden en que <b>llega a obra</b>, no en que se compra: las baterías son Hito 3 pero se piden primero (lead {LEAD_EQUIPO_CRITICO} d). El calendario ordena por lead descendente.</p>
+        <p className="text-[10px] text-violet-100/80 mt-2">El número del hito es el orden en que <b>llega a obra</b>, no en que se compra: las baterías son Hito 3 pero se piden primero (lead {LEAD_EQUIPO_CRITICO} d).</p>
       </div>
+
+      {/* Vista principal: qué se necesita en obra y cuándo */}
+      <MrpPorFecha proyectos={proyNorm} invPorSku={invPorSku} />
 
       {noFeed && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">El feed del MRP no está disponible en esta versión de la app (falta la Edge Function <code>mrp-feed</code>).</div>}
       {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b>. El MRP usa <b>solo la existencia física del almacén Central (fiscal)</b> como stock; mientras, se toma 0.</div>}
