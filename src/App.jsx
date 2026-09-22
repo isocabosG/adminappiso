@@ -3966,7 +3966,7 @@ function MrpPorFecha({ proyectos, invPorSku }) {
                             <td className="py-1 text-stone-600 truncate max-w-[260px]">{m.desc}</td>
                             <td className="py-1 text-right font-mono">{nfMrp.format(m.requerido)}</td>
                             <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deStock)}</td>
-                            <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deTransito)}</td>
+                            <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deTransito)}{m.sinFecha > 0 && <span title={`${m.sinFecha} pzas en OC sin fecha de llegada: no se cuentan para esta obra`} className="ml-1 text-[9px] text-amber-600">+{nfMrp.format(m.sinFecha)}?</span>}</td>
                             <td className={`py-1 text-right font-mono font-bold ${m.porComprar > 0 ? "text-violet-800" : "text-stone-300"}`}>{nfMrp.format(m.porComprar)}</td>
                             <td className={`py-1 text-right font-mono ${m.tarde ? "text-red-700 font-bold" : "text-stone-500"}`}>{m.fechaCompra || "—"}{m.critico && <span title={`lead crítico ${m.lead} d`} className="ml-1 text-[9px] text-red-600">!</span>}</td>
                           </tr>
@@ -3996,6 +3996,7 @@ function MRP({ catalogo, setAviso }) {
   const [mes, setMes] = useState("");                // "" = todos los meses
   const [soloFaltante, setSoloFaltante] = useState(true);
   const [proyectosSel, setProyectosSel] = useState(() => new Set()); // vacío = todos los proyectos
+  const [transitoLotes, setTransitoLotes] = useState({});  // sku -> [{qty, eta}] de OC abiertas
   const [ovMats, setOvMats] = useState({});          // projectId -> materiales provisionales de la OV
   const [ovProg, setOvProg] = useState("");
   const [sel, setSel] = useState(() => new Set());   // claves seleccionadas para orden de compra
@@ -4042,8 +4043,8 @@ function MRP({ catalogo, setAviso }) {
     cargarStock(); cargarFeed();
     (async () => {
       let cache = null;
-      try { const r = await window.storage?.get("iso3-mrp-oc-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); }
+      try { const r = await window.storage?.get("iso3-mrp-oc-cache-v2"); if (r?.value) cache = JSON.parse(r.value); } catch {}
+      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); setTransitoLotes(cache.lotes || {}); }
       // Tránsito + proveedor: automático, pero solo si el cache no es de hoy (evita pegarle a Zoho en cada carga).
       if ((!cache || cache.fecha !== hoy()) && typeof window.zohoBooks === "function") calcularTransito();
     })();
@@ -4078,12 +4079,16 @@ function MRP({ catalogo, setAviso }) {
           const st = (po.status || "").toLowerCase();
           if (st === "cancelled" || st === "draft") continue;
           const abierta = (+po.quantity_yet_to_receive || 0) > 0 || (po.received_status && po.received_status !== "received");
-          pos.push({ id: po.purchaseorder_id, vendor: po.vendor_name || "", abierta });
+          // ETA a almacén: el custom field de Books que compras sí llena
+          // (cf_fecha_estimada_a_almacén_IS). Sin fecha, el material en tránsito
+          // no se puede asignar a una obra: llegar tarde es igual a no llegar.
+          const eta = po.cf_fecha_estimada_a_almac_n_is_unformatted || po.delivery_date || null;
+          pos.push({ id: po.purchaseorder_id, vendor: po.vendor_name || "", abierta, eta: eta ? String(eta).slice(0, 10) : null });
         }
         more = d.page_context?.has_more_page; page++;
       }
       const lote = pos.slice(0, 250);
-      const trans = {}, prov = {};
+      const trans = {}, prov = {}, lotes = {};   // lotes = tránsito con fecha de llegada
       let i = 0;
       for (const po of lote) {
         i++; setTransProg(`Leyendo OC ${i}/${lote.length}…`);
@@ -4094,13 +4099,16 @@ function MRP({ catalogo, setAviso }) {
             if (!prov[sku] && po.vendor) prov[sku] = po.vendor;           // primero visto = OC más reciente
             if (po.abierta) {
               const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
-              if (q > 0) trans[sku] = (trans[sku] || 0) + q;
+              if (q > 0) {
+                trans[sku] = (trans[sku] || 0) + q;
+                (lotes[sku] = lotes[sku] || []).push({ qty: q, eta: po.eta, oc: po.numero || null });
+              }
             }
           }
         } catch { /* si una OC falla, seguimos con las demás */ }
       }
-      setTransito(trans); setProveedorPorSku(prov);
-      try { await window.storage?.set("iso3-mrp-oc-cache", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov })); } catch {}
+      setTransito(trans); setProveedorPorSku(prov); setTransitoLotes(lotes);
+      try { await window.storage?.set("iso3-mrp-oc-cache-v2", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov, lotes })); } catch {}
       setAviso({ t: "ok", m: `OC analizadas: ${lote.length}. Proveedor de ${Object.keys(prov).length} SKU · en tránsito de ${Object.keys(trans).length}.` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudieron analizar las OC: " + (e.message || e) });
@@ -4109,11 +4117,16 @@ function MRP({ catalogo, setAviso }) {
   };
 
   const invPorSku = useMemo(() => {
-    const skus = new Set([...Object.keys(stockBySku), ...Object.keys(transito)]);
+    const skus = new Set([...Object.keys(stockBySku), ...Object.keys(transito), ...Object.keys(transitoLotes)]);
     const m = {};
-    for (const sku of skus) m[sku] = { stock: stockBySku[sku] || 0, enTransito: transito[sku] || 0, desc: (catalogo && catalogo[sku]?.desc) || "" };
+    for (const sku of skus) m[sku] = {
+      stock: stockBySku[sku] || 0,
+      enTransito: transito[sku] || 0,
+      transitoLotes: transitoLotes[sku] || [],   // [{qty, eta}] — para asignar por fecha
+      desc: (catalogo && catalogo[sku]?.desc) || "",
+    };
     return m;
-  }, [stockBySku, transito, catalogo]);
+  }, [stockBySku, transito, transitoLotes, catalogo]);
 
   // Proyectos normalizados (SKU en mayúsculas para cuadrar con el inventario).
   // Si el proyecto tiene BOM, se usa; si no, se cae a los equipos de la OV (provisional).

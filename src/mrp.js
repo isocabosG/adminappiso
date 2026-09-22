@@ -176,7 +176,7 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
     }
   }
 
-  const poolStock = {}, poolTransito = {}
+  const poolStock = {}, poolLotes = {}
   return Object.keys(porFecha).sort().map((fecha) => {
     const hitos = [1, 2, 3, 4, 5]
       .filter((h) => porFecha[fecha].hitos[h])
@@ -187,13 +187,29 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
             const k = m.sku || m.key
             const inv = (m.sku && invPorSku[m.sku]) || {}
             if (poolStock[k] == null) poolStock[k] = num(inv.stock)
-            if (poolTransito[k] == null) poolTransito[k] = num(inv.enTransito)
+            if (poolLotes[k] == null) {
+              // Lotes de OC abiertas, del que llega primero al que llega después.
+              poolLotes[k] = (inv.transitoLotes || [])
+                .map((l) => ({ qty: num(l.qty), eta: l.eta ? String(l.eta).slice(0, 10) : null }))
+                .filter((l) => l.qty > 0)
+                .sort((a, b) => String(a.eta || '9999-12-31').localeCompare(String(b.eta || '9999-12-31')))
+            }
             const deStock = Math.min(poolStock[k], m.requerido); poolStock[k] -= deStock
-            const resto = m.requerido - deStock
-            const deTransito = Math.min(poolTransito[k], resto); poolTransito[k] -= deTransito
-            const porComprar = Math.max(0, resto - deTransito)
+            let resto = m.requerido - deStock
+            // Solo cuenta el material en tránsito que LLEGA ANTES de la obra.
+            // Una OC que aterriza después no sirve para esa fecha: llegar tarde
+            // es lo mismo que no llegar.
+            let deTransito = 0, sinFecha = 0
+            for (const lote of poolLotes[k]) {
+              if (resto <= 0) break
+              if (!lote.eta) { sinFecha += lote.qty; continue }
+              if (lote.eta > fecha) continue
+              const usa = Math.min(lote.qty, resto)
+              lote.qty -= usa; resto -= usa; deTransito += usa
+            }
+            const porComprar = Math.max(0, resto)
             return {
-              ...m, deStock, deTransito, porComprar,
+              ...m, deStock, deTransito, sinFecha, porComprar,
               cubierto: porComprar === 0,
               // ya se pasó la fecha de levantar el pedido y todavía falta comprar
               tarde: !!(m.fechaCompra && m.fechaCompra < hoyISO && porComprar > 0),
