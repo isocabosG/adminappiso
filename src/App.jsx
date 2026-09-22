@@ -3758,6 +3758,71 @@ const hitoDeOV = (txt) => {
 };
 const esServicioMrp = (l) => (l.line_item_type === "service" || l.product_type === "service") || String(l.sku || "").toUpperCase().startsWith("INST") || /suministro\s*e?\s*instalaci/i.test(`${l.name || ""} ${l.description || ""}`);
 
+/* ---------------------------------------------------------------------------
+   Inventario FISICO neto de la empresa (sin desglose por almacen).
+
+   Zoho no entrega los tres numeros en el mismo endpoint:
+     - list_items  -> actual_available_stock            (A MANO fisico)
+     - get_item    -> actual_committed_stock            (COMPROMETIDAS fisicas)
+                      actual_available_for_sale_stock   (DISPONIBLE fisico)
+   Por eso son dos pasadas: una barata para todo el catalogo y luego una
+   llamada por SKU. Verificado contra la API el 21-sep-2026.
+--------------------------------------------------------------------------- */
+const INV_FISICO_KEY = "iso3-inventario-fisico";
+const LOTE_GET_ITEM = 6;   // llamadas en paralelo; subirlo arriesga el rate-limit de Zoho
+
+// Pasada 1 (~10 llamadas): a mano fisico de todo el catalogo.
+async function leerAManoFisico(catalogo, onProg) {
+  const out = {};
+  let page = 1, more = true;
+  while (more && page <= 30) {
+    onProg?.(`Leyendo articulos... (pag. ${page})`);
+    const d = await window.zohoBooks({ action: "list_items", params: { per_page: "200", page: String(page), filter_by: "Status.Active" } });
+    for (const it of (d.items || [])) {
+      const sku = String(it.sku || "").toUpperCase();
+      if (!sku) continue;
+      const cv = catalogo?.[it.sku] ? +catalogo[it.sku].costoVigente : NaN;
+      out[sku] = {
+        itemId: it.item_id,
+        desc: it.name || sku,
+        // FISICO a mano. NO stock_on_hand: ese es el contable y en esta operacion
+        // difiere muchisimo (ej. BREHV5KW: 784 contable vs 269 fisico).
+        aMano: Math.max(0, +it.actual_available_stock || 0),
+        comprometido: null,   // null = todavia no se consulto. Nunca 0.
+        disponible: null,
+        cost: isFinite(cv) && cv > 0 ? cv : (+it.purchase_rate || 0),
+      };
+    }
+    more = d.page_context?.has_more_page; page++;
+  }
+  return out;
+}
+
+// Pasada 2 (1 llamada por SKU, en lotes paralelos): comprometidas y disponible.
+async function completarComprometido(items, orden, onProg) {
+  const skus = orden.filter((s) => items[s]?.itemId);
+  let hechos = 0;
+  for (let i = 0; i < skus.length; i += LOTE_GET_ITEM) {
+    const lote = skus.slice(i, i + LOTE_GET_ITEM);
+    await Promise.all(lote.map(async (sku) => {
+      try {
+        const d = await window.zohoBooks({ action: "get_item", params: { item_id: items[sku].itemId } });
+        const it = d.item || {};
+        const comp = Math.max(0, +it.actual_committed_stock || 0);
+        items[sku].comprometido = comp;
+        // OJO: el disponible PUEDE SER NEGATIVO (comprometido de mas). No envolver
+        // en Math.max(0, ...): ese negativo es justo la senal util de la pantalla.
+        items[sku].disponible = it.actual_available_for_sale_stock != null
+          ? +it.actual_available_for_sale_stock
+          : (items[sku].aMano - comp);
+      } catch { /* si un SKU falla queda en null y la tabla muestra "-" */ }
+    }));
+    hechos += lote.length;
+    onProg?.(`Comprometidas: ${hechos}/${skus.length}`, { ...items });
+  }
+  return items;
+}
+
 function MRP({ catalogo, setAviso }) {
   const noFeed = typeof window.mrpFeed !== "function";
   const noZoho = typeof window.zohoBooks !== "function";
@@ -3778,12 +3843,20 @@ function MRP({ catalogo, setAviso }) {
   // Stock físico: del cache que arma la pestaña Inventario (stock_on_hand por SKU).
   const cargarStock = async () => {
     try {
+      // Stock = existencia FISICA a mano, neta de la empresa, como la reporta Zoho.
+      // Fuente nueva: el blob que arma la pestana Inventario.
+      const rf = await window.storage?.get(INV_FISICO_KEY);
+      if (rf?.value) {
+        const c = JSON.parse(rf.value);
+        const m = {};
+        for (const [sku, x] of Object.entries(c.items || {})) m[upMrp(sku)] = +(x.aMano || 0);
+        if (Object.keys(m).length) { setStockBySku(m); return; }
+      }
+      // Respaldo: el cache viejo por almacen, mientras exista.
       const r = await window.storage?.get("iso3-inventario-cache-v2");
       if (r?.value) {
         const c = JSON.parse(r.value);
         const m = {};
-        // Stock real para comprar = SOLO existencia física del almacén Central (fiscal),
-        // no la suma de todos los almacenes (Semi-OK/Deshecho/Perezgrovas/Cargo Baja no cuentan).
         for (const [sku, x] of Object.entries(c.porSku || {})) m[upMrp(sku)] = +((x.w && x.w["Central"]) || 0);
         setStockBySku(m);
       }
@@ -4166,68 +4239,41 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const [modo, setModo] = useState("lista");
   const q = busca.trim().toLowerCase();
-  // ---- Valor del inventario FÍSICO por almacén (stock_on_hand de Zoho × costo del SKU). Cache + refresco diario. ----
-  const ALMACENES = [
-    { id: "4053294000001024003", nombre: "Central", fiscal: true },
-    { id: "4053294000004523001", nombre: "Semi-OK" },
-    { id: "4053294000015259001", nombre: "Deshecho" },
-    { id: "4053294000001303001", nombre: "Perezgrovas" },
-    { id: "4053294000014692004", nombre: "Cargo Baja" },
-  ];
-  const [inv, setInv] = useState(null);            // { total, almacenes:[{nombre,fiscal,valor,piezas}], porSku:{sku:{desc,cost,tot,w}} }
-  const [invFecha, setInvFecha] = useState("");
-  const [invCargando, setInvCargando] = useState(false);
-  const [invProg, setInvProg] = useState("");
-  const invRef = useRef(false);
-  const [verOtros, setVerOtros] = useState(false);   // mostrar/ocultar almacenes no-fiscales
+  // ---- Existencias FISICAS netas de la empresa, como las reporta Zoho. Cache + refresco diario. ----
+  const [fis, setFis] = useState(null);              // { [SKU]: {itemId, desc, aMano, comprometido, disponible, cost} }
+  const [fisFecha, setFisFecha] = useState("");
+  const [fisProg, setFisProg] = useState("");
+  const fisRef = useRef(false);
   const [soloMrp, setSoloMrp] = useState(false);      // filtrar: solo SKU en proyectos activos
   const [mrpSkus, setMrpSkus] = useState({});         // sku(may) -> [{ov,name}] de proyectos activos del feed IS-PMT
   const noConn = typeof window.zohoBooks !== "function";
-  const costoSku = (it) => { const cv = catalogo[it.sku] ? +catalogo[it.sku].costoVigente : NaN; return isFinite(cv) && cv > 0 ? cv : (+it.purchase_rate || 0); };
-  const refrescarInv = async () => {
-    if (noConn) { setAviso({ t: "err", m: "La conexión a Zoho no está disponible en esta versión." }); return; }
-    if (invRef.current) return;
-    invRef.current = true; setInvCargando(true);
+
+  const refrescarFisico = async () => {
+    if (noConn || fisRef.current) return;
+    fisRef.current = true;
     try {
-      const porSku = {}, alm = {};
-      for (const a of ALMACENES) {
-        setInvProg(`Leyendo ${a.nombre}…`);
-        let page = 1, more = true;
-        while (more && page <= 30) {
-          const d = await window.zohoBooks({ action: "list_items", params: { warehouse_id: a.id, per_page: "200", page: String(page), filter_by: "Status.Active" } });
-          for (const it of (d.items || [])) {
-            // FÍSICO disponible (actual_available_stock), NO el contable (stock_on_hand):
-            // stock_on_hand infla con lo comprometido y no refleja lo que hay en piso.
-            const stock = Math.max(0, +it.actual_available_stock || 0);
-            if (stock <= 0) continue;
-            const cost = costoSku(it);
-            if (!porSku[it.sku]) porSku[it.sku] = { desc: it.name || it.sku, cost, tot: 0, w: {} };
-            porSku[it.sku].w[a.nombre] = (porSku[it.sku].w[a.nombre] || 0) + stock;
-            porSku[it.sku].tot += stock;
-            alm[a.nombre] = alm[a.nombre] || { valor: 0, piezas: 0, fiscal: !!a.fiscal };
-            alm[a.nombre].valor += stock * cost;
-            alm[a.nombre].piezas += stock;
-          }
-          more = d.page_context?.has_more_page; page++;
-        }
-      }
-      const almacenes = ALMACENES.filter((a) => alm[a.nombre]).map((a) => ({ nombre: a.nombre, fiscal: !!a.fiscal, ...alm[a.nombre] }));
-      const total = almacenes.reduce((s, a) => s + a.valor, 0);
+      // 1) A mano de todo el catalogo: la tabla ya sirve en segundos.
+      const base = await leerAManoFisico(catalogo, setFisProg);
+      setFis({ ...base }); setFisFecha(hoy());
+      // 2) Los caros primero: mayor valor = mayor consecuencia si esta mal.
+      const orden = Object.keys(base).sort((a, b) => (base[b].aMano * base[b].cost) - (base[a].aMano * base[a].cost));
+      await completarComprometido(base, orden, (txt, parcial) => { setFisProg(txt); setFis(parcial); });
       const fecha = hoy();
-      const data = { total, almacenes, porSku };
-      setInv(data); setInvFecha(fecha);
-      try { await window.storage?.set("iso3-inventario-cache-v2", JSON.stringify({ fecha, ...data })); } catch {}
-      const central = almacenes.find((a) => a.fiscal);
-      setAviso({ t: "ok", m: `Inventario valuado: $${mx0(total)} MXN · Central (fiscal): $${mx0(central ? central.valor : 0)}.` });
-    } catch (e) { setAviso({ t: "err", m: "No se pudo valuar el inventario: " + (e.message || e) }); }
-    invRef.current = false; setInvCargando(false); setInvProg("");
+      setFis({ ...base }); setFisFecha(fecha);
+      try { await window.storage?.set(INV_FISICO_KEY, JSON.stringify({ fecha, items: base })); } catch {}
+      setAviso({ t: "ok", m: `Inventario fisico actualizado: ${Object.keys(base).length} SKU.` });
+    } catch (e) {
+      setAviso({ t: "err", m: "No se pudo leer el inventario de Zoho: " + (e.message || e) });
+    }
+    fisRef.current = false; setFisProg("");
   };
+
   useEffect(() => {
     (async () => {
-      let cache = null;
-      try { const r = await window.storage?.get("iso3-inventario-cache-v2"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache && cache.porSku) { setInv({ total: cache.total, almacenes: cache.almacenes || [], porSku: cache.porSku }); setInvFecha(cache.fecha || ""); }
-      if ((!cache || cache.fecha !== hoy()) && !noConn) refrescarInv();
+      let c = null;
+      try { const r = await window.storage?.get(INV_FISICO_KEY); if (r?.value) c = JSON.parse(r.value); } catch {}
+      if (c?.items) { setFis(c.items); setFisFecha(c.fecha || ""); }
+      if ((!c || c.fecha !== hoy()) && !noConn) refrescarFisico();
     })();
   }, []);
 
@@ -4248,14 +4294,25 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     })();
   }, []);
 
-  const almObj = inv?.almacenes || [];
-  const colAlmacenes = (verOtros ? almObj : almObj.filter((a) => a.fiscal)).map((a) => a.nombre);
   const mrpDe = (sku) => mrpSkus[String(sku).toUpperCase()] || null;
-  const invRows = inv ? Object.entries(inv.porSku)
+  const filas = fis ? Object.entries(fis)
     .filter(([sku, x]) => !q || sku.toLowerCase().includes(q) || (x.desc || "").toLowerCase().includes(q))
     .filter(([sku]) => !soloMrp || mrpDe(sku))
-    .map(([sku, x]) => [sku, x, (x.w?.Central || 0) * (x.cost || 0)])  // Valor = SOLO existencias físicas de Central
+    .filter(([, x]) => (x.aMano || 0) > 0 || (x.comprometido || 0) > 0)
+    .map(([sku, x]) => [sku, x, (x.aMano || 0) * (x.cost || 0)])
     .sort((a, b) => b[2] - a[2]) : [];
+
+  const tot = fis ? Object.values(fis).reduce((a, x) => ({
+    valor: a.valor + (x.aMano || 0) * (x.cost || 0),
+    aMano: a.aMano + (x.aMano || 0),
+    comp: a.comp + (x.comprometido || 0),
+    neg: a.neg + (x.disponible != null && x.disponible < 0 ? 1 : 0),
+    pend: a.pend + (x.comprometido == null ? 1 : 0),
+  }), { valor: 0, aMano: 0, comp: 0, neg: 0, pend: 0 }) : null;
+
+  const numCell = (v) => v == null
+    ? <span className="text-stone-300">—</span>
+    : <span className="font-mono">{v}</span>;
 
   if (modo === "recepcion")
     return <RecepcionCamara catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} onSalir={() => setModo("lista")} />;
@@ -4265,33 +4322,37 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div>
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor del inventario físico · Central (fiscal)</p>
-            <p className="text-2xl font-bold font-mono leading-tight">{inv == null ? "—" : `$${mx0((inv.almacenes || []).find((a) => a.fiscal)?.valor || 0)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Valor del inventario físico · toda la empresa</p>
+            <p className="text-2xl font-bold font-mono leading-tight">{tot == null ? "—" : `$${mx0(tot.valor)}`} <span className="text-sm font-normal text-emerald-100">MXN</span></p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-emerald-100">{invCargando ? (invProg || "Valuando…") : (invFecha ? `al ${invFecha}` : "sin datos")}</p>
-            <button onClick={refrescarInv} disabled={invCargando} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+            <p className="text-xs text-emerald-100">{fisProg || (fisFecha ? `al ${fisFecha}` : "sin datos")}</p>
+            <button onClick={refrescarFisico} disabled={!!fisProg || noConn} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
           </div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-          {(inv?.almacenes || []).filter((a) => a.fiscal || verOtros).map((a) => (
-            <div key={a.nombre} className={`rounded-lg p-2.5 ${a.fiscal ? "bg-white/20 ring-1 ring-white/40" : "bg-white/10"}`}>
-              <p className="text-[10px] uppercase tracking-widest text-emerald-100">{a.nombre}{a.fiscal ? " · fiscal" : ""}</p>
-              <p className="text-sm font-bold font-mono leading-tight">${mx0(a.valor)}</p>
-              <p className="text-[10px] text-emerald-100/90">{a.piezas} pzas</p>
-            </div>
-          ))}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-lg p-2.5 bg-white/20 ring-1 ring-white/40">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">A mano</p>
+            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `${tot.aMano} pzas`}</p>
+          </div>
+          <div className="rounded-lg p-2.5 bg-white/10">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Comprometidas</p>
+            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `${tot.comp} pzas`}</p>
+            {tot != null && tot.pend > 0 && <p className="text-[10px] text-emerald-100/90">faltan {tot.pend} SKU por consultar</p>}
+          </div>
+          <div className={`rounded-lg p-2.5 ${tot && tot.neg > 0 ? "bg-red-500/30 ring-1 ring-red-200/60" : "bg-white/10"}`}>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Disponible negativo</p>
+            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `${tot.neg} SKU`}</p>
+            {tot != null && tot.neg > 0 && <p className="text-[10px] text-emerald-50">comprometido de más</p>}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
-          <p className="text-[10px] text-emerald-100/80">La valuación es <b>solo existencias físicas de Central</b> (fiscal). Los demás almacenes son referencia.</p>
-          <label className="inline-flex items-center gap-1.5 text-[11px] text-emerald-50 whitespace-nowrap cursor-pointer"><input type="checkbox" checked={verOtros} onChange={(e) => setVerOtros(e.target.checked)} /> Ver otros almacenes</label>
-        </div>
+        <p className="text-[10px] text-emerald-100/80 mt-2">Existencias <b>físicas</b> netas de la empresa, tal como las reporta Zoho (no el stock contable). Incluye <b>todos</b> los almacenes.</p>
       </div>
 
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold">Inventario</h2>
-          <p className="text-xs text-stone-500">Existencias físicas por almacén (de Zoho).</p>
+          <p className="text-xs text-stone-500">A mano · comprometidas · disponible para venta, de Zoho.</p>
         </div>
         <button onClick={() => setModo("recepcion")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">📷 Recepción por cámara</button>
       </div>
@@ -4301,44 +4362,50 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           className="flex-1 min-w-[200px] px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
         <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 whitespace-nowrap cursor-pointer"><input type="checkbox" checked={soloMrp} onChange={(e) => setSoloMrp(e.target.checked)} /> Solo en proyectos activos</label>
       </div>
-      {inv == null ? (
-        <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{invCargando ? (invProg || "Leyendo inventario de Zoho…") : "Dale ↻ Actualizar para traer el inventario por almacén."}</div>
+
+      {fisProg && <div className="px-3 py-2 rounded text-sm border bg-sky-50 border-sky-300 text-sky-900">{fisProg}</div>}
+
+      {fis == null ? (
+        <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{fisProg ? "Leyendo inventario de Zoho…" : "Dale ↻ Actualizar para traer el inventario de Zoho."}</div>
       ) : (
         <>
-          <p className="text-[11px] font-mono text-stone-500">{invRows.length} SKU con existencia · ordenado por valor{invRows.length > 500 ? " · mostrando 500 (usa el buscador para el resto)" : ""}.</p>
+          <p className="text-[11px] font-mono text-stone-500">{filas.length} SKU · ordenado por valor{filas.length > 500 ? " · mostrando 500 (usa el buscador para el resto)" : ""}.</p>
           <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: 620 + colAlmacenes.length * 82 }}>
+            <table className="w-full text-sm" style={{ minWidth: 860 }}>
               <thead className="bg-stone-50 border-b border-stone-200">
                 <tr className="text-[10px] uppercase tracking-widest text-stone-500">
                   <th className="text-left px-3 py-2">SKU</th>
                   <th className="text-left px-3 py-2">Artículo</th>
                   <th className="text-center px-2 py-2 whitespace-nowrap">MRP</th>
-                  {colAlmacenes.map((n) => <th key={n} className="text-right px-2 py-2 whitespace-nowrap">{n}</th>)}
-                  <th className="text-right px-3 py-2">Total{verOtros ? "" : " (Central)"}</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">A mano</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Comprometidas</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Disponible</th>
                   <th className="text-right px-3 py-2">Costo</th>
-                  <th className="text-right px-3 py-2">Valor (Central)</th>
+                  <th className="text-right px-3 py-2">Valor</th>
                 </tr>
               </thead>
               <tbody>
-                {invRows.slice(0, 500).map(([sku, x, val]) => {
+                {filas.slice(0, 500).map(([sku, x, val]) => {
                   const proj = mrpDe(sku);
                   const ovs = proj ? [...new Set(proj.map((p) => p.ov || p.name).filter(Boolean))] : [];
-                  const totVis = colAlmacenes.reduce((s, n) => s + (x.w[n] || 0), 0);
+                  const neg = x.disponible != null && x.disponible < 0;
                   return (
-                  <tr key={sku} className="border-b border-stone-100">
-                    <td className="px-3 py-2 font-mono text-xs font-semibold">{sku}</td>
-                    <td className="px-3 py-2 text-stone-600 text-xs">{x.desc}</td>
-                    <td className="px-2 py-2 text-center">{proj ? <span title={`En obra: ${ovs.join(", ")}`} className="inline-block px-1.5 py-0.5 rounded bg-violet-600 text-white text-[10px] font-bold">{ovs.length || proj.length}</span> : <span className="text-stone-300">—</span>}</td>
-                    {colAlmacenes.map((n) => <td key={n} className={`px-2 py-2 text-right font-mono ${n === "Central" ? "font-semibold text-stone-800" : "text-stone-500"}`}>{x.w[n] || 0}</td>)}
-                    <td className="px-3 py-2 text-right font-mono">{totVis}</td>
-                    <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(x.cost || 0)}</td>
-                    <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(val)}</td>
-                  </tr>
+                    <tr key={sku} className={`border-b border-stone-100 ${neg ? "bg-red-50" : ""}`}>
+                      <td className="px-3 py-2 font-mono text-xs font-semibold">{sku}</td>
+                      <td className="px-3 py-2 text-stone-600 text-xs">{x.desc}</td>
+                      <td className="px-2 py-2 text-center">{proj ? <span title={`En obra: ${ovs.join(", ")}`} className="inline-block px-1.5 py-0.5 rounded bg-violet-600 text-white text-[10px] font-bold">{ovs.length || proj.length}</span> : <span className="text-stone-300">—</span>}</td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold text-stone-800">{x.aMano}</td>
+                      <td className="px-3 py-2 text-right text-stone-600">{numCell(x.comprometido)}</td>
+                      <td className={`px-3 py-2 text-right ${neg ? "text-red-700 font-bold font-mono" : "text-stone-800"}`}>{numCell(x.disponible)}</td>
+                      <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(x.cost || 0)}</td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(val)}</td>
+                    </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
+          <p className="text-[11px] text-stone-400">“—” significa que ese dato todavía no se ha consultado en Zoho, no que sea cero. Un <b className="text-red-700">disponible negativo</b> es material comprometido de más.</p>
         </>
       )}
     </div>

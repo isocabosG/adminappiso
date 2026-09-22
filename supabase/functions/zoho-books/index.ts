@@ -118,13 +118,14 @@ Deno.serve(async (req) => {
 
     const token = await getAccessToken();
 
-    const { purchaseorder_id, salesorder_id, invoice_id, document_id, ...restParams } = params;
+    const { purchaseorder_id, salesorder_id, invoice_id, document_id, item_id, ...restParams } = params;
     let path, qsParams = params, binary = false;
     if (action === "list_purchase_orders") { path = "/purchaseorders"; }
     else if (action === "get_purchase_order") { path = `/purchaseorders/${purchaseorder_id}`; qsParams = restParams; } // trae line_items (SKU + cantidad)
     else if (action === "list_sales_orders") { path = "/salesorders"; } // proyectos
     else if (action === "get_sales_order") { path = `/salesorders/${salesorder_id}`; qsParams = restParams; } // trae line_items, payments[], invoices[], cf_proyecto
-    else if (action === "list_items") { path = "/items"; } // inventario: stock_on_hand + purchase_rate por SKU
+    else if (action === "list_items") { path = "/items"; } // inventario: actual_available_stock (fisico a mano) + purchase_rate por SKU
+    else if (action === "get_item") { path = `/items/${item_id}`; qsParams = restParams; } // unico endpoint que trae actual_committed_stock y actual_available_for_sale_stock
     else if (action === "list_invoices") { path = "/invoices"; } // facturas: balance real por OV (reference_number = número de OV)
     else if (action === "get_so_attachment") { path = `/salesorders/${salesorder_id}/attachment`; qsParams = document_id ? { document_id } : {}; binary = true; } // contrato/adjunto del proyecto
     else if (action === "get_so_pdf") { path = `/salesorders/${salesorder_id}`; qsParams = { accept: "pdf" }; binary = true; }        // OV en PDF
