@@ -3968,11 +3968,56 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
   };
 
   const [soloFalta, setSoloFalta] = useState(true);
+  const [filtro, setFiltro] = useState("todo");   // todo | vencido | semana | proxima | mes | muertos
   const [abierta, setAbierta] = useState(null);
   const hoyISO = hoy();
   const fechas = useMemo(
     () => buildMRPPorFecha(proyectos, invPorSku, { soloFaltante: soloFalta, hoyISO }),
     [proyectos, invPorSku, soloFalta, hoyISO]);
+
+  // ---- Filtro por FECHA DE PEDIDO (no de obra). Es la pregunta de compras:
+  // "¿qué tengo que pedir esta semana?". Se filtran los MATERIALES y luego se
+  // recalculan los totales, para que el encabezado de cada tarjeta no mienta.
+  const addDias = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const dow = new Date(hoyISO + "T00:00:00").getDay();            // 0 = domingo
+  const finEstaSemana = addDias(hoyISO, (7 - dow) % 7);
+  const finProxima = addDias(finEstaSemana, 7);
+  const finMes = (() => { const d = new Date(hoyISO + "T00:00:00"); return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10); })();
+
+  const pasa = (m) => {
+    if (filtro === "todo") return true;
+    if (filtro === "muertos") return !!estadoSku(m.sku);
+    if (!(m.sinPedir > 0)) return false;            // los demás filtros son "por pedir"
+    const f = m.fechaCompra;
+    if (filtro === "vencido") return !!f && f < hoyISO;
+    if (!f) return false;
+    if (filtro === "semana") return f <= finEstaSemana;
+    if (filtro === "proxima") return f > finEstaSemana && f <= finProxima;
+    if (filtro === "mes") return f <= finMes;
+    return true;
+  };
+
+  const vista = useMemo(() => fechas.map((f) => {
+    const hitos = f.hitos.map((g) => ({ ...g, materiales: g.materiales.filter(pasa) })).filter((g) => g.materiales.length);
+    if (!hitos.length) return null;
+    const mats = hitos.flatMap((g) => g.materiales);
+    const mapObras = new Map();
+    for (const m of mats) for (const pr of m.proyectos) { const k = pr.ov || pr.name; if (k && !mapObras.has(k)) mapObras.set(k, { ov: pr.ov || null, name: pr.name || "" }); }
+    return {
+      ...f, hitos, obras: [...mapObras.values()],
+      totSinPedir: mats.reduce((a, m) => a + (m.sinPedir || 0), 0),
+      totPedidoTarde: mats.reduce((a, m) => a + (m.pedidoTarde || 0), 0),
+      tarde: mats.some((m) => m.tarde),
+      // diasMrp(fechaCompra, hoy) es negativo cuando la fecha de pedido ya pasó;
+      // el signo invertido son los días de atraso.
+      diasTarde: mats.reduce((k, m) => (m.tarde && m.fechaCompra) ? Math.max(k, -(diasMrp(m.fechaCompra, hoyISO) || 0)) : k, 0),
+    };
+  }).filter(Boolean), [fechas, filtro, skuInfo]);
+
+  const CHIPS = [
+    ["todo", "Todo"], ["vencido", "Vencido"], ["semana", "Pedir esta semana"],
+    ["proxima", "Próxima semana"], ["mes", "Este mes"], ["muertos", "SKU de baja"],
+  ];
 
   if (!fechas.length) return (
     <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">
@@ -3982,9 +4027,17 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
 
   return (
     <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {CHIPS.map(([k, t]) => (
+          <button key={k} onClick={() => setFiltro(k)}
+            className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${filtro === k ? "bg-violet-700 text-white border-violet-700" : "bg-white text-stone-600 border-stone-300 hover:border-violet-400"}`}>
+            {t}
+          </button>
+        ))}
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-[11px] text-stone-500">{fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra de hoy en adelante · el stock se asigna a la obra <b>más próxima primero</b>.</p>
+          <p className="text-[11px] text-stone-500">{vista.length} de {fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra · el stock se asigna a la obra <b>más próxima primero</b>.</p>
           {(() => {
             if (!skuInfo) return null;
             const malos = new Set();
@@ -3998,7 +4051,7 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
         </label>
       </div>
 
-      {fechas.map((f) => {
+      {vista.map((f) => {
         const open = abierta === f.fecha;
         return (
           <div key={f.fecha} className={`bg-white border rounded-lg overflow-hidden ${f.tarde ? "border-red-300" : "border-stone-200"}`}>
