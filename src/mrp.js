@@ -235,6 +235,10 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
       dias: diasEntreISO(hoyISO, fecha),
       totPorComprar: hitos.reduce((a, g) => a + g.totPorComprar, 0),
       tarde: hitos.some((g) => g.materiales.some((m) => m.tarde)),
+      // Con leads de hasta 150 d casi todo sale "vencido". Lo que informa no es
+      // SI está tarde sino CUÁNTO: la partida más atrasada del grupo.
+      diasTarde: hitos.reduce((n, g) => g.materiales.reduce((k, m) =>
+        (m.tarde && m.fechaCompra) ? Math.max(k, -(diasEntreISO(hoyISO, m.fechaCompra) || 0)) : k, n), 0),
     }
   }).filter((f) => f.hitos.length)
 }

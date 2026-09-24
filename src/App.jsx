@@ -2305,7 +2305,12 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
       } catch { /* sin feed, la lista se comporta como antes */ }
     })();
   }, []);
-  const calDe = (s) => calById[String(s.salesorder_id)] || null;
+  // Calendarizado = con fecha de obra de hoy en adelante. Una obra cuya fecha
+  // ya pasó no va arriba ni lleva contorno: o ya se instaló, o nadie la cerró.
+  const calDe = (s) => {
+    const p = calById[String(s.salesorder_id)];
+    return p && esCalendarizado(p) && p.fecha_instalacion && p.fecha_instalacion >= hoy() ? p : null;
+  };
   // Primero los calendarizados, por fecha de obra ascendente. El resto después.
   const ordenCal = (a, b) => {
     const A = calDe(a), B = calDe(b);
@@ -2392,20 +2397,31 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
       {sos === null ? (
         <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{cargando ? "Leyendo proyectos de Zoho…" : "Dale ↻ Actualizar de Zoho para traer los proyectos."}</div>
       ) : (
-        <div className="space-y-2">
-          <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
+            <p className="text-[11px] text-stone-500 flex items-center gap-1.5">
+              <span className="inline-block w-4 h-3 rounded-sm border border-violet-500 ring-1 ring-violet-300" />
+              morado = <b className="font-semibold text-violet-700">calendarizado</b> en App Instalaciones
+            </p>
+          </div>
           {[...rows].sort(ordenCal).map((s) => {
             const pagadoManual = manualOf(s);
             const conFactura = !!facOf(s);
             const cal = calDe(s);   // calendarizado en IS-PMT
             return (
               <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)}
-                className={`w-full bg-white rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left border ${cal ? "border-violet-500 ring-1 ring-violet-300 hover:border-violet-700" : "border-stone-200 hover:border-stone-400"}`}>
+                className={`relative w-full bg-white rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left border ${cal ? "border-violet-500 ring-1 ring-violet-300 hover:border-violet-700" : "border-stone-200 hover:border-stone-400"}`}>
+                {cal && (
+                  <span className="absolute -top-2 right-3 px-1.5 py-0.5 rounded bg-violet-600 text-white text-[9px] font-bold tracking-widest leading-none">
+                    CALENDARIZADO
+                  </span>
+                )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-xs font-semibold">{s.salesorder_number}</span>
                     <PagoBadge status={s.paid_status} />
-                    {cal && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-600 text-white font-medium">obra {cal.fecha_instalacion}</span>}
+                    {cal && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800 font-medium">obra {cal.fecha_instalacion}</span>}
                   </div>
                   <p className="text-sm text-stone-700 truncate max-w-[380px]">{s.reference_number || s.customer_name}</p>
                   <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
@@ -3844,6 +3860,15 @@ const esServicioMrp = (l) => (l.line_item_type === "service" || l.product_type =
 --------------------------------------------------------------------------- */
 const INV_FISICO_KEY = "iso3-inventario-fisico";
 const OV_BOM_KEY = "iso3-mrp-ov-bom";   // BOM provisional jalado de la OV, por proyecto
+
+// Estatus de IS-PMT que SÍ entran al MRP. Decisión de Fran (24-sep-2026):
+// obras calendarizadas y las entregadas a Post Venta (esas también compran).
+// El feed manda además `instalando`, `anclaje`, `puesta_marcha`, `pausa` y
+// `sin_fecha`; quedan fuera — no se compra para una obra detenida, ni para una
+// que IS-PMT marca como sin fecha en calendario.
+// Para incluir otra, se agrega aquí y en ningún otro lado.
+const ESTATUS_MRP = new Set(["calendarizado", "postventa"]);
+const esCalendarizado = (p) => ESTATUS_MRP.has(String(p?.status || "").toLowerCase());
 const LOTE_GET_ITEM = 6;   // llamadas en paralelo; subirlo arriesga el rate-limit de Zoho
 
 // Pasada 1 (~10 llamadas): a mano fisico de todo el catalogo.
@@ -3935,7 +3960,11 @@ function MrpPorFecha({ proyectos, invPorSku }) {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${f.dias < 0 ? "bg-stone-200 text-stone-600" : f.dias <= 14 ? "bg-red-100 text-red-700" : f.dias <= 30 ? "bg-amber-100 text-amber-800" : "bg-stone-100 text-stone-600"}`}>
                     {f.dias < 0 ? `hace ${-f.dias} d` : f.dias === 0 ? "hoy" : `en ${f.dias} d`}
                   </span>
-                  {f.tarde && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold">PEDIDO VENCIDO</span>}
+                  {f.tarde && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${f.diasTarde >= 60 ? "bg-red-600 text-white" : f.diasTarde >= 15 ? "bg-amber-500 text-white" : "bg-stone-300 text-stone-700"}`}>
+                      pedido vencido {f.diasTarde} d
+                    </span>
+                  )}
                 </div>
                 <p className="text-[12px] text-stone-700 truncate max-w-[560px]">{f.obras.map((o) => o.name).filter(Boolean).join(" · ")}</p>
                 <p className="text-[10px] font-mono text-stone-400 truncate max-w-[560px]">{f.obras.map((o) => o.ov).filter(Boolean).join(" · ")}</p>
@@ -4131,7 +4160,14 @@ function MRP({ catalogo, setAviso }) {
 
   // Proyectos normalizados (SKU en mayúsculas para cuadrar con el inventario).
   // Si el proyecto tiene BOM, se usa; si no, se cae a los equipos de la OV (provisional).
-  const proyNorm = useMemo(() => (feed?.proyectos || []).map((p) => {
+  // Fuente única de toda la pestaña MRP: solo obras con estatus permitido Y con
+  // fecha de instalación de HOY EN ADELANTE. Se filtra aquí y no en cada vista
+  // para que el calendario de compra, el desglose por hito y la vista fechada
+  // digan siempre lo mismo. Una obra cuya fecha ya pasó no genera compras.
+  const proyNorm = useMemo(() => (feed?.proyectos || [])
+    .filter(esCalendarizado)
+    .filter((p) => p.fecha_instalacion && String(p.fecha_instalacion).slice(0, 10) >= hoy())
+    .map((p) => {
     const base = (p.materiales || []).length ? p.materiales : (ovMats[p.id] || []);
     return { ...p, materiales: base.map((x) => ({ ...x, sku: x.sku ? upMrp(x.sku) : null })) };
   }), [feed, ovMats]);
@@ -4172,8 +4208,8 @@ function MRP({ catalogo, setAviso }) {
   const totComprar = fechasVivas.reduce((a, f) => a + f.totPorComprar, 0);
   const obrasVivas = fechasVivas.length;
 
-  const conBom = (feed?.proyectos || []).filter((p) => (p.materiales || []).length).length;
-  const proyectosSinBom = (feed?.proyectos || []).filter((p) => !(p.materiales || []).length);
+  const conBom = proyNorm.filter((p) => (p.materiales || []).length).length;
+  const proyectosSinBom = proyNorm.filter((p) => !(p.materiales || []).length);
   const sinBom = proyectosSinBom.length;
   const conOV = proyectosSinBom.filter((p) => (ovMats[p.id] || []).length).length;
 
@@ -4255,6 +4291,7 @@ function MRP({ catalogo, setAviso }) {
           <div>
             <p className="text-[10px] uppercase tracking-widest text-violet-100">MRP de compras por hito · fuente IS-PMT</p>
             <p className="text-2xl font-bold leading-tight">{feed ? `${obrasVivas} fechas de obra` : "—"} <span className="text-sm font-normal text-violet-100">de hoy en adelante</span></p>
+            <p className="text-[10px] text-violet-100/80">solo obras <b>calendarizado</b> o <b>postventa</b> en IS-PMT, con fecha de hoy en adelante ({proyNorm.length} de {feed?.proyectos?.length || 0} del feed)</p>
             <p className="text-[11px] text-violet-100/90 mt-0.5">{conBom} con BOM · {sinBom} sin BOM{conOV ? ` (${conOV} desde OV)` : ""} · por comprar <b>{nfMrp.format(totComprar)}</b> pzas</p>
           </div>
           <div className="text-right">
