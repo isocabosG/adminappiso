@@ -3859,6 +3859,25 @@ const esServicioMrp = (l) => (l.line_item_type === "service" || l.product_type =
    llamada por SKU. Verificado contra la API el 21-sep-2026.
 --------------------------------------------------------------------------- */
 const INV_FISICO_KEY = "iso3-inventario-fisico";
+// Empate por descripción para proponer el reemplazo de un SKU dado de baja.
+const normDesc = (s) => String(s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/[^A-Z0-9/ ]/g, " ").replace(/\s+/g, " ").trim();
+function sugerirReemplazo(desc, cat) {
+  const t = normDesc(desc).split(" ").filter(Boolean);
+  if (t.length < 2 || !cat) return null;
+  let best = null, bestScore = 0;
+  for (const [sku, x] of Object.entries(cat)) {
+    if (!x.activo) continue;
+    const c = normDesc(x.desc);
+    let hit = 0; for (const w of t) if (c.includes(w)) hit++;
+    const score = hit / t.length;
+    if (score > bestScore) { bestScore = score; best = { sku, desc: x.desc, aMano: x.aMano || 0 }; }
+  }
+  // 0.85 y no 1.0: "ARANDELA PLANA 3/8" contra "ARANDELA PLANA INOX 3/8" empata
+  // 4 de 4 palabras, pero casos con una palabra extra no deben quedar fuera.
+  return bestScore >= 0.85 ? best : null;
+}
+
 const OV_BOM_KEY = "iso3-mrp-ov-bom";   // BOM provisional jalado de la OV, por proyecto
 
 // Estatus de IS-PMT que SÍ entran al MRP. Decisión de Fran (24-sep-2026):
@@ -3877,7 +3896,12 @@ async function leerAManoFisico(catalogo, onProg) {
   let page = 1, more = true;
   while (more && page <= 30) {
     onProg?.(`Leyendo articulos... (pag. ${page})`);
-    const d = await window.zohoBooks({ action: "list_items", params: { per_page: "200", page: String(page), filter_by: "Status.Active" } });
+    // Status.All, no solo Active: un SKU dado de baja que sigue en un BOM viejo
+    // manda a comprar algo que ya no existe, y como no aparecía en el catálogo
+    // el MRP lo veía con stock 0 y no había forma de distinguir "no hay" de
+    // "ese código ya murió". Ej. real: APL00038 (baja, 0 pzas) vs APLI0038
+    // (vigente, 1,429 pzas en almacén).
+    const d = await window.zohoBooks({ action: "list_items", params: { per_page: "200", page: String(page), filter_by: "Status.All" } });
     for (const it of (d.items || [])) {
       const sku = String(it.sku || "").toUpperCase();
       if (!sku) continue;
@@ -3887,6 +3911,7 @@ async function leerAManoFisico(catalogo, onProg) {
         desc: it.name || sku,
         // FISICO a mano. NO stock_on_hand: ese es el contable y en esta operacion
         // difiere muchisimo (ej. BREHV5KW: 784 contable vs 269 fisico).
+        activo: String(it.status || "").toLowerCase() === "active",
         aMano: Math.max(0, +it.actual_available_stock || 0),
         comprometido: null,   // null = todavia no se consulto. Nunca 0.
         disponible: null,
@@ -3900,7 +3925,7 @@ async function leerAManoFisico(catalogo, onProg) {
 
 // Pasada 2 (1 llamada por SKU, en lotes paralelos): comprometidas y disponible.
 async function completarComprometido(items, orden, onProg) {
-  const skus = orden.filter((s) => items[s]?.itemId);
+  const skus = orden.filter((s) => items[s]?.itemId && items[s]?.activo !== false);
   let hechos = 0;
   for (let i = 0; i < skus.length; i += LOTE_GET_ITEM) {
     const lote = skus.slice(i, i + LOTE_GET_ITEM);
@@ -3926,7 +3951,22 @@ async function completarComprometido(items, orden, onProg) {
 /* MRP fechado: "qué se necesita en obra y cuándo", agrupado por fecha de
    instalación y dentro por hito. Es la vista que pidió Fran: no por fecha de
    compra, sino por cuándo se necesita según el calendario. */
-function MrpPorFecha({ proyectos, invPorSku }) {
+function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
+  // Se memoiza porque el empate recorre todo el catálogo por cada SKU muerto.
+  const sugeridos = useMemo(() => {
+    if (!skuInfo) return {};
+    const out = {};
+    for (const [sku, x] of Object.entries(skuInfo)) if (!x.activo) out[sku] = sugerirReemplazo(x.desc, skuInfo);
+    return out;
+  }, [skuInfo]);
+  const estadoSku = (sku) => {
+    if (!sku || !skuInfo) return null;
+    const x = skuInfo[upMrp(sku)];
+    if (!x) return { tipo: "inexistente" };
+    if (!x.activo) return { tipo: "baja", sug: sugeridos[upMrp(sku)] || null };
+    return null;
+  };
+
   const [soloFalta, setSoloFalta] = useState(true);
   const [abierta, setAbierta] = useState(null);
   const hoyISO = hoy();
@@ -3943,7 +3983,16 @@ function MrpPorFecha({ proyectos, invPorSku }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[11px] text-stone-500">{fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra de hoy en adelante · el stock se asigna a la obra <b>más próxima primero</b>.</p>
+        <div>
+          <p className="text-[11px] text-stone-500">{fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra de hoy en adelante · el stock se asigna a la obra <b>más próxima primero</b>.</p>
+          {(() => {
+            if (!skuInfo) return null;
+            const malos = new Set();
+            for (const f of fechas) for (const g of f.hitos) for (const m of g.materiales) { const e = estadoSku(m.sku); if (e) malos.add(m.sku); }
+            if (!malos.size) return null;
+            return <p className="text-[11px] text-orange-700 mt-0.5"><b>{malos.size} SKU</b> dados de baja o inexistentes en Zoho — revísalos antes de comprar.</p>;
+          })()}
+        </div>
         <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 cursor-pointer">
           <input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta comprar
         </label>
@@ -3996,8 +4045,25 @@ function MrpPorFecha({ proyectos, invPorSku }) {
                       <tbody>
                         {g.materiales.map((m) => (
                           <tr key={m.key} className={`border-b border-stone-50 ${m.tarde ? "bg-red-50" : ""}`}>
-                            <td className="py-1 font-mono font-semibold">{m.sku || "—"}{m.provisional && <span title="viene de la OV, sin BOM sincronizado" className="ml-1 text-[9px] text-amber-600">OV</span>}</td>
-                            <td className="py-1 text-stone-600 truncate max-w-[220px]">{m.desc}</td>
+                            <td className="py-1 font-mono font-semibold">
+                              {m.sku || "—"}
+                              {m.provisional && <span title="viene de la OV, sin BOM sincronizado" className="ml-1 text-[9px] text-amber-600">OV</span>}
+                              {(() => {
+                                const e = estadoSku(m.sku); if (!e) return null;
+                                if (e.tipo === "inexistente") return <span title="Este SKU no existe en el catálogo de Zoho" className="ml-1 text-[9px] px-1 rounded bg-stone-700 text-white">NO EXISTE</span>;
+                                return <span title={e.sug ? `Dado de baja en Zoho. Vigente: ${e.sug.sku} — ${e.sug.desc} (${nfMrp.format(e.sug.aMano)} pzas)` : "Dado de baja en Zoho"} className="ml-1 text-[9px] px-1 rounded bg-orange-600 text-white">BAJA</span>;
+                              })()}
+                            </td>
+                            <td className="py-1 text-stone-600 max-w-[220px]">
+                              <div className="truncate">{m.desc}</div>
+                              {(() => {
+                                const e = estadoSku(m.sku);
+                                if (e?.tipo === "baja" && e.sug) return (
+                                  <div className="text-[10px] text-emerald-700 truncate">↳ usar <b className="font-mono">{e.sug.sku}</b> · {nfMrp.format(e.sug.aMano)} en almacén</div>
+                                );
+                                return null;
+                              })()}
+                            </td>
                             {/* Sin esto, dos obras que caen el mismo día se ven como una sola
                                 y el material de una parece de la otra. */}
                             <td className="py-1 text-[10px] text-stone-500 whitespace-nowrap"
@@ -4040,6 +4106,7 @@ function MRP({ catalogo, setAviso }) {
   const [mes, setMes] = useState("");                // "" = todos los meses
   const [soloFaltante, setSoloFaltante] = useState(true);
   const [proyectosSel, setProyectosSel] = useState(() => new Set()); // vacío = todos los proyectos
+  const [skuInfo, setSkuInfo] = useState(null);            // sku -> {activo, desc, aMano} del catálogo de Zoho
   const [transitoLotes, setTransitoLotes] = useState({});  // sku -> [{qty, eta}] de OC abiertas
   const [ovMats, setOvMats] = useState({});          // projectId -> materiales provisionales de la OV
   const [ovProg, setOvProg] = useState("");
@@ -4055,8 +4122,9 @@ function MRP({ catalogo, setAviso }) {
       if (rf?.value) {
         const c = JSON.parse(rf.value);
         const m = {};
-        for (const [sku, x] of Object.entries(c.items || {})) m[upMrp(sku)] = +(x.aMano || 0);
-        if (Object.keys(m).length) { setStockBySku(m); return; }
+        const info = {};
+        for (const [sku, x] of Object.entries(c.items || {})) { const k = upMrp(sku); m[k] = +(x.aMano || 0); info[k] = x; }
+        if (Object.keys(m).length) { setStockBySku(m); setSkuInfo(info); return; }
       }
       // Respaldo: el cache viejo por almacen, mientras exista.
       const r = await window.storage?.get("iso3-inventario-cache-v2");
@@ -4317,7 +4385,7 @@ function MRP({ catalogo, setAviso }) {
       </div>
 
       {/* Vista principal: qué se necesita en obra y cuándo */}
-      <MrpPorFecha proyectos={proyNorm} invPorSku={invPorSku} />
+      <MrpPorFecha proyectos={proyNorm} invPorSku={invPorSku} skuInfo={skuInfo} />
 
       {noFeed && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">El feed del MRP no está disponible en esta versión de la app (falta la Edge Function <code>mrp-feed</code>).</div>}
       {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b>. El MRP usa <b>solo la existencia física del almacén Central (fiscal)</b> como stock; mientras, se toma 0.</div>}
