@@ -3962,16 +3962,20 @@ function MrpPorFecha({ proyectos, invPorSku }) {
                   </span>
                   {f.tarde && (
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${f.diasTarde >= 60 ? "bg-red-600 text-white" : f.diasTarde >= 15 ? "bg-amber-500 text-white" : "bg-stone-300 text-stone-700"}`}>
-                      pedido vencido {f.diasTarde} d
+                      sin pedir · {f.diasTarde} d tarde
                     </span>
+                  )}
+                  {!f.tarde && f.totPedidoTarde > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-sky-100 text-sky-800">ya pedido, llega tarde</span>
                   )}
                 </div>
                 <p className="text-[12px] text-stone-700 truncate max-w-[560px]">{f.obras.map((o) => o.name).filter(Boolean).join(" · ")}</p>
                 <p className="text-[10px] font-mono text-stone-400 truncate max-w-[560px]">{f.obras.map((o) => o.ov).filter(Boolean).join(" · ")}</p>
               </div>
               <div className="text-right font-mono text-xs">
-                <p className="text-stone-400">por comprar</p>
-                <p className={`text-base font-bold ${f.totPorComprar > 0 ? "text-violet-800" : "text-stone-400"}`}>{nfMrp.format(f.totPorComprar)}</p>
+                <p className="text-stone-400">falta pedir</p>
+                <p className={`text-base font-bold ${f.totSinPedir > 0 ? "text-violet-800" : "text-stone-400"}`}>{nfMrp.format(f.totSinPedir)}</p>
+                {f.totPedidoTarde > 0 && <p className="text-[10px] text-sky-700">{nfMrp.format(f.totPedidoTarde)} ya en OC</p>}
               </div>
             </button>
 
@@ -3980,24 +3984,34 @@ function MrpPorFecha({ proyectos, invPorSku }) {
                 {f.hitos.map((g) => (
                   <div key={g.hito}>
                     <p className="text-[10px] uppercase tracking-widest text-stone-500 mb-1">
-                      Hito {g.hito} · {g.meta?.nombre} <span className="text-stone-400 normal-case tracking-normal">— {nfMrp.format(g.totPorComprar)} pzas por comprar</span>
+                      Hito {g.hito} · {g.meta?.nombre} <span className="text-stone-400 normal-case tracking-normal">— {nfMrp.format(g.materiales.reduce((a, m) => a + (m.sinPedir || 0), 0))} pzas por pedir</span>
                     </p>
                     <table className="w-full text-xs">
                       <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
-                        <th className="text-left py-1">SKU</th><th className="text-left py-1">Material</th>
+                        <th className="text-left py-1">SKU</th><th className="text-left py-1">Material</th><th className="text-left py-1">Obra</th>
                         <th className="text-right py-1">Req.</th><th className="text-right py-1">Stock</th>
-                        <th className="text-right py-1">Tránsito</th><th className="text-right py-1">Comprar</th>
+                        <th className="text-right py-1">Tránsito</th><th className="text-right py-1">Falta pedir</th><th className="text-right py-1 whitespace-nowrap">En OC tarde</th>
                         <th className="text-right py-1 whitespace-nowrap">Pedir antes de</th>
                       </tr></thead>
                       <tbody>
                         {g.materiales.map((m) => (
                           <tr key={m.key} className={`border-b border-stone-50 ${m.tarde ? "bg-red-50" : ""}`}>
                             <td className="py-1 font-mono font-semibold">{m.sku || "—"}{m.provisional && <span title="viene de la OV, sin BOM sincronizado" className="ml-1 text-[9px] text-amber-600">OV</span>}</td>
-                            <td className="py-1 text-stone-600 truncate max-w-[260px]">{m.desc}</td>
+                            <td className="py-1 text-stone-600 truncate max-w-[220px]">{m.desc}</td>
+                            {/* Sin esto, dos obras que caen el mismo día se ven como una sola
+                                y el material de una parece de la otra. */}
+                            <td className="py-1 text-[10px] text-stone-500 whitespace-nowrap"
+                                title={m.proyectos.map((pr) => `${pr.ov || pr.name}: ${nfMrp.format(pr.qty)}`).join("\n")}>
+                              {(() => {
+                                const ovs = [...new Set(m.proyectos.map((pr) => pr.ov || pr.name).filter(Boolean))];
+                                return ovs.length <= 2 ? ovs.join(" · ") : `${ovs[0]} +${ovs.length - 1}`;
+                              })()}
+                            </td>
                             <td className="py-1 text-right font-mono">{nfMrp.format(m.requerido)}</td>
                             <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deStock)}</td>
                             <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deTransito)}{m.sinFecha > 0 && <span title={`${m.sinFecha} pzas en OC sin fecha de llegada: no se cuentan para esta obra`} className="ml-1 text-[9px] text-amber-600">+{nfMrp.format(m.sinFecha)}?</span>}</td>
-                            <td className={`py-1 text-right font-mono font-bold ${m.porComprar > 0 ? "text-violet-800" : "text-stone-300"}`}>{nfMrp.format(m.porComprar)}</td>
+                            <td className={`py-1 text-right font-mono font-bold ${m.sinPedir > 0 ? "text-violet-800" : "text-stone-300"}`}>{nfMrp.format(m.sinPedir || 0)}</td>
+                            <td className={`py-1 text-right font-mono ${m.pedidoTarde > 0 ? "text-sky-700" : "text-stone-300"}`}>{nfMrp.format(m.pedidoTarde || 0)}</td>
                             <td className={`py-1 text-right font-mono ${m.tarde ? "text-red-700 font-bold" : "text-stone-500"}`}>{m.fechaCompra || "—"}{m.critico && <span title={`lead crítico ${m.lead} d`} className="ml-1 text-[9px] text-red-600">!</span>}</td>
                           </tr>
                         ))}
@@ -4205,7 +4219,7 @@ function MRP({ catalogo, setAviso }) {
   const sinTransito = Object.keys(transito).length === 0;
   // Total del encabezado: solo obras de hoy en adelante, igual que la vista fechada.
   const fechasVivas = useMemo(() => buildMRPPorFecha(proyNorm, invPorSku, { soloFaltante: true }), [proyNorm, invPorSku]);
-  const totComprar = fechasVivas.reduce((a, f) => a + f.totPorComprar, 0);
+  const totComprar = fechasVivas.reduce((a, f) => a + (f.totSinPedir || 0), 0);
   const obrasVivas = fechasVivas.length;
 
   const conBom = proyNorm.filter((p) => (p.materiales || []).length).length;
@@ -4292,7 +4306,7 @@ function MRP({ catalogo, setAviso }) {
             <p className="text-[10px] uppercase tracking-widest text-violet-100">MRP de compras por hito · fuente IS-PMT</p>
             <p className="text-2xl font-bold leading-tight">{feed ? `${obrasVivas} fechas de obra` : "—"} <span className="text-sm font-normal text-violet-100">de hoy en adelante</span></p>
             <p className="text-[10px] text-violet-100/80">solo obras <b>calendarizado</b> o <b>postventa</b> en IS-PMT, con fecha de hoy en adelante ({proyNorm.length} de {feed?.proyectos?.length || 0} del feed)</p>
-            <p className="text-[11px] text-violet-100/90 mt-0.5">{conBom} con BOM · {sinBom} sin BOM{conOV ? ` (${conOV} desde OV)` : ""} · por comprar <b>{nfMrp.format(totComprar)}</b> pzas</p>
+            <p className="text-[11px] text-violet-100/90 mt-0.5">{conBom} con BOM · {sinBom} sin BOM{conOV ? ` (${conOV} desde OV)` : ""} · falta pedir <b>{nfMrp.format(totComprar)}</b> pzas</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-violet-100">{cargando ? "Leyendo feed…" : (feed?.generated_at ? `feed al ${String(feed.generated_at).slice(0, 16).replace("T", " ")}` : "sin datos")}</p>
@@ -4498,6 +4512,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       // 1) A mano de todo el catalogo: la tabla ya sirve en segundos.
       const base = await leerAManoFisico(catalogo, setFisProg);
       setFis({ ...base }); setFisFecha(hoy());
+      // Se guarda YA, con el a mano. La segunda pasada son ~2,200 llamadas y si
+      // alguien cierra la pestaña antes de que termine, el blob nunca se escribía
+      // y el MRP se quedaba sin stock. Mejor guardar dos veces que ninguna.
+      try { await window.storage?.set(INV_FISICO_KEY, JSON.stringify({ fecha: hoy(), items: base })); } catch {}
       // 2) Los caros primero: mayor valor = mayor consecuencia si esta mal.
       const orden = Object.keys(base).sort((a, b) => (base[b].aMano * base[b].cost) - (base[a].aMano * base[a].cost));
       await completarComprometido(base, orden, (txt, parcial) => { setFisProg(txt); setFis(parcial); });

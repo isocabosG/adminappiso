@@ -212,11 +212,19 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
               lote.qty -= usa; resto -= usa; deTransito += usa
             }
             const porComprar = Math.max(0, resto)
+            // De lo que falta, ¿cuánto YA ESTÁ PEDIDO pero en una OC que aterriza
+            // después de la obra? Solo se mira, NO se consume del pool: esa OC
+            // sigue sirviendo para una obra posterior y no hay que quemarla aquí.
+            const enCaminoTarde = poolLotes[k].reduce((a, l) => a + ((l.eta && l.eta > fecha) ? l.qty : 0), 0)
+            const pedidoTarde = Math.min(porComprar, enCaminoTarde)
+            // Lo que de verdad nadie ha pedido. Es el único número que amerita rojo.
+            const sinPedir = Math.max(0, porComprar - pedidoTarde - Math.min(sinFecha, porComprar - pedidoTarde))
             return {
-              ...m, deStock, deTransito, sinFecha, porComprar,
+              ...m, deStock, deTransito, sinFecha, porComprar, pedidoTarde, sinPedir,
               cubierto: porComprar === 0,
-              // ya se pasó la fecha de levantar el pedido y todavía falta comprar
-              tarde: !!(m.fechaCompra && m.fechaCompra < hoyISO && porComprar > 0),
+              // Rojo solo si se pasó la fecha de pedir Y no hay ninguna OC cubriéndolo.
+              // Con OC en camino no es "pedido vencido", es "llega tarde": otro problema.
+              tarde: !!(m.fechaCompra && m.fechaCompra < hoyISO && sinPedir > 0),
             }
           })
         if (soloFaltante) mats = mats.filter((m) => m.porComprar > 0)
@@ -234,6 +242,8 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
       fecha, hitos, obras,
       dias: diasEntreISO(hoyISO, fecha),
       totPorComprar: hitos.reduce((a, g) => a + g.totPorComprar, 0),
+      totSinPedir: hitos.reduce((a, g) => a + g.materiales.reduce((k, m) => k + (m.sinPedir || 0), 0), 0),
+      totPedidoTarde: hitos.reduce((a, g) => a + g.materiales.reduce((k, m) => k + (m.pedidoTarde || 0), 0), 0),
       tarde: hitos.some((g) => g.materiales.some((m) => m.tarde)),
       // Con leads de hasta 150 d casi todo sale "vencido". Lo que informa no es
       // SI está tarde sino CUÁNTO: la partida más atrasada del grupo.
