@@ -44,4 +44,15 @@ window.mrpFeed = async () => {
   return data
 }
 
+// Helper de ESCRITURA del MRP. Va a la Edge Function 'mrp-write', que agrega el
+// correo del usuario autenticado como `actor` y pega a IS-PMT con el token de
+// escritura. A diferencia de los demás, aquí NO se traga el error: si una
+// corrección no se guardó, quien la hizo tiene que enterarse.
+window.mrpEditar = async (cambio) => {
+  const { data, error } = await supabase.functions.invoke('mrp-write', { body: cambio })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false) throw new Error(data.error || 'No se pudo guardar el cambio.')
+  return data
+}
+
 createRoot(document.getElementById('root')).render(<Root />)

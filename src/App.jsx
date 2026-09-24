@@ -2439,7 +2439,123 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   );
 }
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// Renglón de material editable (SKU + cantidad requerida).
+//
+// Escribe en `project_materials` de IS-PMT, NO en la orden de compra. El BOM
+// nace en Quote Creator → project_materials → orden de venta de Zoho; la OC es
+// un documento de compras que no alimenta materiales. Si Jesús corrigiera la
+// OC, el error seguiría vivo en la obra y en la OV del cliente.
+//
+// Viaja por la Edge Function `mrp-write`: el token de escritura no puede vivir
+// en el navegador y el `actor` de la bitácora se saca del JWT de la sesión.
+//
+// Sin `id` no se puede editar: ese material no existe como partida en IS-PMT
+// (es provisional, leído de la orden de venta).
+function FilaMaterial({ m, projectId, onGuardado }) {
+  const [abierto, setAbierto] = useState(false);
+  const [sku, setSku] = useState(m.sku || "");
+  const [cant, setCant] = useState(String(m.requerido ?? ""));
+  const [nota, setNota] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const editable = !!(m.id && projectId);
+  const baja = m.skuActivo === false;
+  const nSku = (sku || "").trim().toUpperCase();
+  const nCant = Number(cant);
+  const cambioSku = nSku !== (m.sku || "").trim().toUpperCase();
+  const cambioCant = Number.isFinite(nCant) && nCant !== Number(m.requerido);
+  const hayCambio = cambioSku || cambioCant;
+
+  const abrir = () => {
+    if (!editable) return;
+    setSku(m.sku || ""); setCant(String(m.requerido ?? "")); setNota(""); setErr("");
+    setAbierto((v) => !v);
+  };
+
+  const guardar = async () => {
+    if (!hayCambio || busy) return;
+    if (cambioCant && (!Number.isFinite(nCant) || nCant < 0)) { setErr("La cantidad no es un número válido."); return; }
+    setBusy(true); setErr("");
+    try {
+      const cambio = { projectId, materialId: m.id };
+      if (cambioSku) cambio.sku = nSku;
+      if (cambioCant) cambio.cant_disenada = nCant;
+      if (nota.trim()) cambio.nota = nota.trim();
+      const r = await window.mrpEditar(cambio);
+      // Se pinta lo que IS-PMT confirma que quedó guardado, no lo que se tecleó:
+      // ellos normalizan el SKU y pueden rechazar una parte del cambio.
+      const g = r?.material || {};
+      onGuardado(m.id, {
+        sku: g.sku !== undefined ? g.sku : (cambioSku ? nSku : m.sku),
+        requerido: g.cant_disenada !== undefined ? Number(g.cant_disenada) : (cambioCant ? nCant : m.requerido),
+        skuActivo: g.sku_activo !== undefined ? g.sku_activo : m.skuActivo,
+        skuLocked: cambioSku ? true : m.skuLocked,
+        cantLocked: cambioCant ? true : m.cantLocked,
+      });
+      setAbierto(false);
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <tr className={`border-b border-stone-50 ${editable ? "cursor-pointer hover:bg-stone-50" : ""}`} onClick={abrir}>
+        <td className="py-1 font-mono font-semibold w-[118px] align-top">
+          <span className={baja ? "line-through text-red-700" : ""}>{m.sku || "—"}</span>
+          {(m.skuLocked || m.cantLocked) && <span title="Editado a mano: una re-sincronización del BOM no lo pisa" className="ml-1 text-stone-400">🔒</span>}
+        </td>
+        <td className="py-1 text-stone-600 align-top">
+          {m.descripcion}
+          {baja && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-red-100 text-red-700 font-semibold align-middle">BAJA EN ZOHO</span>}
+          {m.provisional && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold align-middle">DE LA OV</span>}
+        </td>
+        <td className="py-1 text-right font-mono w-[70px] align-top">{nfMrp.format(m.requerido)}</td>
+        <td className="py-1 text-right font-mono text-stone-400 w-[92px] align-top">{m.entregado > 0 ? `${nfMrp.format(m.entregado)} entreg.` : ""}</td>
+        <td className="py-1 text-right w-[22px] align-top text-stone-300">{editable ? (abierto ? "▾" : "✎") : ""}</td>
+      </tr>
+      {abierto && (
+        <tr className="bg-stone-50 border-b border-stone-100">
+          <td colSpan={5} className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="block">
+                <span className="block text-[9px] uppercase tracking-widest text-stone-400">SKU</span>
+                <input value={sku} onChange={(e) => setSku(e.target.value)}
+                  className="border border-stone-300 rounded px-2 py-1 text-xs font-mono w-[140px] uppercase" />
+              </label>
+              <label className="block">
+                <span className="block text-[9px] uppercase tracking-widest text-stone-400">Requerido</span>
+                <input value={cant} onChange={(e) => setCant(e.target.value)} inputMode="decimal"
+                  className="border border-stone-300 rounded px-2 py-1 text-xs font-mono w-[90px] text-right" />
+              </label>
+              <label className="block flex-1 min-w-[160px]">
+                <span className="block text-[9px] uppercase tracking-widest text-stone-400">Motivo (opcional, va a la bitácora)</span>
+                <input value={nota} onChange={(e) => setNota(e.target.value)} placeholder="p. ej. SKU viejo dado de baja"
+                  className="border border-stone-300 rounded px-2 py-1 text-xs w-full" />
+              </label>
+              <button onClick={guardar} disabled={!hayCambio || busy}
+                className="px-3 py-1.5 rounded text-xs font-medium bg-stone-900 text-white disabled:bg-stone-300">
+                {busy ? "Guardando…" : "Guardar"}
+              </button>
+              <button onClick={() => setAbierto(false)} className="px-2 py-1.5 rounded text-xs text-stone-500">Cancelar</button>
+            </div>
+            <p className="mt-1.5 text-[10px] text-stone-500">
+              Se guarda en la lista de materiales del proyecto en IS-PMT, y de ahí se propaga a la orden de venta. Queda firmado con tu correo.
+            </p>
+            {err && <p className="mt-1 text-[11px] text-red-700 font-medium">{err}</p>}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy }) {
+  // materialId -> valores ya guardados en IS-PMT en esta sesión
+  const [matEdit, setMatEdit] = useState({});
   const [so, setSo] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [lang, setLang] = useState("en");
@@ -2784,7 +2900,16 @@ ${porPagar >= 0
         <Section n="4" t="Materiales por hito"
           r={<span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-800">obra {feedProy.fecha_instalacion || "—"}</span>}>
           {(() => {
-            const grupos = bomPorHito(feedProy);
+            // Lo que se acaba de editar se pinta encima del feed, que solo se
+            // vuelve a leer al recargar. Sin esto el renglón regresaría al
+            // valor viejo justo después de guardarlo.
+            const grupos = bomPorHito({
+              ...feedProy,
+              materiales: (feedProy.materiales || []).map((x) => {
+                const e = matEdit[x.id];
+                return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked } : x;
+              }),
+            });
             if (!grupos.length) return <p className="px-3 py-4 text-xs text-stone-400">Este proyecto no tiene lista de materiales en IS-PMT todavía. El MRP jala los equipos de la orden de venta como provisional.</p>;
             const hoyISO = hoy();
             return (
@@ -2803,12 +2928,8 @@ ${porPagar >= 0
                       <table className="w-full text-xs">
                         <tbody>
                           {g.materiales.map((m, i) => (
-                            <tr key={(m.sku || "") + i} className="border-b border-stone-50">
-                              <td className="py-1 font-mono font-semibold w-[110px]">{m.sku || "—"}</td>
-                              <td className="py-1 text-stone-600">{m.descripcion}</td>
-                              <td className="py-1 text-right font-mono w-[70px]">{nfMrp.format(m.requerido)}</td>
-                              <td className="py-1 text-right font-mono text-stone-400 w-[90px]">{m.entregado > 0 ? `${nfMrp.format(m.entregado)} entreg.` : ""}</td>
-                            </tr>
+                            <FilaMaterial key={m.id || (m.sku || "") + i} m={m} projectId={feedProy.id}
+                              onGuardado={(id, v) => { setMatEdit((p) => ({ ...p, [id]: v })); setAviso({ t: "ok", m: `Guardado en IS-PMT: ${v.sku} · ${nfMrp.format(v.requerido)}` }); }} />
                           ))}
                         </tbody>
                       </table>
@@ -3951,6 +4072,72 @@ async function completarComprometido(items, orden, onProg) {
 /* MRP fechado: "qué se necesita en obra y cuándo", agrupado por fecha de
    instalación y dentro por hito. Es la vista que pidió Fran: no por fecha de
    compra, sino por cuándo se necesita según el calendario. */
+/* Buscar un SKU en TODOS los proyectos del feed, estén o no calendarizados.
+   A diferencia del resto del MRP, aquí no se filtra por estatus ni por fecha:
+   la pregunta es "¿dónde se usa esto?", no "¿qué compro?". */
+function BuscarSku({ feed, ovMats, skuInfo }) {
+  const [q, setQ] = useState("");
+  const termino = q.trim().toUpperCase();
+  const hits = useMemo(() => {
+    if (termino.length < 3) return null;
+    const out = [];
+    for (const p of feed?.proyectos || []) {
+      const mats = (p.materiales || []).length ? p.materiales : (ovMats[p.id] || []);
+      for (const m of mats) {
+        const sku = upMrp(m.sku);
+        if (!sku.includes(termino) && !String(m.descripcion || "").toUpperCase().includes(termino)) continue;
+        out.push({ sku, desc: m.descripcion, qty: +m.cant_disenada || 0, entregado: +m.cant_entregada || 0,
+                   ov: p.ov, name: p.name, status: p.status, fecha: p.fecha_instalacion });
+      }
+    }
+    return out.sort((a, b) => String(a.fecha || "9999").localeCompare(String(b.fecha || "9999")));
+  }, [termino, feed, ovMats]);
+
+  const info = skuInfo && skuInfo[termino];
+  return (
+    <details className="bg-white border border-stone-200 rounded-lg">
+      <summary className="px-3 py-2 text-xs font-medium text-stone-700 cursor-pointer">
+        ▸ ¿Dónde se usa un SKU? <span className="ml-1 font-normal text-stone-400">en todos los proyectos, calendarizados o no</span>
+      </summary>
+      <div className="px-3 pb-3 space-y-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="SKU o descripción…"
+          className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-violet-600" />
+        {info && (
+          <p className="text-[11px] text-stone-500">
+            {termino}: {info.desc} · {info.activo ? <span className="text-emerald-700">activo</span> : <span className="text-orange-700 font-semibold">dado de baja</span>} · {nfMrp.format(info.aMano || 0)} en almacén
+          </p>
+        )}
+        {hits === null ? <p className="text-[11px] text-stone-400">Escribe al menos 3 caracteres.</p>
+         : hits.length === 0 ? <p className="text-[11px] text-stone-400">No aparece en ningún proyecto del feed.</p>
+         : (
+          <>
+            <p className="text-[11px] text-stone-500">{hits.length} renglón{hits.length === 1 ? "" : "es"} · {nfMrp.format(hits.reduce((a, h) => a + h.qty, 0))} pzas en total</p>
+            <table className="w-full text-xs">
+              <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
+                <th className="text-left py-1">Obra</th><th className="text-left py-1">OV</th><th className="text-left py-1">Estatus</th>
+                <th className="text-left py-1">Fecha obra</th><th className="text-right py-1">Req.</th><th className="text-right py-1">Entreg.</th>
+              </tr></thead>
+              <tbody>
+                {hits.slice(0, 60).map((h, i) => (
+                  <tr key={i} className="border-b border-stone-50">
+                    <td className="py-1 truncate max-w-[220px]">{h.name}</td>
+                    <td className="py-1 font-mono text-stone-500">{h.ov || "—"}</td>
+                    <td className="py-1 text-stone-500">{h.status}</td>
+                    <td className="py-1 font-mono text-stone-500">{h.fecha || "—"}</td>
+                    <td className="py-1 text-right font-mono">{nfMrp.format(h.qty)}</td>
+                    <td className="py-1 text-right font-mono text-stone-400">{h.entregado ? nfMrp.format(h.entregado) : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {hits.length > 60 && <p className="text-[10px] text-stone-400">Mostrando 60 de {hits.length}.</p>}
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
   // Se memoiza porque el empate recorre todo el catálogo por cada SKU muerto.
   const sugeridos = useMemo(() => {
@@ -4014,6 +4201,26 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
     };
   }).filter(Boolean), [fechas, filtro, skuInfo]);
 
+  // ---- Proyección de salidas: agrupa lo que falta pedir por SEMANA DE PEDIDO
+  // y lo valúa al costo del catálogo. Se calcula sobre TODAS las fechas, no
+  // sobre el filtro: una proyección incompleta engaña más que no tenerla.
+  const lunesDe = (iso) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+  const flujo = useMemo(() => {
+    const porSemana = {};
+    let sinFechaPzas = 0, sinCosto = 0;
+    for (const f of fechas) for (const g of f.hitos) for (const m of g.materiales) {
+      const q = m.sinPedir || 0; if (q <= 0) continue;
+      if (!m.fechaCompra) { sinFechaPzas += q; continue; }
+      const k = lunesDe(m.fechaCompra);
+      const costo = (skuInfo && m.sku && skuInfo[upMrp(m.sku)]?.cost) || 0;
+      if (!costo) sinCosto += q;
+      const s = porSemana[k] || (porSemana[k] = { semana: k, pzas: 0, monto: 0, obras: new Set() });
+      s.pzas += q; s.monto += q * costo;
+      for (const pr of m.proyectos) if (pr.ov || pr.name) s.obras.add(pr.ov || pr.name);
+    }
+    return { semanas: Object.values(porSemana).sort((a, b) => a.semana.localeCompare(b.semana)), sinFechaPzas, sinCosto };
+  }, [fechas, skuInfo]);
+
   const CHIPS = [
     ["todo", "Todo"], ["vencido", "Vencido"], ["semana", "Pedir esta semana"],
     ["proxima", "Próxima semana"], ["mes", "Este mes"], ["muertos", "SKU de baja"],
@@ -4050,6 +4257,40 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
           <input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta comprar
         </label>
       </div>
+
+      {flujo.semanas.length > 0 && (
+        <details className="bg-white border border-stone-200 rounded-lg">
+          <summary className="px-3 py-2 text-xs font-medium text-stone-700 cursor-pointer">
+            ▸ Proyección de compras por semana
+            <span className="ml-2 font-normal text-stone-400">
+              {flujo.semanas.length} semanas · ${mx0(flujo.semanas.reduce((a, s) => a + s.monto, 0))} MXN
+            </span>
+          </summary>
+          <div className="px-3 pb-3">
+            <table className="w-full text-xs">
+              <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
+                <th className="text-left py-1">Semana de pedido</th><th className="text-right py-1">Piezas</th>
+                <th className="text-right py-1">Monto MXN</th><th className="text-left py-1 pl-3">Obras</th>
+              </tr></thead>
+              <tbody>
+                {flujo.semanas.map((s) => (
+                  <tr key={s.semana} className={`border-b border-stone-50 ${s.semana < lunesDe(hoyISO) ? "bg-red-50" : ""}`}>
+                    <td className="py-1 font-mono">{s.semana}{s.semana < lunesDe(hoyISO) && <span className="ml-1 text-[9px] text-red-700">vencida</span>}</td>
+                    <td className="py-1 text-right font-mono">{nfMrp.format(s.pzas)}</td>
+                    <td className="py-1 text-right font-mono font-semibold">${mx0(s.monto)}</td>
+                    <td className="py-1 pl-3 text-stone-500 truncate max-w-[280px]">{[...s.obras].join(" · ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[10px] text-stone-400 mt-1">
+              Valuado al costo del catálogo (promedio de Costos, o el de compra de Zoho).
+              {flujo.sinCosto > 0 && <> {nfMrp.format(flujo.sinCosto)} pzas <b>sin costo en catálogo</b> cuentan como $0.</>}
+              {flujo.sinFechaPzas > 0 && <> {nfMrp.format(flujo.sinFechaPzas)} pzas sin fecha de pedido quedan fuera.</>}
+            </p>
+          </div>
+        </details>
+      )}
 
       {vista.map((f) => {
         const open = abierta === f.fecha;
@@ -4171,6 +4412,19 @@ function MRP({ catalogo, setAviso }) {
     try {
       // Stock = existencia FISICA a mano, neta de la empresa, como la reporta Zoho.
       // Fuente nueva: el blob que arma la pestana Inventario.
+      // El catálogo que deja el cron de las 5:00 am es la fuente preferida para
+      // saber qué SKU existen y cuáles están de baja: se refresca solo, sin que
+      // nadie abra la app. El blob de Inventario sigue dando el a mano.
+      try {
+        const rc = await window.storage?.get("iso3-catalogo-zoho");
+        if (rc?.value) {
+          const c = JSON.parse(rc.value);
+          const info = {};
+          for (const [sku, x] of Object.entries(c.items || {})) info[upMrp(sku)] = x;
+          if (Object.keys(info).length) setSkuInfo(info);
+        }
+      } catch {}
+
       const rf = await window.storage?.get(INV_FISICO_KEY);
       if (rf?.value) {
         const c = JSON.parse(rf.value);
@@ -4439,6 +4693,8 @@ function MRP({ catalogo, setAviso }) {
 
       {/* Vista principal: qué se necesita en obra y cuándo */}
       <MrpPorFecha proyectos={proyNorm} invPorSku={invPorSku} skuInfo={skuInfo} />
+
+      <BuscarSku feed={feed} ovMats={ovMats} skuInfo={skuInfo} />
 
       {noFeed && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">El feed del MRP no está disponible en esta versión de la app (falta la Edge Function <code>mrp-feed</code>).</div>}
       {sinStock && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">No hay stock cargado: abre <b>Inventario</b> y pulsa <b>Actualizar</b>. El MRP usa <b>solo la existencia física del almacén Central (fiscal)</b> como stock; mientras, se toma 0.</div>}

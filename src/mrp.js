@@ -47,11 +47,17 @@ export function lineasDeProyecto(p) {
     const hito = hitoDe(m)
     const lead = leadDe(m)
     return {
+      // id de project_materials: es el `materialId` que pide /api/mrp/material.
+      id: m.id || null, projectId: p.id || null,
       ov: p.ov, proyecto: p.name, D,
       sku: m.sku || null, descripcion: m.descripcion || '', seccion: m.seccion || null,
       hito, lead, fechaCompra: fechaPedido(D, lead),
       critico: lead >= LEAD_EQUIPO_CRITICO,
       provisional: !!m.provisional, // true = viene de la OV (sin BOM sincronizado)
+      // Del feed de IS-PMT: true vigente · false dado de baja · null no se sabe.
+      // null y false NO se mezclan: "no se sabe" no es "está de baja".
+      skuActivo: m.sku_activo === undefined ? null : m.sku_activo,
+      skuLocked: !!m.sku_locked, cantLocked: !!m.cant_locked,
       requerido: reqDe(m), pedido: num(m.cant_pedida), entregado: num(m.cant_entregada),
     }
   })
