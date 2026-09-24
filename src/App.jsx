@@ -2460,9 +2460,14 @@ function FilaMaterial({ m, projectId, onGuardado }) {
   const [nota, setNota] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [errCodigo, setErrCodigo] = useState(null);
 
   const editable = !!(m.id && projectId);
   const baja = m.skuActivo === false;
+  // Corregido después del último envío a la orden de venta: el cliente todavía
+  // ve el valor viejo. Mandar a la OV es manual en IS-PMT y no tiene calendario,
+  // así que esto puede quedarse semanas sin que nadie se entere.
+  const pendienteOV = !!(m.lockedAt && (!m.soEnviadoAt || m.lockedAt > m.soEnviadoAt));
   const nSku = (sku || "").trim().toUpperCase();
   const nCant = Number(cant);
   const cambioSku = nSku !== (m.sku || "").trim().toUpperCase();
@@ -2471,14 +2476,14 @@ function FilaMaterial({ m, projectId, onGuardado }) {
 
   const abrir = () => {
     if (!editable) return;
-    setSku(m.sku || ""); setCant(String(m.requerido ?? "")); setNota(""); setErr("");
+    setSku(m.sku || ""); setCant(String(m.requerido ?? "")); setNota(""); setErr(""); setErrCodigo(null);
     setAbierto((v) => !v);
   };
 
   const guardar = async () => {
     if (!hayCambio || busy) return;
     if (cambioCant && (!Number.isFinite(nCant) || nCant < 0)) { setErr("La cantidad no es un número válido."); return; }
-    setBusy(true); setErr("");
+    setBusy(true); setErr(""); setErrCodigo(null);
     try {
       const cambio = { projectId, materialId: m.id };
       if (cambioSku) cambio.sku = nSku;
@@ -2492,12 +2497,14 @@ function FilaMaterial({ m, projectId, onGuardado }) {
         sku: g.sku !== undefined ? g.sku : (cambioSku ? nSku : m.sku),
         requerido: g.cant_disenada !== undefined ? Number(g.cant_disenada) : (cambioCant ? nCant : m.requerido),
         skuActivo: g.sku_activo !== undefined ? g.sku_activo : m.skuActivo,
-        skuLocked: cambioSku ? true : m.skuLocked,
-        cantLocked: cambioCant ? true : m.cantLocked,
+        skuLocked: g.sku_locked !== undefined ? g.sku_locked : (cambioSku ? true : m.skuLocked),
+        cantLocked: g.cant_locked !== undefined ? g.cant_locked : (cambioCant ? true : m.cantLocked),
+        lockedAt: g.locked_at || new Date().toISOString(),
       });
       setAbierto(false);
     } catch (e) {
       setErr(String(e?.message || e));
+      setErrCodigo(e?.codigo || null);
     } finally { setBusy(false); }
   };
 
@@ -2511,6 +2518,7 @@ function FilaMaterial({ m, projectId, onGuardado }) {
         <td className="py-1 text-stone-600 align-top">
           {m.descripcion}
           {baja && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-red-100 text-red-700 font-semibold align-middle">BAJA EN ZOHO</span>}
+          {pendienteOV && <span title="Corregido después del último envío a la orden de venta. Mandar a la OV es manual en IS-PMT." className="ml-1 text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold align-middle">PENDIENTE DE MANDAR A LA OV</span>}
           {m.provisional && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold align-middle">DE LA OV</span>}
         </td>
         <td className="py-1 text-right font-mono w-[70px] align-top">{nfMrp.format(m.requerido)}</td>
@@ -2545,7 +2553,18 @@ function FilaMaterial({ m, projectId, onGuardado }) {
             <p className="mt-1.5 text-[10px] text-stone-500">
               Se guarda en la lista de materiales del proyecto en IS-PMT, y de ahí se propaga a la orden de venta. Queda firmado con tu correo.
             </p>
-            {err && <p className="mt-1 text-[11px] text-red-700 font-medium">{err}</p>}
+            {err && (
+              <div className="mt-1">
+                <p className="text-[11px] text-red-700 font-medium">{err}</p>
+                {/* El texto de IS-PMT ya está redactado para Jesús; el `codigo`
+                    es lo estable y es lo que decide qué ofrecerle hacer. */}
+                {errCodigo === "sku_de_baja" && <p className="text-[10px] text-stone-600 mt-0.5">Ese código existe pero está dado de baja en Zoho. Busca el vigente — suele ser el mismo con INOX (p. ej. APL00038 → APLI0038).</p>}
+                {errCodigo === "sku_no_existe" && <p className="text-[10px] text-stone-600 mt-0.5">Ese código no existe en Zoho. Revisa que no falte o sobre un dígito.</p>}
+                {errCodigo === "obra_terminada" && <p className="text-[10px] text-stone-600 mt-0.5">La obra ya está cerrada en IS-PMT. Si de verdad hay que corregirla, se reabre allá primero.</p>}
+                {errCodigo === "partida_quitada" && <p className="text-[10px] text-stone-600 mt-0.5">Esa partida ya no está en la lista del proyecto. Recarga para ver la versión vigente.</p>}
+                {errCodigo === "nada_que_cambiar" && <p className="text-[10px] text-stone-600 mt-0.5">No cambió ningún valor. La nota sola no se registra: viaja junto con el cambio.</p>}
+              </div>
+            )}
           </td>
         </tr>
       )}
@@ -2907,7 +2926,7 @@ ${porPagar >= 0
               ...feedProy,
               materiales: (feedProy.materiales || []).map((x) => {
                 const e = matEdit[x.id];
-                return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked } : x;
+                return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked, locked_at: e.lockedAt } : x;
               }),
             });
             if (!grupos.length) return <p className="px-3 py-4 text-xs text-stone-400">Este proyecto no tiene lista de materiales en IS-PMT todavía. El MRP jala los equipos de la orden de venta como provisional.</p>;

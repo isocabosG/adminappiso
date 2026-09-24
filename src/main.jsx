@@ -51,7 +51,14 @@ window.mrpFeed = async () => {
 window.mrpEditar = async (cambio) => {
   const { data, error } = await supabase.functions.invoke('mrp-write', { body: cambio })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.ok === false) throw new Error(data.error || 'No se pudo guardar el cambio.')
+  if (data && data.ok === false) {
+    // IS-PMT manda { ok:false, codigo, error }. El texto es para la pantalla;
+    // el `codigo` es lo estable, y es con lo que la UI decide qué ofrecer
+    // (p. ej. proponer el SKU vigente cuando el capturado está de baja).
+    const e = new Error(data.error || 'No se pudo guardar el cambio.')
+    e.codigo = data.codigo || null
+    throw e
+  }
   return data
 }
 

@@ -58,6 +58,11 @@ export function lineasDeProyecto(p) {
       // null y false NO se mezclan: "no se sabe" no es "está de baja".
       skuActivo: m.sku_activo === undefined ? null : m.sku_activo,
       skuLocked: !!m.sku_locked, cantLocked: !!m.cant_locked,
+      lockedAt: m.locked_at || null,
+      // Última vez que ESTA obra se mandó a su orden de venta de Zoho.
+      // Mandar a la OV es un acto manual de gerencia en IS-PMT, sin calendario:
+      // una corrección posterior a esta fecha todavía no llegó al cliente.
+      soEnviadoAt: p.zoho_so_enviado_at || null,
       requerido: reqDe(m), pedido: num(m.cant_pedida), entregado: num(m.cant_entregada),
     }
   })
