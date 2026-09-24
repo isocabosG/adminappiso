@@ -156,6 +156,10 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
   for (const p of proyectos || []) {
     for (const l of lineasDeProyecto(p)) {
       if (!l.D) continue
+      // Una obra cuya fecha ya pasó no puede generar una compra: o ya se instaló,
+      // o nadie la cerró en IS-PMT. Se excluye ANTES de repartir el stock, porque
+      // si no se lleva piezas que le tocan a una obra que sí viene.
+      if (l.D < hoyISO) continue
       const f = (porFecha[l.D] = porFecha[l.D] || { fecha: l.D, hitos: {} })
       const g = (f.hitos[l.hito] = f.hitos[l.hito] || { hito: l.hito, materiales: {} })
       const key = l.sku || '~' + l.descripcion.toLowerCase().trim()
@@ -229,7 +233,6 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
     return {
       fecha, hitos, obras,
       dias: diasEntreISO(hoyISO, fecha),
-      pasada: fecha < hoyISO,
       totPorComprar: hitos.reduce((a, g) => a + g.totPorComprar, 0),
       tarde: hitos.some((g) => g.materiales.some((m) => m.tarde)),
     }

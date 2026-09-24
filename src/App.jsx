@@ -3903,15 +3903,11 @@ async function completarComprometido(items, orden, onProg) {
    compra, sino por cuándo se necesita según el calendario. */
 function MrpPorFecha({ proyectos, invPorSku }) {
   const [soloFalta, setSoloFalta] = useState(true);
-  const [verPasadas, setVerPasadas] = useState(false);
   const [abierta, setAbierta] = useState(null);
   const hoyISO = hoy();
   const fechas = useMemo(
     () => buildMRPPorFecha(proyectos, invPorSku, { soloFaltante: soloFalta, hoyISO }),
     [proyectos, invPorSku, soloFalta, hoyISO]);
-
-  const pasadas = fechas.filter((f) => f.pasada).length;
-  const vista = verPasadas ? fechas : fechas.filter((f) => !f.pasada);
 
   if (!fechas.length) return (
     <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">
@@ -3922,23 +3918,16 @@ function MrpPorFecha({ proyectos, invPorSku }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[11px] text-stone-500">{vista.length} fecha{vista.length === 1 ? "" : "s"} de obra · el stock se asigna a la obra <b>más próxima primero</b>.</p>
-        <div className="flex flex-wrap items-center gap-3">
-          {pasadas > 0 && (
-            <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 cursor-pointer">
-              <input type="checkbox" checked={verPasadas} onChange={(e) => setVerPasadas(e.target.checked)} /> Ver {pasadas} obra{pasadas === 1 ? "" : "s"} con fecha vencida
-            </label>
-          )}
-          <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 cursor-pointer">
-            <input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta comprar
-          </label>
-        </div>
+        <p className="text-[11px] text-stone-500">{fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra de hoy en adelante · el stock se asigna a la obra <b>más próxima primero</b>.</p>
+        <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 cursor-pointer">
+          <input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta comprar
+        </label>
       </div>
 
-      {vista.map((f) => {
+      {fechas.map((f) => {
         const open = abierta === f.fecha;
         return (
-          <div key={f.fecha} className={`bg-white border rounded-lg overflow-hidden ${f.pasada ? "border-stone-200 opacity-70" : f.tarde ? "border-red-300" : "border-stone-200"}`}>
+          <div key={f.fecha} className={`bg-white border rounded-lg overflow-hidden ${f.tarde ? "border-red-300" : "border-stone-200"}`}>
             <button onClick={() => setAbierta(open ? null : f.fecha)} className="w-full px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left hover:bg-stone-50">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -3946,9 +3935,7 @@ function MrpPorFecha({ proyectos, invPorSku }) {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${f.dias < 0 ? "bg-stone-200 text-stone-600" : f.dias <= 14 ? "bg-red-100 text-red-700" : f.dias <= 30 ? "bg-amber-100 text-amber-800" : "bg-stone-100 text-stone-600"}`}>
                     {f.dias < 0 ? `hace ${-f.dias} d` : f.dias === 0 ? "hoy" : `en ${f.dias} d`}
                   </span>
-                  {f.pasada
-                    ? <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-stone-300 text-stone-700 font-medium">obra con fecha vencida</span>
-                    : f.tarde && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold">PEDIDO VENCIDO</span>}
+                  {f.tarde && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold">PEDIDO VENCIDO</span>}
                 </div>
                 <p className="text-[12px] text-stone-700 truncate max-w-[560px]">{f.obras.map((o) => o.name).filter(Boolean).join(" · ")}</p>
                 <p className="text-[10px] font-mono text-stone-400 truncate max-w-[560px]">{f.obras.map((o) => o.ov).filter(Boolean).join(" · ")}</p>
@@ -4180,7 +4167,10 @@ function MRP({ catalogo, setAviso }) {
   const calendario = useMemo(() => calendarioCompra(proyFiltrados, invPorSku, opts), [proyFiltrados, invPorSku, opts]);
   const sinStock = Object.keys(stockBySku).length === 0;
   const sinTransito = Object.keys(transito).length === 0;
-  const totComprar = grupos.reduce((a, g) => a + g.totPorComprar, 0);
+  // Total del encabezado: solo obras de hoy en adelante, igual que la vista fechada.
+  const fechasVivas = useMemo(() => buildMRPPorFecha(proyNorm, invPorSku, { soloFaltante: true }), [proyNorm, invPorSku]);
+  const totComprar = fechasVivas.reduce((a, f) => a + f.totPorComprar, 0);
+  const obrasVivas = fechasVivas.length;
 
   const conBom = (feed?.proyectos || []).filter((p) => (p.materiales || []).length).length;
   const proyectosSinBom = (feed?.proyectos || []).filter((p) => !(p.materiales || []).length);
@@ -4264,7 +4254,7 @@ function MRP({ catalogo, setAviso }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-[10px] uppercase tracking-widest text-violet-100">MRP de compras por hito · fuente IS-PMT</p>
-            <p className="text-2xl font-bold leading-tight">{feed ? `${feed.proyectos.length} proyectos` : "—"} <span className="text-sm font-normal text-violet-100">calendarizados</span></p>
+            <p className="text-2xl font-bold leading-tight">{feed ? `${obrasVivas} fechas de obra` : "—"} <span className="text-sm font-normal text-violet-100">de hoy en adelante</span></p>
             <p className="text-[11px] text-violet-100/90 mt-0.5">{conBom} con BOM · {sinBom} sin BOM{conOV ? ` (${conOV} desde OV)` : ""} · por comprar <b>{nfMrp.format(totComprar)}</b> pzas</p>
           </div>
           <div className="text-right">
