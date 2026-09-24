@@ -4388,7 +4388,26 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
                             </td>
                             <td className="py-1 text-right font-mono">{nfMrp.format(m.requerido)}</td>
                             <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deStock)}</td>
-                            <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deTransito)}{m.sinFecha > 0 && <span title={`${m.sinFecha} pzas en OC sin fecha de llegada: no se cuentan para esta obra`} className="ml-1 text-[9px] text-amber-600">+{nfMrp.format(m.sinFecha)}?</span>}</td>
+                            <td className="py-1 text-right font-mono text-stone-500">
+                              {nfMrp.format(m.deTransito)}
+                              {m.sinFecha > 0 && <span title={`${m.sinFecha} pzas en OC sin fecha de llegada: no se cuentan para esta obra`} className="ml-1 text-[9px] text-amber-600">+{nfMrp.format(m.sinFecha)}?</span>}
+                              {/* Fecha de llegada según IS-PMT. La cantidad es nuestra (de las OC
+                                  de Zoho); la fecha es de ellos, porque allá se puede corregir a
+                                  mano con lo que el proveedor confirmó y eso no lo sabe el PO. */}
+                              {m.etaAlmacen && (
+                                <span className="block text-[9px] font-normal leading-tight"
+                                  title={
+                                    m.etaOrigen === "manual" ? "Fecha capturada a mano en IS-PMT: el proveedor la confirmó. Manda sobre la del PO."
+                                    : m.etaOrigen === "ov" ? "La orden de compra nombraba esta obra. Fecha asignada."
+                                    : m.etaOrigen === "sku" ? "La orden de compra no decía para qué obra era. Puede ser material de piso que ya está contado como inventario — no la tomes como apartada."
+                                    : "Origen de la fecha desconocido."
+                                  }>
+                                  <span className={m.etaOrigen === "manual" ? "text-emerald-700 font-medium" : m.etaOrigen === "sku" ? "text-amber-700" : "text-stone-400"}>
+                                    llega {m.etaAlmacen}{m.etaOrigen === "manual" ? " ✓" : m.etaOrigen === "sku" ? " ?" : ""}
+                                  </span>
+                                </span>
+                              )}
+                            </td>
                             <td className={`py-1 text-right font-mono font-bold ${m.sinPedir > 0 ? "text-violet-800" : "text-stone-300"}`}>{nfMrp.format(m.sinPedir || 0)}</td>
                             <td className={`py-1 text-right font-mono ${m.pedidoTarde > 0 ? "text-sky-700" : "text-stone-300"}`}>{nfMrp.format(m.pedidoTarde || 0)}</td>
                             <td className={`py-1 text-right font-mono ${m.tarde ? "text-red-700 font-bold" : "text-stone-500"}`}>{m.fechaCompra || "—"}{m.critico && <span title={`lead crítico ${m.lead} d`} className="ml-1 text-[9px] text-red-600">!</span>}</td>

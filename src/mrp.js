@@ -63,7 +63,23 @@ export function lineasDeProyecto(p) {
       // Mandar a la OV es un acto manual de gerencia en IS-PMT, sin calendario:
       // una corrección posterior a esta fecha todavía no llegó al cliente.
       soEnviadoAt: p.zoho_so_enviado_at || null,
-      requerido: reqDe(m), pedido: num(m.cant_pedida), entregado: num(m.cant_entregada),
+      requerido: reqDe(m), entregado: num(m.cant_entregada),
+      // OJO: `cant_pedida` NO es material comprado. IS-PMT lo escribe cuando
+      // alguien levanta una requisición de sección o de hito DENTRO de IS-PMT;
+      // nunca mira Zoho. Significa "esta obra ya pidió esto", no "compras ya lo
+      // ordenó". Se llamaba `pedido` y nadie lo pintaba, pero con ese nombre era
+      // cuestión de tiempo que alguien lo sumara como cobertura de compra.
+      solicitadoEnObra: num(m.cant_pedida),
+      // Fecha de llegada a almacén, de IS-PMT. Ellos la arman en `sync-eta` y
+      // una persona puede corregirla a mano; esa corrección vale más que la
+      // promesa del PO, así que es la que se le enseña a Jesús.
+      //   etaOrigen 'ov'     el PO nombraba esta obra — asignada y confiable
+      //   etaOrigen 'sku'    el PO no decía para quién — puede ser material de
+      //                      piso que NOSOTROS ya contamos como inventario
+      //   etaOrigen 'manual' la capturó una persona — manda sobre las otras dos
+      etaAlmacen: m.eta_almacen || null,
+      etaOrigen: m.eta_origen || null,
+      etaLocked: !!m.eta_locked,
     }
   })
 }
@@ -86,12 +102,12 @@ export function buildMRP(proyectos, invPorSku = {}, opts = {}) {
         (porHito[h].materiales[key] = {
           sku: l.sku, desc: l.descripcion || inv.desc || '', hito: h, seccion: l.seccion,
           lead: 0, critico: false, provisional: false,
-          requerido: 0, pedido: 0,
+          requerido: 0, solicitadoEnObra: 0,
           stock: num(inv.stock), comprometido: num(inv.comprometido), enTransito: num(inv.enTransito),
           proyectos: [],
         })
       cel.requerido += l.requerido
-      cel.pedido += l.pedido
+      cel.solicitadoEnObra += l.solicitadoEnObra
       cel.lead = Math.max(cel.lead, l.lead)
       cel.critico = cel.critico || l.critico
       cel.provisional = cel.provisional || l.provisional
@@ -178,11 +194,19 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
       const cel = g.materiales[key] || (g.materiales[key] = {
         key, sku: l.sku, desc: l.descripcion || inv.desc || '', hito: l.hito,
         lead: 0, critico: false, provisional: false, fechaCompra: null,
-        requerido: 0, pedido: 0, entregado: 0, proyectos: [],
+        requerido: 0, solicitadoEnObra: 0, entregado: 0, proyectos: [],
       })
       cel.requerido += l.requerido
-      cel.pedido += l.pedido
+      cel.solicitadoEnObra += l.solicitadoEnObra
       cel.entregado += l.entregado
+      // La ETA que se le enseña a Jesús: 'manual' gana sobre 'ov', y 'ov' sobre
+      // 'sku'. Un 'sku' es la misma adivinanza que ya hace nuestro pool de OC
+      // (el PO no decía para quién era), así que no asciende a dato duro solo
+      // por venir del otro lado.
+      if (l.etaAlmacen) {
+        const r = { manual: 3, ov: 2, sku: 1 }[l.etaOrigen] || 0
+        if (r > (cel.etaRank || 0)) { cel.etaRank = r; cel.etaAlmacen = l.etaAlmacen; cel.etaOrigen = l.etaOrigen }
+      }
       // manda la partida más lenta: es la que fija cuándo hay que levantar el pedido
       if (l.lead > cel.lead) { cel.lead = l.lead; cel.fechaCompra = l.fechaCompra }
       cel.critico = cel.critico || l.critico
