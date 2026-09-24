@@ -2294,21 +2294,33 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   // Calendario de obra (IS-PMT): qué proyectos están calendarizados y para cuándo.
   // Se cruza con las OV de Zoho por `zoho_so_id`.
   const [calById, setCalById] = useState({});
+  const [feedErr, setFeedErr] = useState(null);
+  const [soloCal, setSoloCal] = useState(false);   // chip: ver solo calendarizados
   useEffect(() => {
     if (typeof window.mrpFeed !== "function") return;
     (async () => {
       try {
         const d = await window.mrpFeed();
         const m = {};
-        for (const p of d.proyectos || []) if (p.zoho_so_id) m[String(p.zoho_so_id)] = p;
-        setCalById(m);
-      } catch { /* sin feed, la lista se comporta como antes */ }
+        for (const p of d.proyectos || []) {
+          // Se cruza por `zoho_so_id`, y además por el número de OV: si ese id
+          // viniera vacío en alguna obra, el número (SO-01127) la rescata.
+          if (p.zoho_so_id) m[String(p.zoho_so_id)] = p;
+          if (p.ov) m["ov:" + String(p.ov).trim().toUpperCase()] = p;
+        }
+        setCalById(m); setFeedErr(null);
+      } catch (e) {
+        // Antes esto se tragaba el error y la lista se veía "normal": sin
+        // morados y sin orden, idéntica a un día en que nada está
+        // calendarizado. Falta de datos y ausencia de obra no pueden verse igual.
+        setFeedErr(String(e?.message || e));
+      }
     })();
   }, []);
   // Calendarizado = con fecha de obra de hoy en adelante. Una obra cuya fecha
   // ya pasó no va arriba ni lleva contorno: o ya se instaló, o nadie la cerró.
   const calDe = (s) => {
-    const p = calById[String(s.salesorder_id)];
+    const p = calById[String(s.salesorder_id)] || calById["ov:" + String(s.salesorder_number || "").trim().toUpperCase()];
     return p && esCalendarizado(p) && p.fecha_instalacion && p.fecha_instalacion >= hoy() ? p : null;
   };
   // Primero los calendarizados, por fecha de obra ascendente. El resto después.
@@ -2346,6 +2358,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const rateS = (s) => { const t = +s.total || 0, b = +s.bcy_total || 0; return t > 0 && b > 0 ? b / t : 1; }; // TC propio de la OV → MXN
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
+  const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
   const contratMXN = rows.reduce((a, s) => a + totDoc(s) * rateS(s), 0);
   const cobradoMXN = rows.reduce((a, s) => a + (totDoc(s) - balNeto(s)) * rateS(s), 0);
   const porCobrarMXN = contratMXN - cobradoMXN;
@@ -2391,21 +2404,39 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
             </button>
           );
         })}
-        {filtros.length > 0 && <button onClick={() => setFiltros([])} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
+        {/* Calendarizado no sale de Zoho sino del feed de IS-PMT, por eso va
+            aparte y en morado: es el mismo código de color del contorno. */}
+        <button onClick={() => setSoloCal((v) => !v)} disabled={!!feedErr}
+          title={feedErr ? "Sin feed de IS-PMT no se sabe qué está calendarizado" : "Solo las obras calendarizadas en App Instalaciones, de hoy en adelante"}
+          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${soloCal ? "bg-violet-600 text-white border-violet-600" : "bg-white text-violet-700 border-violet-300 hover:border-violet-500"} ${feedErr ? "opacity-40 cursor-not-allowed" : ""}`}>
+          Calendarizados{!feedErr && nCal > 0 ? ` (${nCal})` : ""}
+        </button>
+        {(filtros.length > 0 || soloCal) && <button onClick={() => { setFiltros([]); setSoloCal(false); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
       </div>
+      {/* Un feed caído se veía exactamente igual que "nada calendarizado":
+          sin morados y sin orden. Ahora lo dice. */}
+      {feedErr && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+          <p className="text-xs font-semibold text-amber-900">Sin calendario de obra: no se pudo leer IS-PMT.</p>
+          <p className="text-[11px] text-amber-800 mt-0.5">Ningún proyecto va a salir en morado, y no es que no haya calendarizados — es que no sabemos cuáles son.</p>
+          <p className="text-[10px] font-mono text-amber-700 mt-1 break-all">{feedErr}</p>
+        </div>
+      )}
       <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por proyecto, OV o cliente…" className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded" />
       {sos === null ? (
         <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{cargando ? "Leyendo proyectos de Zoho…" : "Dale ↻ Actualizar de Zoho para traer los proyectos."}</div>
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[11px] text-stone-400">{rows.length} proyecto{rows.length === 1 ? "" : "s"}</p>
+            <p className="text-[11px] text-stone-400">
+              {soloCal ? `${nCal} calendarizado${nCal === 1 ? "" : "s"} de ${rows.length}` : `${rows.length} proyecto${rows.length === 1 ? "" : "s"}`}
+            </p>
             <p className="text-[11px] text-stone-500 flex items-center gap-1.5">
               <span className="inline-block w-4 h-3 rounded-sm border border-violet-500 ring-1 ring-violet-300" />
               morado = <b className="font-semibold text-violet-700">calendarizado</b> en App Instalaciones
             </p>
           </div>
-          {[...rows].sort(ordenCal).map((s) => {
+          {[...rows].filter((s) => !soloCal || calDe(s)).sort(ordenCal).map((s) => {
             const pagadoManual = manualOf(s);
             const conFactura = !!facOf(s);
             const cal = calDe(s);   // calendarizado en IS-PMT
@@ -4244,6 +4275,18 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
     ["todo", "Todo"], ["vencido", "Vencido"], ["semana", "Pedir esta semana"],
     ["proxima", "Próxima semana"], ["mes", "Este mes"], ["muertos", "SKU de baja"],
   ];
+
+  // Sin obras en el feed no hay conclusión que dar. "Nada por comprar" sobre
+  // cero datos es un visto bueno falso, y se ve igual que un día tranquilo.
+  if (!proyectos.length) return (
+    <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-6 text-center">
+      <p className="text-sm font-semibold text-amber-900">Sin datos de IS-PMT — el MRP no puede decir nada.</p>
+      <p className="text-xs text-amber-800 mt-1">
+        El feed no trajo ninguna obra. Esto <b>no</b> quiere decir que no haya nada que comprar:
+        quiere decir que no sabemos. Revisa el aviso de error arriba antes de tomar cualquier decisión de compra.
+      </p>
+    </div>
+  );
 
   if (!fechas.length) return (
     <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">
