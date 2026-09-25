@@ -1948,6 +1948,10 @@ export default function AdminImportaciones() {
 
 function App() {
   const [vista, setVista] = useState("proyectos");
+  // Puente MRP → Proyectos: el MRP conoce el NÚMERO de la OV (SO-01088), no su
+  // id interno. Se guarda aquí, se cambia de pestaña, y Proyectos lo resuelve
+  // contra su lista y abre la ficha.
+  const [irOV, setIrOV] = useState(null);
   const [catalogo, setCatalogo] = useState(null);
   const [fletes, setFletes] = useState(null);
   const [pedimentos, setPedimentos] = useState(null);
@@ -2063,10 +2067,10 @@ function App() {
           </div>
         )}
         {vista === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix }} />}
+        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV }} />}
         {vista === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vista === "mrp" && <MRP catalogo={catalogo} setAviso={setAviso} />}
+        {vista === "mrp" && <MRP catalogo={catalogo} setAviso={setAviso} onVerOV={(ov) => { setIrOV(ov); setVista("proyectos"); }} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vista === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
       </main>
@@ -2223,7 +2227,7 @@ function PagoBadge({ status }) {
   return <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${c}`}>{t}</span>;
 }
 
-function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
+function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV }) {
   // Arranca en el año en curso. Con "todos" el resumen sumaba los 1,068
   // proyectos desde 2023 y el número no respondía a ninguna pregunta útil.
   const [anio, setAnio] = useState(String(new Date().getFullYear()));
@@ -2390,6 +2394,17 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const [feedErr, setFeedErr] = useState(null);
   const [soloCal, setSoloCal] = useState(false);   // chip: ver solo calendarizados
   const [cobF, setCobF] = useState("todos");      // cubo de antigüedad en Cobranza
+
+  // Llegó una OV desde el MRP: se resuelve el número contra la lista y se abre.
+  // Si todavía no cargan los proyectos, el efecto vuelve a correr cuando carguen.
+  useEffect(() => {
+    if (!irOV || !sos?.length) return;
+    const n = String(irOV).trim().toUpperCase();
+    const s = sos.find((x) => String(x.salesorder_number || "").trim().toUpperCase() === n);
+    if (s) setModo("so:" + s.salesorder_id);
+    else setAviso({ t: "err", m: `No encontré la orden de venta ${irOV} en la lista de proyectos.` });
+    setIrOV?.(null);
+  }, [irOV, sos]);
   useEffect(() => {
     if (typeof window.mrpFeed !== "function") return;
     (async () => {
@@ -4661,6 +4676,14 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
 
   return (
     <div className="space-y-2">
+      {/* Qué es esta sección, para alguien que la abre por primera vez. */}
+      <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2.5">
+        <p className="text-xs font-semibold text-red-900">En esta sección verás los SKU que debemos pedir, ordenados por qué tan críticos son.</p>
+        <p className="text-[11px] text-red-800 mt-0.5">
+          Cada tarjeta es una fecha de obra. Dentro van los materiales que se necesitan ese día y cuánto falta comprar.
+          Dale clic a cualquier <b>número de orden de venta</b> para abrir ese proyecto y corregir ahí las cantidades o el SKU.
+        </p>
+      </div>
       <div className="flex flex-wrap items-center gap-1.5">
         {CHIPS.map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(k)}
@@ -4740,7 +4763,19 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
                   )}
                 </div>
                 <p className="text-[12px] text-stone-700 truncate max-w-[560px]">{f.obras.map((o) => o.name).filter(Boolean).join(" · ")}</p>
-                <p className="text-[10px] font-mono text-stone-400 truncate max-w-[560px]">{f.obras.map((o) => o.ov).filter(Boolean).join(" · ")}</p>
+                {/* Cada OV lleva a su proyecto, donde se corrigen SKU y cantidades. */}
+                <p className="text-[10px] font-mono text-stone-400 truncate max-w-[560px]">
+                  {f.obras.filter((o) => o.ov).map((o, i) => (
+                    <span key={o.ov + i}>
+                      {i > 0 && " · "}
+                      <button onClick={(e) => { e.stopPropagation(); onVerOV?.(o.ov); }}
+                        title={`Abrir ${o.ov} para corregir SKU o cantidades`}
+                        className="underline decoration-dotted hover:text-violet-700 hover:decoration-solid">
+                        {o.ov}
+                      </button>
+                    </span>
+                  ))}
+                </p>
               </div>
               <div className="text-right font-mono text-xs">
                 <p className="text-stone-400">falta pedir</p>
@@ -4834,7 +4869,7 @@ function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
   );
 }
 
-function MRP({ catalogo, setAviso }) {
+function MRP({ catalogo, setAviso, onVerOV }) {
   const noFeed = typeof window.mrpFeed !== "function";
   const noZoho = typeof window.zohoBooks !== "function";
   const [feed, setFeed] = useState(null);            // { proyectos, generated_at }
@@ -4999,32 +5034,45 @@ function MRP({ catalogo, setAviso }) {
   // fecha de instalación de HOY EN ADELANTE. Se filtra aquí y no en cada vista
   // para que el calendario de compra, el desglose por hito y la vista fechada
   // digan siempre lo mismo. Una obra cuya fecha ya pasó no genera compras.
-  const proyNorm = useMemo(() => (feed?.proyectos || [])
-    .filter(esCalendarizado)
-    .filter((p) => p.fecha_instalacion && String(p.fecha_instalacion).slice(0, 10) >= hoy())
-    .map((p) => {
+  // TODOS los proyectos del feed, ya normalizados (SKU en mayúsculas, BOM de la
+  // OV como respaldo). No filtra nada: es la base para el checkbox "ver todos".
+  const proyTodos = useMemo(() => (feed?.proyectos || []).map((p) => {
     const base = (p.materiales || []).length ? p.materiales : (ovMats[p.id] || []);
     return { ...p, materiales: base.map((x) => ({ ...x, sku: x.sku ? upMrp(x.sku) : null })) };
   }), [feed, ovMats]);
 
+  // Los que de verdad entran al MRP: calendarizado o postventa, con fecha de
+  // hoy en adelante. Una obra cuya fecha ya pasó no genera compras.
+  const entraAlMrp = (p) => esCalendarizado(p) && p.fecha_instalacion && String(p.fecha_instalacion).slice(0, 10) >= hoy();
+  const proyNorm = useMemo(() => proyTodos.filter(entraAlMrp), [proyTodos]);
+
+  // Base de la pantalla. Con el checkbox apagado —lo normal— solo lo
+  // calendarizado. Prendido, todo el feed, para consultar una obra que todavía
+  // no se programa o una que ya pasó.
+  const [verTodos, setVerTodos] = useState(false);
+  const baseProy = verTodos ? proyTodos : proyNorm;
+
   const HOY = hoy();
-  const proyectosLista = useMemo(() => (feed?.proyectos || []).map((p) => ({ id: String(p.id), name: p.name, ov: p.ov })), [feed]);
+  // Antes salía de `feed.proyectos` en crudo, sin pasar por el filtro: ofrecía
+  // 56 obras cuando solo 22 entraban al cálculo. Se podía marcar una de agosto
+  // y no pasaba nada, sin forma de saber por qué.
+  const proyectosLista = useMemo(() => baseProy.map((p) => ({ id: String(p.id), name: p.name, ov: p.ov })), [baseProy]);
 
   // Mini-calendario de instalaciones: proyectos agrupados por mes de instalación (como en IS-PMT).
   const mesesInstall = useMemo(() => {
     const byMonth = {};
-    for (const p of (feed?.proyectos || [])) {
+    for (const p of baseProy) {
       const f = p.fecha_instalacion; if (!f) continue;
       const s = String(f).slice(0, 10);
       const mk = s.slice(0, 7);
-      (byMonth[mk] = byMonth[mk] || []).push({ id: String(p.id), name: p.name, ov: p.ov, fecha: s, dia: s.slice(8, 10), diaMes: `${s.slice(8, 10)} ${MESES_MRP[+s.slice(5, 7) - 1]}` });
+      (byMonth[mk] = byMonth[mk] || []).push({ id: String(p.id), name: p.name, ov: p.ov, fecha: s, dia: s.slice(8, 10), diaMes: `${s.slice(8, 10)} ${MESES_MRP[+s.slice(5, 7) - 1]}`, enMrp: entraAlMrp(p) });
     }
     return Object.keys(byMonth).sort().map((mk) => {
       const [y, m] = mk.split("-");
       return { key: mk, label: `${MESES_MRP[+m - 1]} ${y}`, proyectos: byMonth[mk].sort((a, b) => a.fecha.localeCompare(b.fecha)) };
     });
-  }, [feed]);
-  const proyFiltrados = useMemo(() => (proyectosSel.size ? proyNorm.filter((p) => proyectosSel.has(String(p.id))) : proyNorm), [proyNorm, proyectosSel]);
+  }, [baseProy]);
+  const proyFiltrados = useMemo(() => (proyectosSel.size ? baseProy.filter((p) => proyectosSel.has(String(p.id))) : baseProy), [baseProy, proyectosSel]);
   const toggleProy = (id) => setProyectosSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const meses = useMemo(() => {
@@ -5162,13 +5210,30 @@ function MRP({ catalogo, setAviso }) {
 
       {/* Mini-calendario de instalaciones (por mes) — marca obras para ver qué comprar */}
       <div className="bg-white rounded-lg border p-3">
-        <div className="flex items-center justify-between mb-2 gap-2">
+        {/* La función de exportar llevaba meses aquí y nadie la usaba: estaba
+            enterrada bajo la lista de obras, sin decir para qué servía. */}
+        <div className="mb-3 rounded-lg bg-violet-50 border border-violet-200 px-3 py-2.5">
+          <p className="text-xs font-semibold text-violet-900">Acá abajo puedes seleccionar los artículos por proyecto y por proveedor, y exportar un Excel para hacer la orden de compra.</p>
+          <p className="text-[11px] text-violet-800 mt-0.5">
+            Marca las obras que te interesen en el calendario, luego palomea las partidas de la tabla de arriba.
+            Abajo aparece el desglose por proveedor con el total a pedirle a cada quien, y el botón para bajar el archivo.
+          </p>
+        </div>
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
           <div className="text-xs font-semibold text-stone-700">Calendario de instalaciones <span className="font-normal text-stone-400">· como en IS-PMT · marca obras para ver qué comprar</span></div>
-          <div className="flex gap-1 whitespace-nowrap">
+          <div className="flex gap-1 whitespace-nowrap items-center">
+            {/* Por defecto solo lo calendarizado, que es lo que genera compras.
+                El checkbox abre el resto para consultar una obra que todavía no
+                se programa o una que ya pasó. */}
+            <label className="flex items-center gap-1.5 px-2 py-1 rounded border border-stone-300 text-[11px] text-stone-600 cursor-pointer hover:bg-black/5">
+              <input type="checkbox" checked={verTodos} onChange={(e) => { setVerTodos(e.target.checked); setProyectosSel(new Set()); }} className="accent-violet-600" />
+              Ver todos los proyectos
+            </label>
             <button onClick={() => setProyectosSel(new Set(proyectosLista.map((p) => p.id)))} className="px-2 py-1 rounded border text-[11px] bg-white text-stone-600 border-stone-300 hover:bg-black/5">Marcar todas ({proyectosLista.length})</button>
             <button onClick={() => setProyectosSel(new Set())} className={`px-2 py-1 rounded border text-[11px] ${proyectosSel.size === 0 ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-600 border-stone-300 hover:bg-black/5"}`}>Limpiar</button>
           </div>
         </div>
+        {verTodos && <p className="text-[11px] text-amber-700 mb-2">Viendo <b>todas</b> las obras del feed. Las punteadas en gris están fuera del MRP —sin calendarizar o con fecha pasada— y si las marcas, el cálculo las incluye de todos modos. Apaga el checkbox para volver a lo que de verdad hay que comprar.</p>}
         {mesesInstall.length === 0 ? <p className="text-[11px] text-stone-400">Sin instalaciones calendarizadas.</p> : (
           <div className="flex gap-3 overflow-x-auto pb-1">
             {mesesInstall.map((mc) => (
@@ -5176,7 +5241,13 @@ function MRP({ catalogo, setAviso }) {
                 <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-1 border-b pb-1">{mc.label} <span className="text-stone-400">· {mc.proyectos.length}</span></div>
                 <div className="flex flex-col gap-1">
                   {mc.proyectos.map((p) => { const on = proyectosSel.has(p.id); return (
-                    <button key={p.id} onClick={() => toggleProy(p.id)} title={`${p.name}${p.ov ? " · " + p.ov : ""} · instala ${p.fecha}`} className={`text-left px-2 py-1 rounded border leading-tight ${on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-stone-700 border-stone-200 hover:bg-black/5"}`}><div className="text-[10px] tabular-nums opacity-70">📅 {p.diaMes}{p.ov ? ` · ${p.ov}` : ""}</div><div className="text-[11px] font-medium">{p.name}</div></button>
+                    <button key={p.id} onClick={() => toggleProy(p.id)}
+                      title={`${p.name}${p.ov ? " · " + p.ov : ""} · instala ${p.fecha}${p.enMrp ? "" : " · fuera del MRP: no está calendarizada o su fecha ya pasó"}`}
+                      className={`text-left px-2 py-1 rounded border leading-tight ${on ? "bg-violet-600 text-white border-violet-600" : p.enMrp ? "bg-white text-stone-700 border-stone-200 hover:bg-black/5" : "bg-stone-50 text-stone-400 border-dashed border-stone-300 hover:bg-black/5"}`}>
+                      <div className="text-[10px] tabular-nums opacity-70">📅 {p.diaMes}{p.ov ? ` · ${p.ov}` : ""}</div>
+                      <div className="text-[11px] font-medium">{p.name}</div>
+                      {!p.enMrp && <div className="text-[9px] italic opacity-80">fuera del MRP</div>}
+                    </button>
                   ); })}
                 </div>
               </div>
