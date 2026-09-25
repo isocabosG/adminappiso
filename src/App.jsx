@@ -2328,6 +2328,22 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
       const fecha = hoy();
       setSos(slim); setFact(factMap); setPagos(pagoMap); setPagosSinOV(pagosSinOV); setFechaRefresh(fecha);
       try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim, fact: factMap, pagos: pagoMap, pagosSinOV })); } catch {}
+      // Lista plana de pagos, en su propio blob: Tesorería la lee sin tener que
+      // pasar por la pantalla de Proyectos ni volver a pegarle a Zoho.
+      try {
+        const planos = allPay.map((p) => {
+          const monto = +p.amount || 0;
+          const nums = String(p.invoice_numbers || "").split(",").map((x) => x.trim()).filter(Boolean);
+          const ovs = [...new Set(nums.map((n) => invToSo[n]).filter(Boolean))];
+          return {
+            num: p.payment_number || "", fecha: p.date || "", monto,
+            cur: Math.abs((+p.bcy_amount || 0) - monto) < 0.01 ? "MXN" : "USD",
+            modo: p.payment_mode || "", cuenta: p.account_name || "",
+            cliente: p.customer_name || "", ov: ovs.length === 1 ? ovs[0] : "",
+          };
+        }).filter((p) => p.monto);
+        await window.storage?.set("iso3-pagos-zoho", JSON.stringify({ fecha, pagos: planos }));
+      } catch {}
       setAviso({ t: "ok", m: `${slim.length} proyectos · ${allInv.length} facturas · ${allPay.length} pagos de Zoho.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
     refrescando.current = false;
@@ -5793,6 +5809,149 @@ async function leerBancosZoho() {
   return { fecha, cuentas };
 }
 
+
+// ───────────────────────────────────────────────────────────────────────────
+// Ingresos: los pagos RECIBIDOS, leídos de Zoho.
+//
+// Cada pago dice a qué factura se aplicó, de qué cliente, a qué cuenta entró y
+// por qué vía. Antes esto no existía en ninguna pantalla: lo único que había
+// eran pagos tecleados a mano proyecto por proyecto, y por eso el cobrado y el
+// por cobrar no cuadraban con Zoho.
+//
+// Lee el blob que escribe la pestaña Proyectos al actualizar de Zoho. No le
+// pega a Zoho por su cuenta: son los mismos datos, no tiene caso pedirlos dos
+// veces y gastar cuota de la API.
+function IngresosZoho({ tcFix }) {
+  const [pagos, setPagos] = useState(null);
+  const [fecha, setFecha] = useState("");
+  const [meses, setMeses] = useState(6);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage?.get("iso3-pagos-zoho");
+        if (r?.value) { const c = JSON.parse(r.value); setPagos(c.pagos || []); setFecha(c.fecha || ""); }
+        else setPagos([]);
+      } catch { setPagos([]); }
+    })();
+  }, []);
+
+  const desde = useMemo(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - (meses - 1)); d.setDate(1);
+    return d.toISOString().slice(0, 10);
+  }, [meses]);
+
+  const enRango = (pagos || []).filter((p) => p.fecha >= desde);
+  const qq = q.trim().toLowerCase();
+  const filtrados = enRango.filter((p) => !qq ||
+    (p.cliente || "").toLowerCase().includes(qq) || (p.ov || "").toLowerCase().includes(qq) ||
+    (p.cuenta || "").toLowerCase().includes(qq) || (p.num || "").toLowerCase().includes(qq));
+
+  // Por mes y por moneda. No se suman divisas distintas: cada una su columna.
+  const porMes = useMemo(() => {
+    const m = {};
+    for (const p of filtrados) {
+      const k = String(p.fecha).slice(0, 7);
+      if (!m[k]) m[k] = { USD: 0, MXN: 0, n: 0 };
+      m[k][p.cur === "USD" ? "USD" : "MXN"] += p.monto; m[k].n++;
+    }
+    return Object.entries(m).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [filtrados]);
+
+  const totUSD = filtrados.filter((p) => p.cur === "USD").reduce((s, p) => s + p.monto, 0);
+  const totMXN = filtrados.filter((p) => p.cur !== "USD").reduce((s, p) => s + p.monto, 0);
+  const combUSD = tcFix > 0 ? totUSD + totMXN / tcFix : null;
+
+  if (pagos === null) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="bg-white border border-stone-200 rounded-lg">
+        <div className="px-3 py-2 border-b border-stone-200 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-stone-500 font-semibold">Ingresos · pagos recibidos según Zoho</p>
+            <p className="text-[10px] text-stone-400">{fecha ? `datos al ${fecha}` : "sin datos"} · se refrescan al dar ↻ Actualizar de Zoho en Proyectos</p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {[3, 6, 12].map((n) => (
+              <button key={n} onClick={() => setMeses(n)}
+                className={`px-2 py-1 text-[11px] rounded-full border ${meses === n ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400"}`}>
+                {n} meses
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {!pagos.length ? (
+          <p className="px-3 py-4 text-xs text-stone-500">
+            Todavía no hay pagos guardados. Ve a <b>Proyectos</b> y dale <b>↻ Actualizar de Zoho</b> — de ahí salen.
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 p-3">
+              <div className="bg-emerald-50 rounded-lg px-3 py-2">
+                <p className="text-[10px] uppercase tracking-widest text-emerald-700">Cobrado en USD</p>
+                <p className="text-base font-bold font-mono text-emerald-900">${mx(totUSD)}</p>
+              </div>
+              <div className="bg-emerald-50 rounded-lg px-3 py-2">
+                <p className="text-[10px] uppercase tracking-widest text-emerald-700">Cobrado en MXN</p>
+                <p className="text-base font-bold font-mono text-emerald-900">${mx(totMXN)}</p>
+              </div>
+              <div className="bg-stone-100 rounded-lg px-3 py-2">
+                <p className="text-[10px] uppercase tracking-widest text-stone-500">Combinado</p>
+                <p className="text-base font-bold font-mono">{combUSD == null ? "—" : `$${mx(combUSD)}`}<span className="text-[10px] font-normal text-stone-500"> USD</span></p>
+                <p className="text-[10px] font-mono text-stone-400">{filtrados.length} pago{filtrados.length === 1 ? "" : "s"}</p>
+              </div>
+            </div>
+
+            <table className="w-full text-sm">
+              <thead className="bg-stone-50 border-y border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
+                <th className="text-left px-3 py-1.5">Mes</th><th className="text-right px-3 py-1.5">USD</th>
+                <th className="text-right px-3 py-1.5">MXN</th><th className="text-right px-3 py-1.5">Pagos</th>
+              </tr></thead>
+              <tbody>
+                {porMes.map(([k, v]) => (
+                  <tr key={k} className="border-b border-stone-100">
+                    <td className="px-3 py-1.5 font-mono text-xs">{k}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{v.USD ? `$${mx(v.USD)}` : "—"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{v.MXN ? `$${mx(v.MXN)}` : "—"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-stone-400">{v.n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <div className="p-3 border-t border-stone-200">
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por cliente, OV, cuenta o folio de pago…"
+                className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded" />
+            </div>
+            <div className="max-h-[420px] overflow-y-auto border-t border-stone-100">
+              <table className="w-full text-xs">
+                <tbody>
+                  {filtrados.slice(0, 400).map((p, i) => (
+                    <tr key={p.num + i} className="border-b border-stone-50">
+                      <td className="px-3 py-1.5 font-mono text-stone-500 whitespace-nowrap">{p.fecha}</td>
+                      <td className="px-2 py-1.5 font-mono text-stone-400 whitespace-nowrap">{p.num}</td>
+                      <td className="px-2 py-1.5">{p.cliente}</td>
+                      <td className="px-2 py-1.5 font-mono text-[10px] text-violet-700 whitespace-nowrap">{p.ov || <span className="text-amber-600">sin obra</span>}</td>
+                      <td className="px-2 py-1.5 text-[10px] text-stone-500 whitespace-nowrap">{p.modo}</td>
+                      <td className="px-2 py-1.5 text-[10px] text-stone-500 whitespace-nowrap">{p.cuenta}</td>
+                      <td className="px-3 py-1.5 text-right font-mono font-semibold whitespace-nowrap">${mx(p.monto)} <span className="text-[9px] text-stone-400">{p.cur}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filtrados.length > 400 && <p className="px-3 py-2 text-[10px] text-stone-400">Mostrando los 400 más recientes de {filtrados.length}. Usa el buscador para acotar.</p>}
+              {!filtrados.length && <p className="px-3 py-3 text-xs text-stone-400">Nada con ese filtro.</p>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SaldosZoho({ tcFix }) {
   const [z, setZ] = useState(null);
   const [fecha, setFecha] = useState("");
@@ -5927,6 +6086,7 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
     <div className="space-y-4">
       {/* Saldos REALES de Zoho — es el numero bueno */}
       <SaldosZoho tcFix={tcFix} />
+      <IngresosZoho tcFix={tcFix} />
 
       {/* Libreta interna de la app (saldos semilla + movimientos capturados a mano).
           NO se concilia con Zoho ni con el banco: se deja visible para no perder lo
