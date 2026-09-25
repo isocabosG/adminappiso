@@ -5694,7 +5694,9 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
 const BANCOS_KEY = "iso3-bancos-zoho";
 
 async function leerBancosZoho() {
-  const d = await window.zohoBooks({ action: "list_bank_accounts", params: { filter_by: "Status.Active", per_page: "200" } });
+  // Status.All y no Active: una cuenta dada de baja con saldo es un cabo suelto
+  // contable que conviene ver, aunque no cuente en los totales.
+  const d = await window.zohoBooks({ action: "list_bank_accounts", params: { filter_by: "Status.All", per_page: "200" } });
   const cuentas = (d.bankaccounts || []).map((b) => ({
     id: b.account_id,
     nombre: b.account_name,
@@ -5702,6 +5704,11 @@ async function leerBancosZoho() {
     tipo: b.account_type,              // bank | cash | credit_card
     banco: b.bank_name || "",
     saldo: +b.balance || 0,
+    activa: b.is_active !== false,
+    // Vacío en todas las cuentas: no hay feeds bancarios conectados. Por eso el
+    // rótulo dice "según Zoho" y no "saldo bancario" — son cifras capturadas y
+    // conciliadas por contabilidad, no lo que el banco reporta hoy.
+    feed: b.feeds_last_refresh_date || "",
   }));
   const fecha = hoy();
   try { await window.storage?.set(BANCOS_KEY, JSON.stringify({ fecha, cuentas })); } catch {}
@@ -5733,62 +5740,104 @@ function SaldosZoho({ tcFix }) {
     })();
   }, []);
 
-  const disp  = (z || []).filter((c) => c.tipo === "bank" || c.tipo === "cash");
-  const deuda = (z || []).filter((c) => c.tipo === "credit_card");
-  const totUSD   = disp.reduce((s, c) => s + enUSD(c.saldo, c.moneda, tcFix), 0);
-  const deudaUSD = deuda.reduce((s, c) => s + enUSD(c.saldo, c.moneda, tcFix), 0);
-  const filas = [...disp].sort((a, b) => enUSD(b.saldo, b.moneda, tcFix) - enUSD(a.saldo, a.moneda, tcFix));
+  // ── Tres bloques que NO se mezclan ───────────────────────────────────────
+  // El problema de la versión anterior era enseñar la caja sin los pasivos
+  // enfrente: se veía medio millón de dólares disponibles y los 9.7 millones
+  // de pesos de préstamos no aparecían por ningún lado.
+  const vivas   = (z || []).filter((c) => c.activa);
+  const efe     = vivas.filter((c) => c.tipo === "bank" || c.tipo === "cash");
+  const efeUSD  = efe.filter((c) => c.moneda === "USD");
+  const efeMXN  = efe.filter((c) => c.moneda !== "USD");
+  const deuda   = vivas.filter((c) => c.tipo === "credit_card");
+  // Cuentas dadas de baja que todavía traen saldo: no cuentan, pero se avisan.
+  const zombis  = (z || []).filter((c) => !c.activa && Math.abs(c.saldo) > 0.005);
+
+  const sum      = (l) => l.reduce((s, c) => s + c.saldo, 0);
+  const sumUSD   = (l) => l.reduce((s, c) => s + enUSD(c.saldo, c.moneda, tcFix), 0);
+  const totEfeUSD = sum(efeUSD), totEfeMXN = sum(efeMXN);
+  const cajaUSD   = sumUSD(efe), deudaUSD = sumUSD(deuda);
+  const netoUSD   = cajaUSD - deudaUSD;
+  const ordena    = (l) => [...l].sort((a, b) => Math.abs(b.saldo) - Math.abs(a.saldo));
+
+  const Bloque = ({ titulo, sub, cuentas, rojo }) => (
+    <div className={`bg-white border rounded-lg overflow-hidden ${rojo ? "border-red-300" : "border-stone-200"}`}>
+      <div className={`px-3 py-2 border-b flex items-baseline justify-between gap-2 ${rojo ? "bg-red-50 border-red-200" : "bg-stone-50 border-stone-200"}`}>
+        <p className={`text-[10px] uppercase tracking-widest font-semibold ${rojo ? "text-red-800" : "text-stone-600"}`}>{titulo}</p>
+        <p className={`text-sm font-bold font-mono ${rojo ? "text-red-800" : "text-stone-800"}`}>{sub}</p>
+      </div>
+      <table className="w-full text-sm">
+        <tbody>
+          {ordena(cuentas).map((c) => (
+            <tr key={c.id} className="border-b border-stone-50 last:border-0">
+              <td className="px-3 py-1.5">
+                {c.nombre}
+                {c.tipo === "cash" && <span className="ml-1 text-[10px] text-stone-400">efectivo</span>}
+              </td>
+              <td className={`px-3 py-1.5 text-right font-mono whitespace-nowrap ${rojo ? "text-red-700" : ""}`}>
+                {mx(c.saldo)} <span className="text-[10px] text-stone-400">{c.moneda}</span>
+              </td>
+            </tr>
+          ))}
+          {!cuentas.length && <tr><td className="px-3 py-2 text-xs text-stone-400">Sin cuentas.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
+      {/* Posición neta arriba: es la única cifra que responde "¿cómo estamos?" */}
       <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Disponible según Zoho</p>
-            <p className="text-2xl font-bold font-mono leading-tight">{z ? `$${mx(totUSD)}` : "—"} <span className="text-sm font-normal text-emerald-100">USD</span></p>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Posición neta · caja menos deuda</p>
+            <p className="text-2xl font-bold font-mono leading-tight">{z ? `$${mx(netoUSD)}` : "—"} <span className="text-sm font-normal text-emerald-100">USD</span></p>
+            <p className="text-[11px] font-mono text-emerald-100/90">caja ${mx(cajaUSD)} − deuda ${mx(deudaUSD)}</p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-emerald-100">{cargando ? "Leyendo Zoho…" : (fecha ? `al ${fecha}` : "sin datos")}</p>
+            <p className="text-xs text-emerald-100">{cargando ? "Leyendo Zoho…" : (fecha ? `según Zoho al ${fecha}` : "sin datos")}</p>
             <button onClick={refrescar} disabled={cargando || noConn} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
           </div>
         </div>
-        {deuda.length > 0 && (
-          <div className="mt-3 rounded-lg p-2.5 bg-red-500/25 ring-1 ring-red-200/50">
-            <p className="text-[10px] uppercase tracking-widest text-emerald-50">Deuda (préstamos y tarjetas) · {deuda.length} cuentas</p>
-            <p className="text-sm font-bold font-mono">${mx(deudaUSD)} USD</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
+          <div className="bg-white/10 rounded-lg px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Efectivo USD</p>
+            <p className="text-base font-bold font-mono">${mx(totEfeUSD)}<span className="text-[10px] font-normal text-emerald-100"> USD</span></p>
+            <p className="text-[10px] font-mono text-emerald-100/80">{efeUSD.length} cuenta{efeUSD.length === 1 ? "" : "s"}</p>
           </div>
-        )}
-        <p className="text-[10px] text-emerald-100/80 mt-2">Saldos como los reporta <b>Zoho Books</b>, convertidos a USD al TC fix. {disp.length} cuentas de banco y efectivo.</p>
+          <div className="bg-white/10 rounded-lg px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Efectivo MXN</p>
+            <p className="text-base font-bold font-mono">${mx(totEfeMXN)}<span className="text-[10px] font-normal text-emerald-100"> MXN</span></p>
+            <p className="text-[10px] font-mono text-emerald-100/80">{efeMXN.length} cuenta{efeMXN.length === 1 ? "" : "s"} · ${mx(sumUSD(efeMXN))} USD</p>
+          </div>
+          <div className="bg-red-500/30 ring-1 ring-red-200/50 rounded-lg px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-red-50">Deuda</p>
+            <p className="text-base font-bold font-mono">${mx(sum(deuda))}<span className="text-[10px] font-normal text-red-100"> MXN</span></p>
+            <p className="text-[10px] font-mono text-red-100/90">{deuda.length} cuenta{deuda.length === 1 ? "" : "s"} · ${mx(deudaUSD)} USD</p>
+          </div>
+        </div>
+        <p className="text-[10px] text-emerald-100/80 mt-2">
+          Cifras <b>según Zoho</b>, no saldos de banco: ninguna cuenta tiene feed bancario conectado, así que son los montos que contabilidad capturó y concilió. Pueden traer días de retraso. MXN a USD al TC {tcFix || "—"}.
+        </p>
       </div>
 
       {err && <div className="px-3 py-2 rounded text-sm border bg-amber-50 border-amber-300 text-amber-900">{err}</div>}
 
+      {zombis.length > 0 && (
+        <div className="px-3 py-2 rounded border bg-amber-50 border-amber-300">
+          <p className="text-xs font-semibold text-amber-900">{zombis.length} cuenta{zombis.length === 1 ? "" : "s"} dada{zombis.length === 1 ? "" : "s"} de baja con saldo — no cuenta{zombis.length === 1 ? "" : "n"} en los totales.</p>
+          <p className="text-[11px] text-amber-800 mt-0.5">
+            {zombis.map((c) => `${c.nombre}: ${mx(c.saldo)} ${c.moneda}`).join(" · ")}
+          </p>
+          <p className="text-[10px] text-amber-700 mt-0.5">Una cuenta cerrada con saldo no se vació antes de darla de baja, o el cierre quedó a medias. Vale la pena que finanzas lo revise.</p>
+        </div>
+      )}
+
       {z && (
-        <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-          <table className="w-full min-w-[520px] text-sm">
-            <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
-              <th className="text-left px-3 py-2">Cuenta (Zoho)</th><th className="text-left px-3 py-2">Moneda</th>
-              <th className="text-right px-3 py-2">Saldo</th><th className="text-right px-3 py-2">USD equiv.</th>
-            </tr></thead>
-            <tbody>
-              {filas.map((c) => (
-                <tr key={c.id} className="border-b border-stone-100">
-                  <td className="px-3 py-2 font-medium">{c.nombre}{c.tipo === "cash" ? <span className="ml-1 text-[10px] text-stone-400">efectivo</span> : null}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-stone-500">{c.moneda}</td>
-                  <td className="px-3 py-2 text-right font-mono">{mx(c.saldo)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(enUSD(c.saldo, c.moneda, tcFix))}</td>
-                </tr>
-              ))}
-              {deuda.map((c) => (
-                <tr key={c.id} className="border-b border-stone-100 bg-red-50">
-                  <td className="px-3 py-2 font-medium text-red-800">{c.nombre} <span className="text-[10px]">deuda</span></td>
-                  <td className="px-3 py-2 font-mono text-xs text-stone-500">{c.moneda}</td>
-                  <td className="px-3 py-2 text-right font-mono text-red-700">{mx(c.saldo)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-red-600">${mx(enUSD(c.saldo, c.moneda, tcFix))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <Bloque titulo="Efectivo USD" sub={`$${mx(totEfeUSD)} USD`} cuentas={efeUSD} />
+          <Bloque titulo="Efectivo MXN" sub={`$${mx(totEfeMXN)} MXN`} cuentas={efeMXN} />
+          <Bloque titulo="Deuda · préstamos y tarjetas" sub={`$${mx(sum(deuda))} MXN`} cuentas={deuda} rojo />
         </div>
       )}
     </div>
