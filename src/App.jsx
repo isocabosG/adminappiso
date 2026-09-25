@@ -2281,6 +2281,16 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         factMap[k][cur].t += (+f.total || 0);
         factMap[k][cur].b += (+f.balance || 0);
         factMap[k].n++;
+        // Antigüedad de la deuda: la fecha de la factura MÁS VIEJA que sigue
+        // con saldo. Es lo que decide a quién hay que llamar primero — no el
+        // monto. Una deuda chica de hace ocho meses es peor señal que una
+        // grande de la semana pasada.
+        if ((+f.balance || 0) > 0.005) {
+          const fd = String(f.date || "").slice(0, 10);
+          const fv = String(f.due_date || "").slice(0, 10);
+          if (fd && (!factMap[k].fdoc || fd < factMap[k].fdoc)) factMap[k].fdoc = fd;
+          if (fv && (!factMap[k].venc || fv < factMap[k].venc)) factMap[k].venc = fv;
+        }
       }
       // ── Pagos recibidos ────────────────────────────────────────────────
       // Hasta hoy los pagos se capturaban A MANO en la app. Por eso CHILENO RE 1
@@ -2379,6 +2389,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const [calById, setCalById] = useState({});
   const [feedErr, setFeedErr] = useState(null);
   const [soloCal, setSoloCal] = useState(false);   // chip: ver solo calendarizados
+  const [cobF, setCobF] = useState("todos");      // cubo de antigüedad en Cobranza
   useEffect(() => {
     if (typeof window.mrpFeed !== "function") return;
     (async () => {
@@ -2417,7 +2428,6 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
     if (A && B) return String(A.fecha_instalacion || "9999").localeCompare(String(B.fecha_instalacion || "9999"));
     return 0;
   };
-
   if (modo.startsWith("so:")) {
     const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
     return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr }} />;
@@ -2481,6 +2491,124 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
   const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
+  const nDeben = rows.reduce((a, s) => a + (balNeto(s) > 0.5 ? 1 : 0), 0);  // proyectos con saldo
+
+
+
+  // ── Cobranza ────────────────────────────────────────────────────────────
+  // Quién debe, cuánto y desde cuándo, en una pantalla. Antes había que abrir
+  // proyecto por proyecto: Constanza hace esto todos los días para cobrarle a
+  // los clientes. Usa los MISMOS cálculos que el resumen (facOf, balNeto), así
+  // que no puede discrepar de lo que dice la lista.
+  if (modo === "cobranza") {
+    const hoyISO = hoy();
+    const dias = (d) => (d ? Math.floor((new Date(hoyISO) - new Date(d)) / 86400000) : null);
+
+    const deudores = rows
+      .map((s) => {
+        const f = facOf(s), saldo = balNeto(s);
+        return {
+          s, saldo, cur: curOf(s), total: totDoc(s),
+          fdoc: fact[s.salesorder_number]?.fdoc || null,
+          venc: fact[s.salesorder_number]?.venc || null,
+          conFactura: !!f, pv: esPostventa(s),
+        };
+      })
+      .filter((d) => d.saldo > 0.5)
+      .map((d) => ({ ...d, edad: dias(d.fdoc), atraso: d.venc ? dias(d.venc) : null }))
+      .sort((a, b) => (b.edad ?? -1) - (a.edad ?? -1));
+
+    const cubo = (d) => {
+      if (d.edad == null) return "sinf";
+      if (d.edad <= 30) return "d30";
+      if (d.edad <= 60) return "d60";
+      if (d.edad <= 90) return "d90";
+      return "d90x";
+    };
+    const CUBOS = [["d30", "0–30 días", "text-stone-600"], ["d60", "31–60", "text-amber-700"],
+                   ["d90", "61–90", "text-orange-700"], ["d90x", "más de 90", "text-red-700"],
+                   ["sinf", "sin factura", "text-stone-400"]];
+    const vistos = cobF === "todos" ? deudores : deudores.filter((d) => cubo(d) === cobF);
+    const sumaUSD = (l) => l.reduce((a, d) => a + (d.cur === "USD" ? d.saldo : (tc > 0 ? d.saldo / tc : 0)), 0);
+
+    return (
+      <div className="space-y-3">
+        <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Cobranza · {anio === "todos" ? "todos los años" : anio}</p>
+              <p className="text-2xl font-bold font-mono leading-tight">${mx0(sumaUSD(deudores))} <span className="text-sm font-normal text-emerald-100">USD por cobrar</span></p>
+              <p className="text-[11px] text-emerald-100/90">{deudores.length} proyecto{deudores.length === 1 ? "" : "s"} con saldo · ordenados por antigüedad, el más viejo arriba</p>
+            </div>
+            <button onClick={() => setModo("lista")} className="px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25">← Volver a proyectos</button>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+            {CUBOS.map(([k, t]) => {
+              const l = deudores.filter((d) => cubo(d) === k);
+              return (
+                <div key={k} className={`rounded-lg px-2.5 py-2 ${k === "d90x" ? "bg-red-500/30 ring-1 ring-red-200/50" : "bg-white/10"}`}>
+                  <p className="text-[10px] uppercase tracking-widest text-emerald-100">{t}</p>
+                  <p className="text-sm font-bold font-mono">${mx0(sumaUSD(l))}</p>
+                  <p className="text-[10px] font-mono text-emerald-100/80">{l.length} proy.</p>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-emerald-100/80 mt-2">
+            La antigüedad se cuenta desde la <b>factura más vieja que sigue con saldo</b>, no desde la orden de venta. El saldo es el de Zoho, neto de los pagos ya registrados allá.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-stone-400 mr-1">Antigüedad:</span>
+          {[["todos", "Todas"], ...CUBOS.map(([k, t]) => [k, t])].map(([k, t]) => (
+            <button key={k} onClick={() => setCobF(k)}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${cobF === k ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400"}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+
+        <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
+          <table className="w-full min-w-[820px] text-sm">
+            <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
+              <th className="text-left px-3 py-2">OV · proyecto</th>
+              <th className="text-left px-3 py-2">Cliente</th>
+              <th className="text-right px-3 py-2">Contratado</th>
+              <th className="text-right px-3 py-2">Por cobrar</th>
+              <th className="text-right px-3 py-2">Antigüedad</th>
+              <th className="text-right px-3 py-2">Vencida</th>
+            </tr></thead>
+            <tbody>
+              {vistos.map((d) => (
+                <tr key={d.s.salesorder_id} onClick={() => setModo("so:" + d.s.salesorder_id)}
+                    className="border-b border-stone-100 cursor-pointer hover:bg-stone-50">
+                  <td className="px-3 py-2">
+                    <span className="font-mono text-xs font-semibold">{d.s.salesorder_number}</span>
+                    {d.pv && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">POSTVENTA</span>}
+                    <span className="block text-xs text-stone-600">{d.s.reference_number || "—"}</span>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-stone-600">{d.s.customer_name || d.s.company_name || "—"}</td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-stone-500">${mx0(d.total)} <span className="text-[9px] text-stone-400">{d.cur}</span></td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(d.saldo)} <span className="text-[9px] text-stone-400">{d.cur}</span></td>
+                  <td className={`px-3 py-2 text-right font-mono text-xs ${d.edad == null ? "text-stone-300" : d.edad > 90 ? "text-red-700 font-bold" : d.edad > 60 ? "text-orange-700 font-semibold" : d.edad > 30 ? "text-amber-700" : "text-stone-500"}`}>
+                    {d.edad == null ? "sin factura" : `${d.edad} d`}
+                    {d.fdoc && <span className="block text-[9px] text-stone-400 font-normal">desde {d.fdoc}</span>}
+                  </td>
+                  <td className={`px-3 py-2 text-right font-mono text-xs ${d.atraso != null && d.atraso > 0 ? "text-red-700 font-semibold" : "text-stone-300"}`}>
+                    {d.atraso == null ? "—" : d.atraso > 0 ? `${d.atraso} d` : "al corriente"}
+                  </td>
+                </tr>
+              ))}
+              {!vistos.length && <tr><td colSpan="6" className="px-3 py-6 text-center text-sm text-stone-400">Nada en ese rango.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-stone-400">Dale clic a cualquier renglón para abrir el proyecto y sacar su estado de cuenta.</p>
+      </div>
+    );
+  }
+
 
   // ── Resumen ────────────────────────────────────────────────────────────
   // Cada proyecto cuenta en SU moneda. El combinado convierte los pesos a
@@ -2568,7 +2696,12 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho (se refrescan solas 1 vez al día){fechaRefresh ? ` · última: ${fechaRefresh}` : ""}.</p></div>
-        <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => setModo("cobranza")} className="px-3 py-1.5 border border-emerald-700 text-emerald-800 text-xs font-medium rounded hover:bg-emerald-50">
+            Cobranza{nDeben > 0 ? ` (${nDeben})` : ""}
+          </button>
+          <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
+        </div>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] text-stone-400 mr-1">Filtrar:</span>
