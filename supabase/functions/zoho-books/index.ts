@@ -136,6 +136,11 @@ Deno.serve(async (req) => {
     // convierte "cobrado" y "por cobrar" en un dato real en vez de una captura
     // manual: hasta hoy los pagos se tecleaban a mano en la app.
     else if (action === "list_customer_payments") { path = "/customerpayments"; qsParams = restParams; }
+    // Catálogo de proveedores. Se usa para que la semilla de "proveedor por SKU"
+    // proponga NOMBRES QUE EXISTEN: Zoho guarda el proveedor del artículo por id
+    // interno, así que un nombre mal escrito simplemente no casa y el renglón se
+    // pierde en silencio al importar.
+    else if (action === "list_contacts") { path = "/contacts"; qsParams = restParams; }
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 

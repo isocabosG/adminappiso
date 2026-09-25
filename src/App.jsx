@@ -4884,6 +4884,7 @@ function MRP({ catalogo, setAviso, onVerOV }) {
   const [skuInfo, setSkuInfo] = useState(null);            // sku -> {activo, desc, aMano} del catálogo de Zoho
   const [transitoLotes, setTransitoLotes] = useState({});  // sku -> [{qty, eta}] de OC abiertas
   const [histProv, setHistProv] = useState({});            // sku -> a quién se le ha comprado y cuántas veces
+  const [provZoho, setProvZoho] = useState([]);            // proveedores como están escritos en Zoho
   const [ovMats, setOvMats] = useState({});          // projectId -> materiales provisionales de la OV
   const [ovProg, setOvProg] = useState("");
   const [sel, setSel] = useState(() => new Set());   // claves seleccionadas para orden de compra
@@ -4945,7 +4946,7 @@ function MRP({ catalogo, setAviso, onVerOV }) {
     (async () => {
       let cache = null;
       try { const r = await window.storage?.get("iso3-mrp-oc-cache-v2"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); setTransitoLotes(cache.lotes || {}); setHistProv(cache.hist || {}); }
+      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); setTransitoLotes(cache.lotes || {}); setHistProv(cache.hist || {}); setProvZoho(cache.provZoho || []); }
       // Tránsito + proveedor: automático, pero solo si el cache no es de hoy (evita pegarle a Zoho en cada carga).
       if ((!cache || cache.fecha !== hoy()) && typeof window.zohoBooks === "function") calcularTransito();
     })();
@@ -5028,8 +5029,25 @@ function MRP({ catalogo, setAviso, onVerOV }) {
         const mejor = Object.entries(h.porProv).sort((a, b) => b[1].n - a[1].n || String(b[1].ult).localeCompare(String(a[1].ult)))[0];
         if (mejor) prov[sku] = mejor[0];
       }
-      setTransito(trans); setProveedorPorSku(prov); setTransitoLotes(lotes); setHistProv(hist);
-      try { await window.storage?.set("iso3-mrp-oc-cache-v2", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov, lotes, hist })); } catch {}
+      // Catálogo de proveedores tal como están escritos en Zoho. Va aparte para
+      // que la semilla proponga nombres que EXISTEN: Zoho liga el proveedor del
+      // artículo por id, así que un nombre aproximado no casa con nada.
+      const provZoho = [];
+      try {
+        setTransProg("Leyendo proveedores…");
+        let pc = 1, moreC = true;
+        while (moreC && pc <= 10) {
+          const dc = await window.zohoBooks({ action: "list_contacts", params: { contact_type: "vendor", filter_by: "Status.Active", per_page: "200", page: String(pc) } });
+          for (const c of (dc.contacts || [])) {
+            if (String(c.contact_type || "") !== "vendor") continue;
+            provZoho.push({ nombre: c.contact_name || c.vendor_name || "", tipo: c.cf_tipo_cliente_proveedor || "", moneda: c.currency_code || "" });
+          }
+          moreC = dc.page_context?.has_more_page; pc++;
+        }
+      } catch { /* sin proveedores la semilla sigue sirviendo, nomás sin validar */ }
+
+      setTransito(trans); setProveedorPorSku(prov); setTransitoLotes(lotes); setHistProv(hist); setProvZoho(provZoho);
+      try { await window.storage?.set("iso3-mrp-oc-cache-v2", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov, lotes, hist, provZoho })); } catch {}
       setAviso({ t: "ok", m: `OC analizadas: ${lote.length}. Proveedor de ${Object.keys(prov).length} SKU · en tránsito de ${Object.keys(trans).length}.` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudieron analizar las OC: " + (e.message || e) });
@@ -5048,7 +5066,8 @@ function MRP({ catalogo, setAviso, onVerOV }) {
     const skus = Object.keys(histProv);
     if (!skus.length) { setAviso({ t: "err", m: "Primero pulsa «Reanalizar OC» para leer las órdenes de compra." }); return; }
     const esc = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const head = ["SKU", "Descripcion", "Proveedor sugerido", "Veces comprado", "Ultima compra", "Piezas", "Otros proveedores", "Confianza", "Activo en Zoho"];
+    const nombresProv = new Set(provZoho.map((p) => String(p.nombre).trim().toUpperCase()));
+    const head = ["SKU", "Descripcion", "Proveedor sugerido", "Existe en Zoho", "Veces comprado", "Ultima compra", "Piezas", "Otros proveedores", "Confianza", "Activo en Zoho"];
     const filas = skus.map((sku) => {
       const h = histProv[sku];
       const orden = Object.entries(h.porProv).sort((a, b) => b[1].n - a[1].n || String(b[1].ult).localeCompare(String(a[1].ult)));
@@ -5059,14 +5078,32 @@ function MRP({ catalogo, setAviso, onVerOV }) {
       const total = orden.reduce((a, [, d]) => a + d.n, 0);
       const conf = orden.length === 1 ? (d1.n >= 3 ? "alta" : "media") : (d1.n / total >= 0.7 ? "media" : "revisar");
       const est = skuInfo?.[sku];
-      return [sku, h.desc, p1, d1.n, d1.ult, d1.pzas, otros, conf, est ? (est.activo ? "sí" : "NO") : "?"];
-    }).sort((a, b) => String(a[7]).localeCompare(String(b[7])) || b[3] - a[3]);
+      // ¿El nombre sugerido existe tal cual en el catálogo de proveedores? Si no,
+      // ese renglón no va a casar al importar y hay que corregirlo a mano.
+      const casa = nombresProv.has(String(p1).trim().toUpperCase()) ? "sí" : "NO";
+      return [sku, h.desc, p1, casa, d1.n, d1.ult, d1.pzas, otros, conf, est ? (est.activo ? "sí" : "NO") : "?"];
+    }).sort((a, b) => String(a[8]).localeCompare(String(b[8])) || b[4] - a[4]);
     const csv = "\ufeff" + [head, ...filas].map((r) => r.map(esc).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `proveedores-por-sku-${HOY}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     setAviso({ t: "ok", m: `${filas.length} SKU con proveedor sugerido. Revísalo antes de subirlo a Zoho.` });
+  };
+
+  // Los proveedores tal como están en Zoho. Jesús lo abre al lado y ELIGE de
+  // aquí en vez de escribir: así ningún renglón se pierde por un nombre mal puesto.
+  const exportarProveedores = () => {
+    if (!provZoho.length) { setAviso({ t: "err", m: "Primero pulsa «Reanalizar OC» — de ahí se traen los proveedores." }); return; }
+    const esc = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const filas = [...provZoho].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)))
+      .map((p) => [p.nombre, p.tipo, p.moneda]);
+    const csv = "\ufeff" + [["Proveedor (copiar tal cual)", "Tipo", "Moneda"], ...filas].map((r) => r.map(esc).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `proveedores-zoho-${HOY}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    setAviso({ t: "ok", m: `${filas.length} proveedores activos de Zoho.` });
   };
 
   const invPorSku = useMemo(() => {
@@ -5329,6 +5366,11 @@ function MRP({ catalogo, setAviso, onVerOV }) {
           {Object.keys(histProv).length > 0 && (
             <button onClick={exportarSemillaProv} className="mt-1.5 px-2.5 py-1 border border-stone-300 text-stone-700 text-[11px] font-medium rounded hover:bg-black/5">
               ⬇ Proveedor por SKU ({Object.keys(histProv).length}) — para cargar a Zoho
+            </button>
+          )}
+          {provZoho.length > 0 && (
+            <button onClick={exportarProveedores} className="mt-1 ml-1 px-2.5 py-1 border border-stone-300 text-stone-600 text-[11px] rounded hover:bg-black/5">
+              ⬇ Lista de proveedores ({provZoho.length})
             </button>
           )}
         </div>
