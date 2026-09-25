@@ -2326,8 +2326,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   }, []);
   // Calendarizado = con fecha de obra de hoy en adelante. Una obra cuya fecha
   // ya pasó no va arriba ni lleva contorno: o ya se instaló, o nadie la cerró.
+  // Resuelve una OV de Zoho al proyecto de IS-PMT. Por id, y si no, por número
+  // de OV. Una sola función para que la lista y la ficha nunca discrepen.
+  const feedDe = (s) => (s ? (calById[String(s.salesorder_id)] || calById["ov:" + String(s.salesorder_number || "").trim().toUpperCase()] || null) : null);
   const calDe = (s) => {
-    const p = calById[String(s.salesorder_id)] || calById["ov:" + String(s.salesorder_number || "").trim().toUpperCase()];
+    const p = feedDe(s);
     return p && esCalendarizado(p) && p.fecha_instalacion && p.fecha_instalacion >= hoy() ? p : null;
   };
   // Primero los calendarizados, por fecha de obra ascendente. El resto después.
@@ -2339,7 +2342,10 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
     return 0;
   };
 
-  if (modo.startsWith("so:")) return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: calById[String(modo.slice(3))] || null }} />;
+  if (modo.startsWith("so:")) {
+    const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
+    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr }} />;
+  }
 
   const q = busca.trim().toLowerCase();
   const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
@@ -2688,7 +2694,7 @@ function FilaMaterial({ m, projectId, onGuardado }) {
   );
 }
 
-function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy }) {
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr }) {
   // materialId -> valores ya guardados en IS-PMT en esta sesión
   const [matEdit, setMatEdit] = useState({});
   const [so, setSo] = useState(null);
@@ -3031,7 +3037,26 @@ ${porPagar >= 0
       {/* Materiales de la obra, agrupados por hito. Sale del feed de IS-PMT
           (project_materials con milestone_id). La fecha de pedido es
           fecha de obra − lead del hito. */}
-      {feedProy && (
+      {!feedProy ? (
+        <Section n="4" t="Materiales por hito">
+          <div className="px-3 py-4">
+            {feedErr ? (
+              <>
+                <p className="text-xs font-semibold text-amber-900">No se pudo leer IS-PMT, así que no sabemos si este proyecto tiene materiales.</p>
+                <p className="text-[11px] font-mono text-amber-700 mt-1 break-all">{feedErr}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-stone-600">Esta orden de venta no está ligada a ningún proyecto de IS-PMT.</p>
+                <p className="text-[11px] text-stone-500 mt-1">
+                  El cruce va por <code className="font-mono">zoho_so_id</code>, y si falta, por el número de OV. Si el proyecto sí existe allá,
+                  lo más probable es que no tenga capturada la orden de venta — mientras eso siga así, tampoco va a entrar al MRP aunque se calendarice.
+                </p>
+              </>
+            )}
+          </div>
+        </Section>
+      ) : (
         <Section n="4" t="Materiales por hito"
           r={<span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-800">obra {feedProy.fecha_instalacion || "—"}</span>}>
           {(() => {
