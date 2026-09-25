@@ -2224,7 +2224,9 @@ function PagoBadge({ status }) {
 }
 
 function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
-  const [anio, setAnio] = useState("todos");
+  // Arranca en el año en curso. Con "todos" el resumen sumaba los 1,068
+  // proyectos desde 2023 y el número no respondía a ninguna pregunta útil.
+  const [anio, setAnio] = useState(String(new Date().getFullYear()));
   const [modo, setModo] = useState("lista");
   const [sos, setSos] = useState(null);
   const [fechaRefresh, setFechaRefresh] = useState("");
@@ -2267,9 +2269,14 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         const k = (f.reference_number || "").trim();
         if (!k) continue; // sin OV de referencia no se puede cruzar
         if (f.status === "void") continue; // facturas canceladas no cuentan
-        if (!factMap[k]) factMap[k] = { total: 0, balance: 0, n: 0 };
-        factMap[k].total += (+f.total || 0);
-        factMap[k].balance += (+f.balance || 0);
+        // Por moneda: antes se sumaba `f.total` de todas las facturas sin mirar
+        // la divisa, así que una factura en pesos y otra en dólares se sumaban
+        // como si fueran la misma unidad.
+        const cur = String(f.currency_code || "MXN").toUpperCase();
+        if (!factMap[k]) factMap[k] = { n: 0 };
+        if (!factMap[k][cur]) factMap[k][cur] = { t: 0, b: 0 };
+        factMap[k][cur].t += (+f.total || 0);
+        factMap[k][cur].b += (+f.balance || 0);
         factMap[k].n++;
       }
       const fecha = hoy();
@@ -2337,7 +2344,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const q = busca.trim().toLowerCase();
   const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
   const pagoSel = filtros.filter((x) => x === "porcobrar" || x === "pagado");
+  // Las órdenes anuladas o canceladas no son negocio: no se contratan, no se
+  // cobran y no se deben. Las facturas canceladas ya se excluían; las OV no.
+  const CANCELADAS = new Set(["void", "cancelled", "canceled"]);
   const rows = (sos || []).filter((s) => {
+    if (CANCELADAS.has(String(s.status || "").toLowerCase()) || CANCELADAS.has(String(s.order_status || "").toLowerCase())) return false;
     if (anio !== "todos" && (s.date || "").slice(0, 4) !== anio) return false;                 // filtro por año
     if (estadoSel.length) { const cerrado = s.order_status === "closed"; if (!((estadoSel.includes("cerrado") && cerrado) || (estadoSel.includes("abierto") && !cerrado))) return false; }
     if (pagoSel.length) { const pagado = s.paid_status === "paid"; if (!((pagoSel.includes("pagado") && pagado) || (pagoSel.includes("porcobrar") && !pagado))) return false; }
@@ -2350,19 +2361,53 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   // Valores REALES por OV. El saldo verdadero se paga contra la FACTURA (no contra la OV),
   // por eso cruzamos por número de OV. Si hay factura, mandan sus montos (ya traen IVA y el
   // saldo real). Si NO hay factura, usamos la OV y le sumamos 16% cuando venga de API sin IVA.
-  const facOf = (s) => { const f = fact[s.salesorder_number]; return f && f.n > 0 ? f : null; };
+  // Devuelve { total, balance, cur } de las facturas de esa OV.
+  const facOf = (s) => {
+    const f = fact[s.salesorder_number];
+    if (!f || !f.n) return null;
+    // Caché con el formato viejo (un solo total, sin moneda): se asume la de la OV.
+    if (f.total != null) return { total: +f.total || 0, balance: +f.balance || 0, cur: String(s.currency_code || "MXN").toUpperCase() };
+    const buckets = Object.entries(f).filter(([, v]) => v && typeof v === "object");
+    if (!buckets.length) return null;
+    buckets.sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+    const [cur, v] = buckets[0];
+    return { total: +v.t || 0, balance: +v.b || 0, cur };
+  };
+  // Moneda en la que se reporta el proyecto: la de sus facturas si las hay,
+  // porque son el documento con el que se cobra; si no, la de la OV.
+  const curOf = (s) => { const f = facOf(s); return f ? f.cur : String(s.currency_code || "MXN").toUpperCase(); };
+  // Postventa: el cliente literal "POSTVENTA" cubre 121 de 123 casos; los otros
+  // dos se le facturaron al cliente real pero traen POSTVENTA en el nombre.
+  const esPostventa = (s) => {
+    const c = String(s.customer_name || s.company_name || "").trim().toUpperCase();
+    return c === "POSTVENTA" || /POSTVENTA/.test(String(s.reference_number || "").toUpperCase());
+  };
   const totDoc = (s) => { const f = facOf(s); return f ? f.total : (+s.total || 0) * ivaF(s); };     // contratado (moneda de la OV)
   const balDoc = (s) => { const f = facOf(s); return f ? f.balance : (+s.balance || 0) * ivaF(s); };  // saldo Zoho (moneda de la OV)
   const manualOf = (s) => (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
   const balNeto = (s) => Math.max(0, balDoc(s) - manualOf(s));                                        // por cobrar real (menos pagos manuales)
-  const rateS = (s) => { const t = +s.total || 0, b = +s.bcy_total || 0; return t > 0 && b > 0 ? b / t : 1; }; // TC propio de la OV → MXN
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
   const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
-  const contratMXN = rows.reduce((a, s) => a + totDoc(s) * rateS(s), 0);
-  const cobradoMXN = rows.reduce((a, s) => a + (totDoc(s) - balNeto(s)) * rateS(s), 0);
-  const porCobrarMXN = contratMXN - cobradoMXN;
-  const usd = (m) => (tc > 0 ? m / tc : null);
+
+  // ── Resumen ────────────────────────────────────────────────────────────
+  // Cada proyecto cuenta en SU moneda. El combinado convierte los pesos a
+  // dólares al TC del día; nunca se suman montos de distinta divisa en crudo.
+  const sumar = (lista) => {
+    const a = { USD: { contr: 0, cobr: 0, pend: 0, n: 0 }, MXN: { contr: 0, cobr: 0, pend: 0, n: 0 } };
+    for (const s of lista) {
+      const cur = curOf(s) === "USD" ? "USD" : "MXN";
+      const t = totDoc(s), b = balNeto(s);
+      a[cur].contr += t; a[cur].pend += b; a[cur].cobr += (t - b); a[cur].n++;
+    }
+    return a;
+  };
+  // Total combinado en dólares. Sin TC no se inventa un número: se devuelve null.
+  const combUSD = (a, campo) => (tc > 0 ? a.USD[campo] + a.MXN[campo] / tc : null);
+
+  const rowsPV = rows.filter(esPostventa);
+  const rowsObra = rows.filter((s) => !esPostventa(s));
+  const T = sumar(rows), Tpv = sumar(rowsPV), Tob = sumar(rowsObra);
   // Utilidad prom. y compras/materiales: de los proyectos que ya se abrieron (tienen análisis guardado)
   const anal = rows.map((s) => proyData[s.salesorder_id]?.analisis).filter(Boolean);
   const gastoMatMXN = anal.reduce((a, x) => a + (+x.gastoMXN || 0), 0);
@@ -2381,13 +2426,53 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
             </select>
           </div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Contratado (con IVA)</p><p className="text-lg font-bold font-mono leading-tight">${mx0(contratMXN)}<span className="text-xs font-normal text-emerald-100"> MXN</span></p>{usd(contratMXN) != null && <p className="text-[11px] text-emerald-100/90 font-mono">${mx0(usd(contratMXN))} USD</p>}</div>
-          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Cobrado</p><p className="text-lg font-bold font-mono leading-tight">${mx0(cobradoMXN)}<span className="text-xs font-normal text-emerald-100"> MXN</span></p>{usd(cobradoMXN) != null && <p className="text-[11px] text-emerald-100/90 font-mono">${mx0(usd(cobradoMXN))} USD</p>}</div>
-          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Por cobrar</p><p className="text-lg font-bold font-mono leading-tight">${mx0(porCobrarMXN)}<span className="text-xs font-normal text-emerald-100"> MXN</span></p>{usd(porCobrarMXN) != null && <p className="text-[11px] text-emerald-100/90 font-mono">${mx0(usd(porCobrarMXN))} USD</p>}</div>
-          <div><p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom.</p><p className="text-lg font-bold font-mono leading-tight">{margenProm == null ? "—" : margenProm.toFixed(1) + "%"}</p><p className="text-[11px] text-emerald-100/90 font-mono">Compras/mat.: ${mx0(gastoMatMXN)}</p></div>
+        {/* Una tarjeta por número. Arriba el combinado en dólares (es la única
+            cifra comparable entre proyectos); abajo cada moneda con su monto
+            real, sin convertir. */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {[
+            ["Contratado (con IVA)", "contr"],
+            ["Cobrado", "cobr"],
+            ["Por cobrar", "pend"],
+          ].map(([rotulo, campo]) => (
+            <div key={campo} className="bg-white/10 rounded-lg px-3 py-2.5">
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">{rotulo}</p>
+              <p className="text-xl font-bold font-mono leading-tight">
+                {combUSD(T, campo) == null ? "—" : `$${mx0(combUSD(T, campo))}`}
+                <span className="text-xs font-normal text-emerald-100"> USD</span>
+              </p>
+              <div className="mt-1 space-y-0.5 text-[11px] font-mono text-emerald-100/90">
+                <p>${mx0(T.USD[campo])} <span className="text-emerald-200/70">USD</span> · {T.USD.n} proy.</p>
+                <p>${mx0(T.MXN[campo])} <span className="text-emerald-200/70">MXN</span> · {T.MXN.n} proy.</p>
+              </div>
+            </div>
+          ))}
         </div>
-        <p className="text-[10px] text-emerald-100/80 mt-2">Con IVA · USD al TC {tc || "—"}{fechaRefresh ? ` · datos al ${fechaRefresh}` : ""}. Utilidad prom. y compras/materiales = de los {anal.length} proyecto{anal.length === 1 ? "" : "s"} ya abierto{anal.length === 1 ? "" : "s"} (se llenan al entrar a cada proyecto).</p>
+
+        {/* Obra vs postventa: postventa se factura igual que una obra, así que
+            sin separarlo no hay forma de saber cuánto vendió ese equipo. */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+          <div className="bg-white/10 rounded-lg px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Obra · contratado</p>
+            <p className="text-sm font-bold font-mono">{combUSD(Tob, "contr") == null ? "—" : `$${mx0(combUSD(Tob, "contr"))}`}<span className="text-[10px] font-normal text-emerald-100"> USD</span></p>
+            <p className="text-[10px] font-mono text-emerald-100/80">{rowsObra.length} proyecto{rowsObra.length === 1 ? "" : "s"}</p>
+          </div>
+          <div className="bg-white/10 rounded-lg px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Postventa · contratado</p>
+            <p className="text-sm font-bold font-mono">{combUSD(Tpv, "contr") == null ? "—" : `$${mx0(combUSD(Tpv, "contr"))}`}<span className="text-[10px] font-normal text-emerald-100"> USD</span></p>
+            <p className="text-[10px] font-mono text-emerald-100/80">{rowsPV.length} proyecto{rowsPV.length === 1 ? "" : "s"} · por cobrar {combUSD(Tpv, "pend") == null ? "—" : `$${mx0(combUSD(Tpv, "pend"))}`}</p>
+          </div>
+          <div className="bg-white/10 rounded-lg px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom.</p>
+            <p className="text-sm font-bold font-mono">{margenProm == null ? "—" : margenProm.toFixed(1) + "%"}</p>
+            <p className="text-[10px] font-mono text-emerald-100/80">Compras/mat.: ${mx0(gastoMatMXN)} · {anal.length} proy. abierto{anal.length === 1 ? "" : "s"}</p>
+          </div>
+        </div>
+
+        <p className="text-[10px] text-emerald-100/80 mt-2">
+          {anio === "todos" ? "Todos los años" : `Año ${anio}`} · sin órdenes canceladas · montos con IVA · el combinado convierte MXN a USD al TC {tc || "—"}{fechaRefresh ? ` · datos al ${fechaRefresh}` : ""}.
+          {" "}Utilidad prom. y compras/materiales solo de los proyectos ya abiertos (se llenan al entrar a cada uno), no del total.
+        </p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h2 className="text-sm font-semibold">Proyectos</h2><p className="text-xs text-stone-500">Órdenes de venta de Zoho (se refrescan solas 1 vez al día){fechaRefresh ? ` · última: ${fechaRefresh}` : ""}.</p></div>
@@ -2458,7 +2543,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
                   <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
                 </div>
                 <div className="text-right font-mono text-xs">
-                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(totDoc(s))}</span> <span className="text-[9px] text-stone-400">{s.currency_code || ""}</span></p>
+                  <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(totDoc(s))}</span> <span className="text-[9px] text-stone-400">{curOf(s)}</span></p>
                   <p className="text-stone-400">Por cobrar <span className="text-stone-600 font-semibold">${mx0(balNeto(s))}</span>{conFactura ? <span className="text-[9px] text-emerald-600"> · factura</span> : null}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
                 </div>
               </button>
