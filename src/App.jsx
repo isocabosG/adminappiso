@@ -2235,6 +2235,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const [fact, setFact] = useState({}); // saldo real por OV: { "SO-00279": {total, balance, n} } — viene de las facturas
   const [pagos, setPagos] = useState({});         // OV -> pagos recibidos, de Zoho
   const [pagosSinOV, setPagosSinOV] = useState([]); // pagos que tocan varias obras o ninguna
+  const [pagosErr, setPagosErr] = useState("");     // por qué no se pudieron leer los pagos
   const [filtros, setFiltros] = useState([]); // chips activos, combinables: abierto/cerrado (estado) + porcobrar/pagado (pago)
   const toggleFiltro = (k) => setFiltros((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
   const noConn = typeof window.zohoBooks !== "function";
@@ -2294,12 +2295,23 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         if (n && so && f.status !== "void") invToSo[n] = so;
       }
 
-      let allPay = [], pp = 1, moreP = true;
-      while (moreP && pp <= 20) {
-        const dp = await window.zohoBooks({ action: "list_customer_payments", params: { per_page: "200", page: String(pp), sort_column: "date" } });
-        allPay.push(...(dp.customerpayments || []));
-        moreP = dp.page_context?.has_more_page;
-        pp++;
+      // Los pagos van en su PROPIA burbuja: si esta llamada falla —el token sin
+      // el scope de customerpayments, por ejemplo— la pantalla de proyectos se
+      // queda sin pagos, pero NO se cae. Un dato de menos no puede valer una
+      // pantalla en blanco: es la misma lección que nos dejó hoy el feed de
+      // IS-PMT cayéndose por una columna que no existía.
+      let allPay = [], errPagos = "";
+      try {
+        let pp = 1, moreP = true;
+        while (moreP && pp <= 20) {
+          const dp = await window.zohoBooks({ action: "list_customer_payments", params: { per_page: "200", page: String(pp), sort_column: "date" } });
+          allPay.push(...(dp.customerpayments || []));
+          moreP = dp.page_context?.has_more_page;
+          pp++;
+        }
+      } catch (e) {
+        errPagos = String(e?.message || e);
+        allPay = [];
       }
 
       const pagoMap = {};      // OV -> { USD, MXN, n, lista[] }
@@ -2344,7 +2356,9 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         }).filter((p) => p.monto);
         await window.storage?.set("iso3-pagos-zoho", JSON.stringify({ fecha, pagos: planos }));
       } catch {}
-      setAviso({ t: "ok", m: `${slim.length} proyectos · ${allInv.length} facturas · ${allPay.length} pagos de Zoho.` });
+      setPagosErr(errPagos);
+      if (errPagos) setAviso({ t: "err", m: `${slim.length} proyectos y ${allInv.length} facturas sí se leyeron, pero los PAGOS no: ${errPagos}` });
+      else setAviso({ t: "ok", m: `${slim.length} proyectos · ${allInv.length} facturas · ${allPay.length} pagos de Zoho.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
     refrescando.current = false;
     setCargando(false);
@@ -2576,6 +2590,20 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         </button>
         {(filtros.length > 0 || soloCal) && <button onClick={() => { setFiltros([]); setSoloCal(false); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
       </div>
+      {pagosErr && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+          <p className="text-xs font-semibold text-amber-900">Los proyectos y facturas están al día, pero los pagos no se pudieron leer.</p>
+          <p className="text-[11px] text-amber-800 mt-0.5">
+            El cobrado y el por cobrar siguen saliendo del saldo de las facturas, que es correcto. Lo que falta es el detalle de cada pago
+            —fecha, vía, a qué cuenta entró— y la pantalla de Ingresos en Tesorería.
+          </p>
+          <p className="text-[10px] font-mono text-amber-700 mt-1 break-all">{pagosErr}</p>
+          <p className="text-[10px] text-amber-700 mt-1">
+            Si dice <b>not authorized</b>, al token de Zoho le falta el permiso <code className="font-mono">ZohoBooks.customerpayments.READ</code>.
+          </p>
+        </div>
+      )}
+
       {pagosSinOV.length > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
           <p className="text-xs font-semibold text-amber-900">
