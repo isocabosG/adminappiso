@@ -2233,6 +2233,8 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const [cargando, setCargando] = useState(false);
   const [busca, setBusca] = useState("");
   const [fact, setFact] = useState({}); // saldo real por OV: { "SO-00279": {total, balance, n} } — viene de las facturas
+  const [pagos, setPagos] = useState({});         // OV -> pagos recibidos, de Zoho
+  const [pagosSinOV, setPagosSinOV] = useState([]); // pagos que tocan varias obras o ninguna
   const [filtros, setFiltros] = useState([]); // chips activos, combinables: abierto/cerrado (estado) + porcobrar/pagado (pago)
   const toggleFiltro = (k) => setFiltros((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
   const noConn = typeof window.zohoBooks !== "function";
@@ -2279,10 +2281,54 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         factMap[k][cur].b += (+f.balance || 0);
         factMap[k].n++;
       }
+      // ── Pagos recibidos ────────────────────────────────────────────────
+      // Hasta hoy los pagos se capturaban A MANO en la app. Por eso CHILENO RE 1
+      // salía debiendo los $348,341 completos cuando Pogue ya había transferido
+      // $150,147: el pago existía en Zoho y la app no lo veía.
+      // Cada pago dice a qué FACTURA se aplicó; la factura dice a qué OV
+      // (reference_number). Con esos dos saltos se llega al proyecto.
+      const invToSo = {};
+      for (const f of allInv) {
+        const n = String(f.invoice_number || "").trim();
+        const so = String(f.reference_number || "").trim();
+        if (n && so && f.status !== "void") invToSo[n] = so;
+      }
+
+      let allPay = [], pp = 1, moreP = true;
+      while (moreP && pp <= 20) {
+        const dp = await window.zohoBooks({ action: "list_customer_payments", params: { per_page: "200", page: String(pp), sort_column: "date" } });
+        allPay.push(...(dp.customerpayments || []));
+        moreP = dp.page_context?.has_more_page;
+        pp++;
+      }
+
+      const pagoMap = {};      // OV -> { USD, MXN, n, lista[] }
+      const pagosSinOV = [];   // no se pudieron amarrar a una sola obra
+      for (const p of allPay) {
+        const monto = +p.amount || 0;
+        if (!monto) continue;
+        // La moneda no viene como campo: bcy_amount es el mismo monto en pesos.
+        // Si coinciden, el pago fue en MXN; si no, en la divisa de la factura.
+        const cur = Math.abs((+p.bcy_amount || 0) - monto) < 0.01 ? "MXN" : "USD";
+        const reg = {
+          num: p.payment_number || "", fecha: p.date || "", monto, cur,
+          modo: p.payment_mode || "", cuenta: p.account_name || "", cliente: p.customer_name || "",
+        };
+        const nums = String(p.invoice_numbers || "").split(",").map((x) => x.trim()).filter(Boolean);
+        const ovs = [...new Set(nums.map((n) => invToSo[n]).filter(Boolean))];
+        // Un pago repartido entre obras distintas NO se adivina: se aparta y se
+        // muestra. Prorratearlo daría un cobrado que se ve exacto y no lo es.
+        if (ovs.length !== 1) { pagosSinOV.push({ ...reg, facturas: nums.join(" / ") }); continue; }
+        const ov = ovs[0];
+        if (!pagoMap[ov]) pagoMap[ov] = { USD: 0, MXN: 0, n: 0, lista: [] };
+        pagoMap[ov][cur] += monto; pagoMap[ov].n++; pagoMap[ov].lista.push(reg);
+      }
+      for (const ov of Object.keys(pagoMap)) pagoMap[ov].lista.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+
       const fecha = hoy();
-      setSos(slim); setFact(factMap); setFechaRefresh(fecha);
-      try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim, fact: factMap })); } catch {}
-      setAviso({ t: "ok", m: `${slim.length} proyectos · ${allInv.length} facturas actualizados de Zoho.` });
+      setSos(slim); setFact(factMap); setPagos(pagoMap); setPagosSinOV(pagosSinOV); setFechaRefresh(fecha);
+      try { await window.storage?.set("iso3-proyectos-cache", JSON.stringify({ fecha, sos: slim, fact: factMap, pagos: pagoMap, pagosSinOV })); } catch {}
+      setAviso({ t: "ok", m: `${slim.length} proyectos · ${allInv.length} facturas · ${allPay.length} pagos de Zoho.` });
     } catch (e) { setAviso({ t: "err", m: "No se pudieron leer los proyectos: " + (e.message || e) }); }
     refrescando.current = false;
     setCargando(false);
@@ -2292,7 +2338,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
     (async () => {
       let cache = null;
       try { const r = await window.storage?.get("iso3-proyectos-cache"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache?.sos) { setSos(cache.sos); setFact(cache.fact || {}); setFechaRefresh(cache.fecha || ""); }
+      if (cache?.sos) { setSos(cache.sos); setFact(cache.fact || {}); setPagos(cache.pagos || {}); setPagosSinOV(cache.pagosSinOV || []); setFechaRefresh(cache.fecha || ""); }
       // Refresco automático 1 vez al día (o si no hay cache)
       if ((!cache?.sos || cache.fecha !== hoy()) && !noConn) refrescar();
     })();
@@ -2391,7 +2437,17 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
   const totDoc = (s) => { const f = facOf(s); return f ? f.total : (+s.total || 0) * ivaF(s); };     // contratado (moneda de la OV)
   const balDoc = (s) => { const f = facOf(s); return f ? f.balance : (+s.balance || 0) * ivaF(s); };  // saldo Zoho (moneda de la OV)
   const manualOf = (s) => (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
-  const balNeto = (s) => Math.max(0, balDoc(s) - manualOf(s));                                        // por cobrar real (menos pagos manuales)
+  // Por cobrar real.
+  //
+  // El saldo de una FACTURA en Zoho ya viene neto de los pagos registrados allá
+  // — el de Pogue, por ejemplo, bajó de 300,294 a 150,147 solo. Si encima le
+  // restáramos los pagos capturados a mano en esta app, un pago que exista en
+  // los dos lados se descontaría DOS VECES y el por cobrar saldría de menos.
+  // Por eso la captura manual solo se resta cuando NO hay factura: ahí el saldo
+  // sale de la orden de venta, que no refleja ningún pago.
+  const balNeto = (s) => { const f = facOf(s); return f ? Math.max(0, balDoc(s)) : Math.max(0, balDoc(s) - manualOf(s)); };
+  // Pagos recibidos de Zoho para esa OV (los de verdad, no los tecleados).
+  const pagosDe = (s) => pagos[s.salesorder_number] || null;
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
   const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
@@ -2504,6 +2560,28 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix }) {
         </button>
         {(filtros.length > 0 || soloCal) && <button onClick={() => { setFiltros([]); setSoloCal(false); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
       </div>
+      {pagosSinOV.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+          <p className="text-xs font-semibold text-amber-900">
+            {pagosSinOV.length} pago{pagosSinOV.length === 1 ? "" : "s"} de Zoho sin obra identificable · ${mx0(pagosSinOV.reduce((a, p) => a + p.monto, 0))}
+          </p>
+          <p className="text-[11px] text-amber-800 mt-0.5">
+            Son pagos aplicados a facturas que no apuntan a una sola orden de venta, o que reparten el monto entre varias obras.
+            No se reparten a ojo: un cobrado prorrateado se ve exacto y no lo es.
+          </p>
+          <details className="mt-1">
+            <summary className="text-[11px] text-amber-700 cursor-pointer">ver cuáles</summary>
+            <div className="mt-1 max-h-40 overflow-y-auto">
+              {pagosSinOV.slice(0, 60).map((p, i) => (
+                <p key={i} className="text-[10px] font-mono text-amber-800">
+                  {p.fecha} · {p.num} · {p.cliente} · ${mx0(p.monto)} {p.cur} · {p.facturas || "sin factura"}
+                </p>
+              ))}
+            </div>
+          </details>
+        </div>
+      )}
+
       {/* Un feed caído se veía exactamente igual que "nada calendarizado":
           sin morados y sin orden. Ahora lo dice. */}
       {feedErr && (

@@ -131,6 +131,11 @@ Deno.serve(async (req) => {
     else if (action === "get_so_attachment") { path = `/salesorders/${salesorder_id}/attachment`; qsParams = document_id ? { document_id } : {}; binary = true; } // contrato/adjunto del proyecto
     else if (action === "get_so_pdf") { path = `/salesorders/${salesorder_id}`; qsParams = { accept: "pdf" }; binary = true; }        // OV en PDF
     else if (action === "get_invoice_pdf") { path = `/invoices/${invoice_id}`; qsParams = { accept: "pdf" }; binary = true; }         // factura en PDF
+    // Pagos recibidos. Cada uno dice a qué FACTURA se aplicó (invoice_numbers),
+    // de qué cliente, a qué cuenta bancaria entró y por qué vía. Es lo que
+    // convierte "cobrado" y "por cobrar" en un dato real en vez de una captura
+    // manual: hasta hoy los pagos se tecleaban a mano en la app.
+    else if (action === "list_customer_payments") { path = "/customerpayments"; qsParams = restParams; }
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 
