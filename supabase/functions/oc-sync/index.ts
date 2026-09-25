@@ -25,7 +25,7 @@ const CORS = {
 
 const KEY = "iso3-mrp-oc-cache-v2";
 const MAX_OC = 250;
-const EN_PARALELO = 6;
+const EN_PARALELO = 3;
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -86,11 +86,21 @@ Deno.serve(async (req) => {
     const hist: Record<string, { desc: string; porProv: Record<string, { n: number; ult: string; pzas: number }> }> = {};
     let fallidas = 0;
 
+    const motivos: Record<string, number> = {};
+
     for (let i = 0; i < lote.length; i += EN_PARALELO) {
       const grupo = lote.slice(i, i + EN_PARALELO);
       await Promise.all(grupo.map(async (po) => {
         try {
-          const d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
+          let d: any;
+          try {
+            d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
+          } catch (e1) {
+            // Un rechazo suele ser el limite de llamadas por minuto de Zoho, no
+            // una OC rota. Se espera y se vuelve a intentar una vez.
+            await new Promise((r) => setTimeout(r, 2000));
+            d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
+          }
           for (const li of (d.purchaseorder?.line_items || [])) {
             const sku = up(li.sku);
             if (!sku) continue;
@@ -109,7 +119,13 @@ Deno.serve(async (req) => {
               }
             }
           }
-        } catch { fallidas++; /* una OC mala no cuesta el recorrido entero */ }
+        } catch (e) {
+          // Una OC mala no cuesta el recorrido entero, pero si deja dicho de que
+          // murio: un contador a secas no se puede diagnosticar.
+          fallidas++;
+          const m = String((e as Error)?.message || e).slice(0, 160);
+          motivos[m] = (motivos[m] || 0) + 1;
+        }
       }));
     }
 
@@ -125,6 +141,7 @@ Deno.serve(async (req) => {
     // Para que la semilla proponga nombres que existen: Zoho liga el proveedor
     // del artículo por id, y un nombre aproximado no casa con nada.
     const provZoho: Array<{ nombre: string; tipo: string; moneda: string }> = [];
+    let provError: string | null = null;
     try {
       let pc = 1, moreC = true;
       while (moreC && pc <= 10) {
@@ -136,7 +153,7 @@ Deno.serve(async (req) => {
         moreC = !!dc.page_context?.has_more_page;
         pc++;
       }
-    } catch { /* sin proveedores el resto sigue sirviendo */ }
+    } catch (e) { provError = String((e as Error)?.message || e).slice(0, 200); }
 
     // Si TODAS las OC fallaron no hay nada que guardar: mejor dejar el caché de
     // ayer, viejo pero íntegro, que uno nuevo y vacío.
@@ -154,6 +171,8 @@ Deno.serve(async (req) => {
       ok: true, fecha: valor.fecha, ocLeidas: lote.length, ocFallidas: fallidas,
       skuEnTransito: Object.keys(trans).length, skuConProveedor: Object.keys(prov).length,
       proveedoresZoho: provZoho.length,
+      provError,
+      motivos: Object.entries(motivos).sort((a, b) => b[1] - a[1]).slice(0, 5),
     });
   } catch (e) {
     return json({ ok: false, error: String((e as Error)?.message || e) }, 500);
