@@ -29,6 +29,7 @@
 // inventario que ve la app sigue siendo el de ayer — viejo pero íntegro, en vez
 // de nuevo y lleno de blancos. Un blanco en un MRP se lee como "no hay".
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { Zoho } from "../_shared/zoho.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -60,30 +61,25 @@ Deno.serve(async (req) => {
   const arranque = Date.now();
   const SB = Deno.env.get("SUPABASE_URL");
   const SRV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const ORG = Deno.env.get("ZOHO_ORG_ID");
   if (!SB || !SRV) return json({ ok: false, error: "Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY." }, 500);
+  if (!ORG) return json({ ok: false, error: "Falta el secreto ZOHO_ORG_ID." }, 500);
 
-  let frenadas = 0, esperado = 0;
 
   // zoho-books espera { action, params } — todo lo específico de cada endpoint
   // (item_id incluido) viaja dentro de `params`. Y cuando Zoho dice "espérate",
   // se espera: lee los milisegundos que pide y los respeta.
-  const zoho = async (action: string, params: Record<string, string>): Promise<any> => {
-    for (let intento = 0; intento < 3; intento++) {
-      const r = await fetch(`${SB}/functions/v1/zoho-books`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ action, params }),
-      });
-      const j = await r.json();
-      if (!j?.error) return j;
-      const msg = String(j.error);
-      if (!/rate limit/i.test(msg) || intento === 2) throw new Error(`zoho-books ${action}: ${msg}`);
-      const pedido = Number(msg.match(/retry after (\d+)\s*ms/i)?.[1] || 0);
-      const espera = Math.min(pedido || 5000, ESPERA_MAX_MS);
-      frenadas++; esperado += espera;
-      await dormir(espera);
-    }
-    throw new Error(`zoho-books ${action}: sin respuesta`);
+  // Zoho directo, sin pasar por el Edge Function `zoho-books`: cientos de
+  // llamadas función-a-función las frena Supabase, no Zoho. Ver _shared/zoho.ts.
+  const z = new Zoho(SB, SRV, ORG);
+  const zoho = async (action: string, params: Record<string, string> = {}): Promise<any> => {
+    const { purchaseorder_id, item_id, ...resto } = params as any;
+    if (action === "list_purchase_orders") return z.get("/purchaseorders", resto);
+    if (action === "get_purchase_order") return z.get(`/purchaseorders/${purchaseorder_id}`, resto);
+    if (action === "list_contacts") return z.get("/contacts", resto);
+    if (action === "list_items") return z.get("/items", resto);
+    if (action === "get_item") return z.get(`/items/${item_id}`, resto);
+    throw new Error("Acción no soportada: " + action);
   };
 
   const leerBlob = async (key: string) => {
@@ -223,7 +219,7 @@ Deno.serve(async (req) => {
         return json({
           ok: false, terminado: true, publicado: false,
           error: `${huecos} de ${listos} artículos quedaron sin leer (${(100 * huecos / listos).toFixed(1)}%). Se conserva el inventario anterior.`,
-          frenadas, esperadoSeg: Math.round(esperado / 1000),
+          frenadas: z.frenadas, esperadoSeg: Math.round(z.esperadoMs / 1000), llamadas: z.llamadas,
         }, 200);
       }
 
@@ -234,7 +230,7 @@ Deno.serve(async (req) => {
       return json({
         ok: true, terminado: true, publicado: true, fecha: parcial.fecha,
         skus: listos, preguntados: parcial.preguntados || 0, quietos: parcial.quietos || 0, huecos,
-        frenadas, esperadoSeg: Math.round(esperado / 1000),
+        frenadas: z.frenadas, esperadoSeg: Math.round(z.esperadoMs / 1000), llamadas: z.llamadas,
       });
     }
 
@@ -243,9 +239,9 @@ Deno.serve(async (req) => {
       ok: true, terminado: false, corte,
       avance: `${i} de ${lista.length}`,
       preguntados: parcial.preguntados || 0, porPreguntar: parcial.porPreguntar || 0, huecos: parcial.huecos || 0,
-      frenadas, esperadoSeg: Math.round(esperado / 1000),
+      frenadas: z.frenadas, esperadoSeg: Math.round(z.esperadoMs / 1000), llamadas: z.llamadas,
     });
   } catch (e) {
-    return json({ ok: false, error: String((e as Error)?.message || e), frenadas, esperadoSeg: Math.round(esperado / 1000) }, 500);
+    return json({ ok: false, error: String((e as Error)?.message || e), frenadas: z.frenadas, esperadoSeg: Math.round(z.esperadoMs / 1000), llamadas: z.llamadas }, 500);
   }
 });

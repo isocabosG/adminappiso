@@ -32,6 +32,7 @@
 // esa pudo ser una urgencia con quien contestara el teléfono. Gana el que más
 // veces aparece, y en empate el más reciente.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { Zoho } from "../_shared/zoho.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -59,34 +60,25 @@ Deno.serve(async (req) => {
 
   const SB = Deno.env.get("SUPABASE_URL");
   const SRV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const ORG = Deno.env.get("ZOHO_ORG_ID");
   if (!SB || !SRV) return json({ ok: false, error: "Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY." }, 500);
+  if (!ORG) return json({ ok: false, error: "Falta el secreto ZOHO_ORG_ID." }, 500);
 
-  let frenadas = 0;   // cuántas veces Zoho nos pidió esperar
-  let esperado = 0;   // cuánto esperamos en total, en ms
 
   // Una llamada a Zoho que entiende el "espérate". Si Zoho contesta que nos
   // pasamos del límite, lee los milisegundos que pide y los respeta, hasta dos
   // veces. Más allá de eso no vale la pena seguir peleando en esta corrida.
-  const zoho = async (action: string, params: Record<string, string>): Promise<any> => {
-    for (let intento = 0; intento < 3; intento++) {
-      const r = await fetch(`${SB}/functions/v1/zoho-books`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ action, params }),
-      });
-      const j = await r.json();
-      if (!j?.error) return j;
-
-      const msg = String(j.error);
-      const frena = /rate limit/i.test(msg);
-      if (!frena || intento === 2) throw new Error(`zoho-books ${action}: ${msg}`);
-
-      const pedido = Number(msg.match(/retry after (\d+)\s*ms/i)?.[1] || 0);
-      const espera = Math.min(pedido || 5000, ESPERA_MAX_MS);
-      frenadas++; esperado += espera;
-      await dormir(espera);
-    }
-    throw new Error(`zoho-books ${action}: sin respuesta`);
+  // Zoho directo, sin pasar por el Edge Function `zoho-books`: cientos de
+  // llamadas función-a-función las frena Supabase, no Zoho. Ver _shared/zoho.ts.
+  const z = new Zoho(SB, SRV, ORG);
+  const zoho = async (action: string, params: Record<string, string> = {}): Promise<any> => {
+    const { purchaseorder_id, item_id, ...resto } = params as any;
+    if (action === "list_purchase_orders") return z.get("/purchaseorders", resto);
+    if (action === "get_purchase_order") return z.get(`/purchaseorders/${purchaseorder_id}`, resto);
+    if (action === "list_contacts") return z.get("/contacts", resto);
+    if (action === "list_items") return z.get("/items", resto);
+    if (action === "get_item") return z.get(`/items/${item_id}`, resto);
+    throw new Error("Acción no soportada: " + action);
   };
 
   const leerBlob = async () => {
@@ -266,10 +258,10 @@ Deno.serve(async (req) => {
       skuConProveedor: Object.keys(prov).length,
       proveedoresZoho: provZoho.length,
       provError,
-      frenadas, esperadoSeg: Math.round(esperado / 1000),
+      frenadas: z.frenadas, esperadoSeg: Math.round(z.esperadoMs / 1000), llamadas: z.llamadas,
       motivos: Object.entries(motivos).sort((a, b) => b[1] - a[1]).slice(0, 5),
     });
   } catch (e) {
-    return json({ ok: false, error: String((e as Error)?.message || e), frenadas, esperadoSeg: Math.round(esperado / 1000) }, 500);
+    return json({ ok: false, error: String((e as Error)?.message || e), frenadas: z.frenadas, esperadoSeg: Math.round(z.esperadoMs / 1000), llamadas: z.llamadas }, 500);
   }
 });
