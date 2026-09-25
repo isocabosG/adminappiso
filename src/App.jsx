@@ -4883,6 +4883,7 @@ function MRP({ catalogo, setAviso, onVerOV }) {
   const [proyectosSel, setProyectosSel] = useState(() => new Set()); // vacío = todos los proyectos
   const [skuInfo, setSkuInfo] = useState(null);            // sku -> {activo, desc, aMano} del catálogo de Zoho
   const [transitoLotes, setTransitoLotes] = useState({});  // sku -> [{qty, eta}] de OC abiertas
+  const [histProv, setHistProv] = useState({});            // sku -> a quién se le ha comprado y cuántas veces
   const [ovMats, setOvMats] = useState({});          // projectId -> materiales provisionales de la OV
   const [ovProg, setOvProg] = useState("");
   const [sel, setSel] = useState(() => new Set());   // claves seleccionadas para orden de compra
@@ -4944,7 +4945,7 @@ function MRP({ catalogo, setAviso, onVerOV }) {
     (async () => {
       let cache = null;
       try { const r = await window.storage?.get("iso3-mrp-oc-cache-v2"); if (r?.value) cache = JSON.parse(r.value); } catch {}
-      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); setTransitoLotes(cache.lotes || {}); }
+      if (cache) { setTransito(cache.transito || {}); setProveedorPorSku(cache.proveedor || {}); setTransitoLotes(cache.lotes || {}); setHistProv(cache.hist || {}); }
       // Tránsito + proveedor: automático, pero solo si el cache no es de hoy (evita pegarle a Zoho en cada carga).
       if ((!cache || cache.fecha !== hoy()) && typeof window.zohoBooks === "function") calcularTransito();
     })();
@@ -4983,12 +4984,18 @@ function MRP({ catalogo, setAviso, onVerOV }) {
           // (cf_fecha_estimada_a_almacén_IS). Sin fecha, el material en tránsito
           // no se puede asignar a una obra: llegar tarde es igual a no llegar.
           const eta = po.cf_fecha_estimada_a_almac_n_is_unformatted || po.delivery_date || null;
-          pos.push({ id: po.purchaseorder_id, vendor: po.vendor_name || "", abierta, eta: eta ? String(eta).slice(0, 10) : null });
+          pos.push({ id: po.purchaseorder_id, vendor: po.vendor_name || "", abierta, eta: eta ? String(eta).slice(0, 10) : null,
+                     numero: po.purchaseorder_number || "", fecha: String(po.date || "").slice(0, 10) });
         }
         more = d.page_context?.has_more_page; page++;
       }
       const lote = pos.slice(0, 250);
       const trans = {}, prov = {}, lotes = {};   // lotes = tránsito con fecha de llegada
+      // Historial por SKU: a quién se le ha comprado y cuántas veces. El campo
+      // de proveedor del artículo está VACÍO en Zoho (0 de 200 revisados), así
+      // que esto es lo único que hay — y contar es mejor que quedarse con la
+      // última compra, que pudo ser una urgencia con quien fuera.
+      const hist = {};   // sku -> { desc, porProv: {prov: {n, ult, pzas}} }
       let i = 0;
       for (const po of lote) {
         i++; setTransProg(`Leyendo OC ${i}/${lote.length}…`);
@@ -4997,6 +5004,13 @@ function MRP({ catalogo, setAviso, onVerOV }) {
           for (const li of (d.purchaseorder?.line_items || [])) {
             const sku = upMrp(li.sku); if (!sku) continue;
             if (!prov[sku] && po.vendor) prov[sku] = po.vendor;           // primero visto = OC más reciente
+            if (po.vendor) {
+              const h = (hist[sku] = hist[sku] || { desc: li.name || li.description || "", porProv: {} });
+              if (!h.desc && (li.name || li.description)) h.desc = li.name || li.description;
+              const pv = (h.porProv[po.vendor] = h.porProv[po.vendor] || { n: 0, ult: "", pzas: 0 });
+              pv.n++; pv.pzas += (+li.quantity || 0);
+              if (po.fecha > pv.ult) pv.ult = po.fecha;
+            }
             if (po.abierta) {
               const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
               if (q > 0) {
@@ -5007,13 +5021,52 @@ function MRP({ catalogo, setAviso, onVerOV }) {
           }
         } catch { /* si una OC falla, seguimos con las demás */ }
       }
-      setTransito(trans); setProveedorPorSku(prov); setTransitoLotes(lotes);
-      try { await window.storage?.set("iso3-mrp-oc-cache-v2", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov, lotes })); } catch {}
+      // El proveedor de un SKU es a quien más veces se le ha comprado, no el de
+      // la última OC — esa pudo ser una urgencia con quien contestara el teléfono.
+      // Empates: gana la compra más reciente.
+      for (const [sku, h] of Object.entries(hist)) {
+        const mejor = Object.entries(h.porProv).sort((a, b) => b[1].n - a[1].n || String(b[1].ult).localeCompare(String(a[1].ult)))[0];
+        if (mejor) prov[sku] = mejor[0];
+      }
+      setTransito(trans); setProveedorPorSku(prov); setTransitoLotes(lotes); setHistProv(hist);
+      try { await window.storage?.set("iso3-mrp-oc-cache-v2", JSON.stringify({ fecha: hoy(), transito: trans, proveedor: prov, lotes, hist })); } catch {}
       setAviso({ t: "ok", m: `OC analizadas: ${lote.length}. Proveedor de ${Object.keys(prov).length} SKU · en tránsito de ${Object.keys(trans).length}.` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudieron analizar las OC: " + (e.message || e) });
     }
     setTransProg("");
+  };
+
+  // Semilla de proveedores para cargar a Zoho.
+  //
+  // El campo de proveedor del artículo está vacío en Zoho (0 de 200 revisados),
+  // así que hoy el agrupado por proveedor del export es una inferencia. Esto
+  // saca de las órdenes de compra a quién se le ha comprado cada SKU, para que
+  // compras lo revise y se suba de un jalón. Después el dato deja de ser
+  // adivinanza y mejora solo.
+  const exportarSemillaProv = () => {
+    const skus = Object.keys(histProv);
+    if (!skus.length) { setAviso({ t: "err", m: "Primero pulsa «Reanalizar OC» para leer las órdenes de compra." }); return; }
+    const esc = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const head = ["SKU", "Descripcion", "Proveedor sugerido", "Veces comprado", "Ultima compra", "Piezas", "Otros proveedores", "Confianza", "Activo en Zoho"];
+    const filas = skus.map((sku) => {
+      const h = histProv[sku];
+      const orden = Object.entries(h.porProv).sort((a, b) => b[1].n - a[1].n || String(b[1].ult).localeCompare(String(a[1].ult)));
+      const [p1, d1] = orden[0];
+      const otros = orden.slice(1).map(([p, d]) => `${p} (${d.n})`).join(" · ");
+      // Un SKU comprado siempre al mismo proveedor es un dato fuerte; uno
+      // repartido entre varios necesita que alguien decida.
+      const total = orden.reduce((a, [, d]) => a + d.n, 0);
+      const conf = orden.length === 1 ? (d1.n >= 3 ? "alta" : "media") : (d1.n / total >= 0.7 ? "media" : "revisar");
+      const est = skuInfo?.[sku];
+      return [sku, h.desc, p1, d1.n, d1.ult, d1.pzas, otros, conf, est ? (est.activo ? "sí" : "NO") : "?"];
+    }).sort((a, b) => String(a[7]).localeCompare(String(b[7])) || b[3] - a[3]);
+    const csv = "\ufeff" + [head, ...filas].map((r) => r.map(esc).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `proveedores-por-sku-${HOY}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    setAviso({ t: "ok", m: `${filas.length} SKU con proveedor sugerido. Revísalo antes de subirlo a Zoho.` });
   };
 
   const invPorSku = useMemo(() => {
@@ -5273,6 +5326,11 @@ function MRP({ catalogo, setAviso, onVerOV }) {
             {transProg || "↻ Reanalizar OC (tránsito + proveedor)"}
           </button>
           <p className="text-[10px] text-stone-500 mt-1">{transProg || "Tránsito y proveedor se calculan solos (1×/día). Reanaliza para forzar."}</p>
+          {Object.keys(histProv).length > 0 && (
+            <button onClick={exportarSemillaProv} className="mt-1.5 px-2.5 py-1 border border-stone-300 text-stone-700 text-[11px] font-medium rounded hover:bg-black/5">
+              ⬇ Proveedor por SKU ({Object.keys(histProv).length}) — para cargar a Zoho
+            </button>
+          )}
         </div>
       </div>
 
