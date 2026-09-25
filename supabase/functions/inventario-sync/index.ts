@@ -4,23 +4,30 @@
 // comprometidas y disponible para venta. Corre de madrugada, por pg_cron, en
 // vez de que se calcule cuando alguien abre la pestaña Inventario.
 //
-// POR QUÉ ESTO IMPORTA
+// POR QUÉ HAY QUE PEDIR ARTÍCULO POR ARTÍCULO
 // Las comprometidas físicas (`actual_committed_stock`) NO vienen en la lista de
-// artículos — solo pidiendo cada artículo por separado. Son ~2,300 llamadas a
-// Zoho. Hasta hoy eso lo pagaba el navegador de quien abriera la pestaña: dos o
-// tres minutos de espera, cada día, por persona. Ahora se paga una vez.
+// artículos — solo pidiendo cada uno por separado.
+//
+// POR QUÉ NO SE PIDEN LOS 2,300
+// Zoho tiene un límite de llamadas por minuto por organización, y lo comparten
+// esta app, IS-PMT y los demás crons. Pedir el catálogo entero todos los días
+// nos tumba a nosotros y a los demás. Pero un artículo sin existencia, sin
+// comprometido y sin disponible en la contabilidad tampoco puede tener nada
+// comprometido en físico: no hay nada que comprometer. Así que sólo se pregunta
+// por los que se mueven. Los quietos se registran en ceros con lo que ya trae
+// la lista, gratis. La respuesta dice cuántos fueron, para poder medirlo.
 //
 // POR QUÉ VA EN PEDAZOS
-// Una Edge Function tiene un tope de tiempo por invocación, y 2,300 llamadas no
-// caben. Así que esta procesa un tramo, guarda el avance en un blob temporal y
-// se sale. La siguiente invocación mira dónde se quedó y sigue. El cron la
-// dispara varias veces seguidas; cuando ya no hay nada pendiente, no hace nada.
+// Una Edge Function tiene un tope de tiempo por invocación. Ésta trabaja ~100
+// segundos, guarda el avance y se sale. La siguiente mira dónde se quedó y
+// sigue. El cron la dispara varias veces; cuando no hay pendientes, no hace nada.
 //
 // POR QUÉ NO PISA EL BLOB BUENO HASTA EL FINAL
-// El blob de trabajo es `iso3-inventario-parcial`. El bueno solo se escribe
-// cuando el recorrido termina completo. Si una corrida se corta a la mitad, el
+// El blob de trabajo es `iso3-inventario-parcial`. El bueno sólo se escribe
+// cuando el recorrido termina completo Y con pocos huecos. Si una corrida se
+// corta, o si Zoho nos frenó tanto que quedaron artículos sin leer, el
 // inventario que ve la app sigue siendo el de ayer — viejo pero íntegro, en vez
-// de nuevo y a medias.
+// de nuevo y lleno de blancos. Un blanco en un MRP se lee como "no hay".
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const CORS = {
@@ -32,30 +39,51 @@ const CORS = {
 const KEY_FINAL = "iso3-inventario-fisico";
 const KEY_PARCIAL = "iso3-inventario-parcial";
 
-const POR_TRAMO = 500;   // artículos por invocación
-const EN_PARALELO = 6;   // llamadas simultáneas a Zoho
+const LIMITE_MS = 100000;     // cuánto trabaja cada invocación
+const EN_PARALELO = 3;
+const GAP_MS = 250;
+const ESPERA_MAX_MS = 30000;  // lo más que aceptamos esperar cuando Zoho frena
+const INTENTOS_MAX = 2;
+const FORMATO = 2;             // sube si cambia la forma del parcial
+const HUECOS_TOLERADOS = 0.02; // 2% de artículos sin leer y ya no se publica
+
+type Pend = { sku: string; itemId: string; desc: string; activo: boolean; aMano: number; cost: number; pregunta: boolean; intentos?: number };
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
 
+const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
+  const arranque = Date.now();
   const SB = Deno.env.get("SUPABASE_URL");
   const SRV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!SB || !SRV) return json({ ok: false, error: "Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY." }, 500);
 
+  let frenadas = 0, esperado = 0;
+
   // zoho-books espera { action, params } — todo lo específico de cada endpoint
-  // (item_id incluido) viaja dentro de `params`.
-  const zoho = async (action: string, params: Record<string, string>) => {
-    const r = await fetch(`${SB}/functions/v1/zoho-books`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ action, params }),
-    });
-    const j = await r.json();
-    if (j?.error) throw new Error(`zoho-books ${action}: ${j.error}`);
-    return j;
+  // (item_id incluido) viaja dentro de `params`. Y cuando Zoho dice "espérate",
+  // se espera: lee los milisegundos que pide y los respeta.
+  const zoho = async (action: string, params: Record<string, string>): Promise<any> => {
+    for (let intento = 0; intento < 3; intento++) {
+      const r = await fetch(`${SB}/functions/v1/zoho-books`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action, params }),
+      });
+      const j = await r.json();
+      if (!j?.error) return j;
+      const msg = String(j.error);
+      if (!/rate limit/i.test(msg) || intento === 2) throw new Error(`zoho-books ${action}: ${msg}`);
+      const pedido = Number(msg.match(/retry after (\d+)\s*ms/i)?.[1] || 0);
+      const espera = Math.min(pedido || 5000, ESPERA_MAX_MS);
+      frenadas++; esperado += espera;
+      await dormir(espera);
+    }
+    throw new Error(`zoho-books ${action}: sin respuesta`);
   };
 
   const leerBlob = async (key: string) => {
@@ -83,10 +111,16 @@ Deno.serve(async (req) => {
   try {
     let parcial = await leerBlob(KEY_PARCIAL);
 
+    // El cron dispara varias veces seguidas a propósito, por si el recorrido
+    // necesita más de una. Las sobrantes no deben costar ni una llamada.
+    if (parcial?.hecho && parcial.v === FORMATO && parcial.fecha === hoyLocal()) {
+      return json({ ok: true, terminado: true, yaEstaba: true, fecha: parcial.fecha });
+    }
+
     // ── Arranque: la lista de artículos, que sí viene paginada y barata ──────
-    if (!parcial || parcial.fecha !== hoyLocal()) {
-      const pendientes: Array<{ sku: string; itemId: string; desc: string; activo: boolean; aMano: number; cost: number }> = [];
-      let page = 1, more = true;
+    if (!parcial || parcial.v !== FORMATO || parcial.fecha !== hoyLocal()) {
+      const pendientes: Pend[] = [];
+      let page = 1, more = true, quietos = 0;
       while (more && page <= 40) {
         // Status.All a propósito: un SKU de baja que sigue en un BOM viejo
         // manda a comprar algo que ya no existe, y hay que poder distinguir
@@ -95,35 +129,52 @@ Deno.serve(async (req) => {
         for (const it of (d.items || [])) {
           const sku = String(it.sku || "").trim().toUpperCase();
           if (!sku) continue;
+          const activo = String(it.status || "").toLowerCase() === "active";
+          const sh = +it.stock_on_hand || 0;
+          const cs = +it.committed_stock || 0;
+          const as = +it.available_stock || 0;
+          const aas = +it.actual_available_stock || 0;
+          // Se pregunta sólo por los que se mueven. Un artículo en ceros por
+          // todos lados no puede tener comprometido físico.
+          const pregunta = activo && (sh !== 0 || cs !== 0 || as !== 0 || aas !== 0);
+          if (!pregunta) quietos++;
           pendientes.push({
             sku, itemId: String(it.item_id),
             desc: it.name || sku,
-            activo: String(it.status || "").toLowerCase() === "active",
-            // A mano físico. Viene en la lista, no cuesta llamada extra.
-            aMano: Math.max(0, +it.actual_available_stock || 0),
+            activo,
+            aMano: Math.max(0, aas),
             cost: +it.purchase_rate || 0,
+            pregunta,
           });
         }
         more = !!d.page_context?.has_more_page;
         page++;
       }
       if (!pendientes.length) throw new Error("Zoho no devolvió artículos; no se toca el inventario.");
-      parcial = { fecha: hoyLocal(), i: 0, total: pendientes.length, lista: pendientes, items: {} };
+      // Primero los que hay que preguntar: si la corrida se corta, se cortó en
+      // lo que no cuesta llamadas.
+      pendientes.sort((a, b) => Number(b.pregunta) - Number(a.pregunta));
+      parcial = {
+        v: FORMATO, fecha: hoyLocal(), i: 0, total: pendientes.length, quietos,
+        porPreguntar: pendientes.filter((p) => p.pregunta).length,
+        preguntados: 0, huecos: 0, lista: pendientes, items: {},
+      };
       await guardarBlob(KEY_PARCIAL, parcial);
     }
 
-    // ── El tramo de esta invocación ─────────────────────────────────────────
-    const lista = parcial.lista as Array<{ sku: string; itemId: string; desc: string; activo: boolean; aMano: number; cost: number }>;
+    // ── El tramo de esta invocación: por tiempo, no por cuenta ──────────────
+    const lista = parcial.lista as Pend[];
     let i = parcial.i as number;
-    const hasta = Math.min(i + POR_TRAMO, lista.length);
+    let corte: string | null = null;
 
-    while (i < hasta) {
-      const grupo = lista.slice(i, Math.min(i + EN_PARALELO, hasta));
+    while (i < lista.length) {
+      if (Date.now() - arranque > LIMITE_MS) { corte = "tiempo"; break; }
+      const grupo = lista.slice(i, Math.min(i + EN_PARALELO, lista.length));
       await Promise.all(grupo.map(async (x) => {
-        // Un artículo dado de baja no tiene comprometidas que valga la pena
-        // pedir: se registra con lo que ya trae la lista y se ahorra la llamada.
-        if (!x.activo) {
-          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: false, aMano: x.aMano, comprometido: 0, disponible: x.aMano, cost: x.cost };
+        // Un artículo de baja, o uno en ceros por todos lados, se registra con
+        // lo que ya trae la lista y se ahorra la llamada.
+        if (!x.pregunta) {
+          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: x.aMano, comprometido: 0, disponible: x.aMano, cost: x.cost };
           return;
         }
         try {
@@ -137,31 +188,64 @@ Deno.serve(async (req) => {
             ? +it.actual_available_for_sale_stock
             : (x.aMano - comp);
           parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: true, aMano: x.aMano, comprometido: comp, disponible: disp, cost: x.cost };
+          parcial.preguntados = (parcial.preguntados || 0) + 1;
         } catch {
-          // Si un artículo falla, se guarda lo que sí se sabe y se sigue. Una
-          // llamada mala no puede costar el recorrido entero.
-          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: x.aMano, comprometido: null, disponible: null, cost: x.cost };
+          // Un fallo casi siempre es el límite de Zoho, no un artículo roto.
+          // Se manda al final de la fila para reintentarlo; sólo si vuelve a
+          // fallar se acepta como hueco, y los huecos cuentan para decidir si
+          // este inventario se puede publicar o no.
+          const intentos = (x.intentos || 0) + 1;
+          if (intentos <= INTENTOS_MAX) {
+            lista.push({ ...x, intentos });
+          } else {
+            parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: x.aMano, comprometido: null, disponible: null, cost: x.cost };
+            parcial.huecos = (parcial.huecos || 0) + 1;
+          }
         }
       }));
       i += grupo.length;
+      if (grupo.some((g) => g.pregunta)) await dormir(GAP_MS);
     }
 
     parcial.i = i;
+    parcial.lista = lista;
 
     // ── ¿Terminamos? ────────────────────────────────────────────────────────
     if (i >= lista.length) {
       const listos = Object.keys(parcial.items).length;
+      const huecos = parcial.huecos || 0;
       if (!listos) throw new Error("Recorrido vacío; no se toca el inventario bueno.");
+
+      if (huecos / listos > HUECOS_TOLERADOS) {
+        // Demasiados blancos. Se deja el inventario de ayer y se avisa: mañana
+        // vuelve a intentar desde cero. Publicar esto sería peor que no publicar.
+        await guardarBlob(KEY_PARCIAL, { v: FORMATO, fecha: hoyLocal(), hecho: true, i: 0, total: 0, lista: [], items: {} });
+        return json({
+          ok: false, terminado: true, publicado: false,
+          error: `${huecos} de ${listos} artículos quedaron sin leer (${(100 * huecos / listos).toFixed(1)}%). Se conserva el inventario anterior.`,
+          frenadas, esperadoSeg: Math.round(esperado / 1000),
+        }, 200);
+      }
+
       await guardarBlob(KEY_FINAL, { fecha: parcial.fecha, items: parcial.items });
-      // El parcial se vacía marcándolo de otra fecha: la próxima corrida
-      // arranca de cero sin necesitar permiso de borrado.
-      await guardarBlob(KEY_PARCIAL, { fecha: "", i: 0, total: 0, lista: [], items: {} });
-      return json({ ok: true, terminado: true, fecha: parcial.fecha, skus: listos });
+      // Se marca el día como hecho. Sin esto, la siguiente corrida del cron no
+      // encontraría trabajo pendiente y volvería a empezar el recorrido entero.
+      await guardarBlob(KEY_PARCIAL, { v: FORMATO, fecha: hoyLocal(), hecho: true, i: 0, total: 0, lista: [], items: {} });
+      return json({
+        ok: true, terminado: true, publicado: true, fecha: parcial.fecha,
+        skus: listos, preguntados: parcial.preguntados || 0, quietos: parcial.quietos || 0, huecos,
+        frenadas, esperadoSeg: Math.round(esperado / 1000),
+      });
     }
 
     await guardarBlob(KEY_PARCIAL, parcial);
-    return json({ ok: true, terminado: false, avance: `${i} de ${lista.length}` });
+    return json({
+      ok: true, terminado: false, corte,
+      avance: `${i} de ${lista.length}`,
+      preguntados: parcial.preguntados || 0, porPreguntar: parcial.porPreguntar || 0, huecos: parcial.huecos || 0,
+      frenadas, esperadoSeg: Math.round(esperado / 1000),
+    });
   } catch (e) {
-    return json({ ok: false, error: String((e as Error)?.message || e) }, 500);
+    return json({ ok: false, error: String((e as Error)?.message || e), frenadas, esperadoSeg: Math.round(esperado / 1000) }, 500);
   }
 });

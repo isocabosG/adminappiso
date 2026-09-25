@@ -4,11 +4,27 @@
 // compra: qué material viene en camino, con qué fecha de llegada, y a quién se
 // le compra cada SKU. Corre de madrugada, por pg_cron.
 //
-// LO QUE REEMPLAZA
-// Hoy esto lo hace el navegador del primero que abra el MRP cada mañana: lee
-// 250 órdenes de compra, una llamada por cada una, y se queda esperando. Cada
-// persona paga esa espera y esa cuota de la API de Zoho. Aquí se paga una vez,
-// de noche, para todos.
+// POR QUÉ ESTA VERSIÓN PIDE MENOS
+// La primera versión leía las 250 OC más recientes completas, todos los días.
+// Zoho lo rechazó: "Rate limit exceeded, retry after 44s". Ese límite es por
+// organización y por minuto, y lo comparten esta app, IS-PMT y los crons. No se
+// gana empujando más fuerte; se gana pidiendo menos. Así que ahora:
+//
+//   · Las OC ABIERTAS se leen completas cada día. Son las únicas que pueden
+//     cambiar lo que viene en camino, y son pocas.
+//   · El historial de proveedores se construye UNA VEZ y se acumula. Cada
+//     corrida muerde un puñado de OC viejas que todavía no ha visto y las
+//     recuerda. En unos días tiene las 250 y después ya no cuesta casi nada.
+//   · La lista de proveedores de Zoho se refresca una vez por semana. No cambia
+//     a diario y cada refresco son varias llamadas.
+//
+// Y cuando Zoho dice "espérate", se espera: lee el tiempo que pide y lo respeta.
+//
+// POR QUÉ EL TRÁNSITO ES TODO O NADA
+// Si una OC abierta no se pudo leer, el tránsito queda incompleto — y un
+// tránsito incompleto es peor que uno viejo: le dice al MRP que viene menos
+// material del que viene, y compras pide de más. Así que si falla una sola
+// abierta, se conserva el tránsito del día anterior y se dice en la respuesta.
 //
 // POR QUÉ EL PROVEEDOR SE CUENTA Y NO SE TOMA EL ÚLTIMO
 // El campo de proveedor del artículo está vacío en Zoho, así que a quién se le
@@ -24,13 +40,19 @@ const CORS = {
 };
 
 const KEY = "iso3-mrp-oc-cache-v2";
-const MAX_OC = 250;
-const EN_PARALELO = 3;
+const MAX_OC = 250;          // ventana de historial: las 250 OC más recientes
+const BACKFILL = 40;         // OC viejas nuevas que se muerden por corrida
+const GAP_MS = 400;          // respiro entre llamadas
+const ESPERA_MAX_MS = 30000; // lo más que aceptamos esperar cuando Zoho frena
+const PROV_CADA_DIAS = 7;
+
+type Hist = Record<string, { desc: string; porProv: Record<string, { n: number; ult: string; pzas: number }> }>;
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
 
 const up = (s: unknown) => String(s ?? "").trim().toUpperCase();
+const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -39,21 +61,54 @@ Deno.serve(async (req) => {
   const SRV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!SB || !SRV) return json({ ok: false, error: "Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY." }, 500);
 
-  const zoho = async (action: string, params: Record<string, string>) => {
-    const r = await fetch(`${SB}/functions/v1/zoho-books`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ action, params }),
+  let frenadas = 0;   // cuántas veces Zoho nos pidió esperar
+  let esperado = 0;   // cuánto esperamos en total, en ms
+
+  // Una llamada a Zoho que entiende el "espérate". Si Zoho contesta que nos
+  // pasamos del límite, lee los milisegundos que pide y los respeta, hasta dos
+  // veces. Más allá de eso no vale la pena seguir peleando en esta corrida.
+  const zoho = async (action: string, params: Record<string, string>): Promise<any> => {
+    for (let intento = 0; intento < 3; intento++) {
+      const r = await fetch(`${SB}/functions/v1/zoho-books`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ action, params }),
+      });
+      const j = await r.json();
+      if (!j?.error) return j;
+
+      const msg = String(j.error);
+      const frena = /rate limit/i.test(msg);
+      if (!frena || intento === 2) throw new Error(`zoho-books ${action}: ${msg}`);
+
+      const pedido = Number(msg.match(/retry after (\d+)\s*ms/i)?.[1] || 0);
+      const espera = Math.min(pedido || 5000, ESPERA_MAX_MS);
+      frenadas++; esperado += espera;
+      await dormir(espera);
+    }
+    throw new Error(`zoho-books ${action}: sin respuesta`);
+  };
+
+  const leerBlob = async () => {
+    const r = await fetch(`${SB}/rest/v1/adm_kv?key=eq.${KEY}&select=value`, {
+      headers: { apikey: SRV, Authorization: `Bearer ${SRV}` },
     });
-    const j = await r.json();
-    if (j?.error) throw new Error(`zoho-books ${action}: ${j.error}`);
-    return j;
+    if (!r.ok) return null;
+    const rows = await r.json();
+    if (!rows?.[0]?.value) return null;
+    try { return JSON.parse(rows[0].value); } catch { return null; }
   };
 
   const hoyLocal = () => new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+  const diasEntre = (a: string, b: string) =>
+    Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
 
   try {
-    // ── 1. Encabezados de las OC ────────────────────────────────────────────
+    const previo = (await leerBlob()) || {};
+    const hist: Hist = previo.hist || {};
+    const vistas = new Set<string>(previo.vistas || []);
+
+    // ── 1. Encabezados de las OC (barato: 3 llamadas para 250) ──────────────
     const pos: Array<{ id: string; vendor: string; abierta: boolean; eta: string | null; numero: string; fecha: string }> = [];
     let page = 1, more = true;
     while (more && page <= 25 && pos.length < MAX_OC) {
@@ -79,57 +134,69 @@ Deno.serve(async (req) => {
     }
     if (!pos.length) throw new Error("Zoho no devolvió órdenes de compra; no se toca el caché.");
 
-    // ── 2. Las partidas de cada OC ──────────────────────────────────────────
     const lote = pos.slice(0, MAX_OC);
+    const abiertas = lote.filter((p) => p.abierta);
+    // Las viejas que todavía no hemos mirado nunca, de la más reciente hacia atrás.
+    const pendientes = lote.filter((p) => !p.abierta && !vistas.has(p.id)).slice(0, BACKFILL);
+
     const trans: Record<string, number> = {};
     const lotes: Record<string, Array<{ qty: number; eta: string | null; oc: string }>> = {};
-    const hist: Record<string, { desc: string; porProv: Record<string, { n: number; ult: string; pzas: number }> }> = {};
-    let fallidas = 0;
-
     const motivos: Record<string, number> = {};
 
-    for (let i = 0; i < lote.length; i += EN_PARALELO) {
-      const grupo = lote.slice(i, i + EN_PARALELO);
-      await Promise.all(grupo.map(async (po) => {
-        try {
-          let d: any;
-          try {
-            d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
-          } catch (e1) {
-            // Un rechazo suele ser el limite de llamadas por minuto de Zoho, no
-            // una OC rota. Se espera y se vuelve a intentar una vez.
-            await new Promise((r) => setTimeout(r, 2000));
-            d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
-          }
-          for (const li of (d.purchaseorder?.line_items || [])) {
-            const sku = up(li.sku);
-            if (!sku) continue;
-            if (po.vendor) {
-              const h = (hist[sku] = hist[sku] || { desc: li.name || li.description || "", porProv: {} });
-              if (!h.desc && (li.name || li.description)) h.desc = li.name || li.description;
-              const pv = (h.porProv[po.vendor] = h.porProv[po.vendor] || { n: 0, ult: "", pzas: 0 });
-              pv.n++; pv.pzas += (+li.quantity || 0);
-              if (po.fecha > pv.ult) pv.ult = po.fecha;
-            }
-            if (po.abierta) {
-              const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
-              if (q > 0) {
-                trans[sku] = (trans[sku] || 0) + q;
-                (lotes[sku] = lotes[sku] || []).push({ qty: q, eta: po.eta, oc: po.numero });
-              }
-            }
-          }
-        } catch (e) {
-          // Una OC mala no cuesta el recorrido entero, pero si deja dicho de que
-          // murio: un contador a secas no se puede diagnosticar.
-          fallidas++;
-          const m = String((e as Error)?.message || e).slice(0, 160);
-          motivos[m] = (motivos[m] || 0) + 1;
+    const anotar = (po: typeof lote[number], lineas: any[], paraTransito: boolean) => {
+      for (const li of lineas) {
+        const sku = up(li.sku);
+        if (!sku) continue;
+        if (po.vendor) {
+          const h = (hist[sku] = hist[sku] || { desc: li.name || li.description || "", porProv: {} });
+          if (!h.desc && (li.name || li.description)) h.desc = li.name || li.description;
+          const pv = (h.porProv[po.vendor] = h.porProv[po.vendor] || { n: 0, ult: "", pzas: 0 });
+          pv.n++; pv.pzas += (+li.quantity || 0);
+          if (po.fecha > pv.ult) pv.ult = po.fecha;
         }
-      }));
+        if (paraTransito) {
+          const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
+          if (q > 0) {
+            trans[sku] = (trans[sku] || 0) + q;
+            (lotes[sku] = lotes[sku] || []).push({ qty: q, eta: po.eta, oc: po.numero });
+          }
+        }
+      }
+    };
+
+    // ── 2. Las OC abiertas, completas. Son las que mueven el tránsito ───────
+    let transitoOK = true;
+    for (const po of abiertas) {
+      try {
+        const d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
+        anotar(po, d.purchaseorder?.line_items || [], true);
+        vistas.add(po.id);
+      } catch (e) {
+        transitoOK = false;
+        const m = String((e as Error)?.message || e).slice(0, 160);
+        motivos[m] = (motivos[m] || 0) + 1;
+      }
+      await dormir(GAP_MS);
     }
 
-    // ── 3. Proveedor por SKU: el más frecuente ──────────────────────────────
+    // ── 3. Historial: se muerde de a poco, sin prisa ────────────────────────
+    let backfilled = 0;
+    for (const po of pendientes) {
+      try {
+        const d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
+        anotar(po, d.purchaseorder?.line_items || [], false);
+        vistas.add(po.id);
+        backfilled++;
+      } catch (e) {
+        // Si aquí falla, no pasa nada: mañana vuelve a intentar esta misma OC.
+        const m = String((e as Error)?.message || e).slice(0, 160);
+        motivos[m] = (motivos[m] || 0) + 1;
+        break; // si Zoho ya está frenando, no insistir con el resto
+      }
+      await dormir(GAP_MS);
+    }
+
+    // ── 4. Proveedor por SKU: el más frecuente ──────────────────────────────
     const prov: Record<string, string> = {};
     for (const [sku, h] of Object.entries(hist)) {
       const mejor = Object.entries(h.porProv)
@@ -137,29 +204,48 @@ Deno.serve(async (req) => {
       if (mejor) prov[sku] = mejor[0];
     }
 
-    // ── 4. Proveedores como están escritos en Zoho ──────────────────────────
+    // ── 5. Proveedores de Zoho: una vez por semana ──────────────────────────
     // Para que la semilla proponga nombres que existen: Zoho liga el proveedor
     // del artículo por id, y un nombre aproximado no casa con nada.
-    const provZoho: Array<{ nombre: string; tipo: string; moneda: string }> = [];
+    let provZoho = previo.provZoho || [];
+    let provFecha = previo.provFecha || "";
     let provError: string | null = null;
-    try {
-      let pc = 1, moreC = true;
-      while (moreC && pc <= 10) {
-        const dc = await zoho("list_contacts", { contact_type: "vendor", filter_by: "Status.Active", per_page: "200", page: String(pc) });
-        for (const c of (dc.contacts || [])) {
-          if (String(c.contact_type || "") !== "vendor") continue;
-          provZoho.push({ nombre: c.contact_name || c.vendor_name || "", tipo: c.cf_tipo_cliente_proveedor || "", moneda: c.currency_code || "" });
+    const tocaProv = !provZoho.length || !provFecha || diasEntre(provFecha, hoyLocal()) >= PROV_CADA_DIAS;
+    if (tocaProv) {
+      try {
+        const acum: Array<{ nombre: string; tipo: string; moneda: string }> = [];
+        let pc = 1, moreC = true;
+        while (moreC && pc <= 10) {
+          const dc = await zoho("list_contacts", { contact_type: "vendor", filter_by: "Status.Active", per_page: "200", page: String(pc) });
+          for (const c of (dc.contacts || [])) {
+            if (String(c.contact_type || "") !== "vendor") continue;
+            acum.push({ nombre: c.contact_name || c.vendor_name || "", tipo: c.cf_tipo_cliente_proveedor || "", moneda: c.currency_code || "" });
+          }
+          moreC = !!dc.page_context?.has_more_page;
+          pc++;
+          await dormir(GAP_MS);
         }
-        moreC = !!dc.page_context?.has_more_page;
-        pc++;
+        if (acum.length) { provZoho = acum; provFecha = hoyLocal(); }
+      } catch (e) {
+        // Sin proveedores el resto sigue sirviendo, y se conserva la lista vieja.
+        provError = String((e as Error)?.message || e).slice(0, 200);
       }
-    } catch (e) { provError = String((e as Error)?.message || e).slice(0, 200); }
+    }
 
-    // Si TODAS las OC fallaron no hay nada que guardar: mejor dejar el caché de
-    // ayer, viejo pero íntegro, que uno nuevo y vacío.
-    if (fallidas === lote.length) throw new Error(`Las ${lote.length} órdenes de compra fallaron; no se toca el caché.`);
+    // ── 6. Guardar ──────────────────────────────────────────────────────────
+    // Sólo se escribe el tránsito de hoy si TODAS las abiertas se leyeron. Si no,
+    // se conserva el de ayer: viejo pero íntegro, en vez de nuevo y a medias.
+    const valor = {
+      fecha: hoyLocal(),
+      transito: transitoOK ? trans : (previo.transito || {}),
+      lotes: transitoOK ? lotes : (previo.lotes || {}),
+      transitoFecha: transitoOK ? hoyLocal() : (previo.transitoFecha || null),
+      proveedor: prov,
+      hist,
+      vistas: Array.from(vistas).filter((id) => lote.some((p) => p.id === id)),
+      provZoho, provFecha,
+    };
 
-    const valor = { fecha: hoyLocal(), transito: trans, proveedor: prov, lotes, hist, provZoho };
     const r = await fetch(`${SB}/rest/v1/adm_kv`, {
       method: "POST",
       headers: { apikey: SRV, Authorization: `Bearer ${SRV}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
@@ -168,13 +254,22 @@ Deno.serve(async (req) => {
     if (!r.ok) throw new Error("No se pudo guardar el caché: " + (await r.text()).slice(0, 200));
 
     return json({
-      ok: true, fecha: valor.fecha, ocLeidas: lote.length, ocFallidas: fallidas,
-      skuEnTransito: Object.keys(trans).length, skuConProveedor: Object.keys(prov).length,
+      ok: true,
+      fecha: valor.fecha,
+      ocEnVentana: lote.length,
+      abiertas: abiertas.length,
+      transitoOK,
+      transitoFecha: valor.transitoFecha,
+      historialNuevas: backfilled,
+      historialFaltan: lote.filter((p) => !p.abierta && !vistas.has(p.id)).length,
+      skuEnTransito: Object.keys(valor.transito).length,
+      skuConProveedor: Object.keys(prov).length,
       proveedoresZoho: provZoho.length,
       provError,
+      frenadas, esperadoSeg: Math.round(esperado / 1000),
       motivos: Object.entries(motivos).sort((a, b) => b[1] - a[1]).slice(0, 5),
     });
   } catch (e) {
-    return json({ ok: false, error: String((e as Error)?.message || e) }, 500);
+    return json({ ok: false, error: String((e as Error)?.message || e), frenadas, esperadoSeg: Math.round(esperado / 1000) }, 500);
   }
 });

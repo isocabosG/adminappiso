@@ -8,9 +8,11 @@
 -- HORARIOS (Los Cabos es UTC-7 todo el año, sin horario de verano)
 --   5:00 am  catalogo-zoho-5am   catálogo de artículos      (ya existía)
 --   5:10 am  oc-zoho             órdenes de compra
---   5:20 am  inventario-zoho     existencias físicas, en tramos hasta las 5:40
+--   5:40 am  inventario-zoho     existencias físicas, en tramos hasta las 5:58
 --
--- El de IS-PMT corre a las 5:30 por acuerdo con ese equipo: nosotros primero.
+-- El de IS-PMT corre a las 5:30 por acuerdo con ese equipo. El inventario va
+-- DESPUÉS de esa hora a propósito: el límite de llamadas de Zoho es por
+-- organización, así que si los dos barren al mismo tiempo se frenan entre sí.
 --
 -- ANTES DE CORRER: sustituye el marcador de la llave -- las dos veces que
 -- aparece mas abajo, dentro de los headers -- por la anon key del proyecto
@@ -52,7 +54,7 @@ select cron.unschedule('inventario-zoho') where exists (select 1 from cron.job w
 
 select cron.schedule(
   'inventario-zoho',
-  '20,24,28,32,36,40 12 * * *',   -- 5:20 a 5:40 am de Los Cabos
+  '40,43,46,49,52,55,58 12 * * *',   -- 5:40 a 5:58 am de Los Cabos
   $$
     select net.http_post(
       url     := 'https://gkoibrjhlqmuiuedrtaz.supabase.co/functions/v1/inventario-sync',
