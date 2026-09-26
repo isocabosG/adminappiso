@@ -5873,13 +5873,27 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       // Se guarda YA, con el a mano. La segunda pasada son ~2,200 llamadas y si
       // alguien cierra la pestaña antes de que termine, el blob nunca se escribía
       // y el MRP se quedaba sin stock. Mejor guardar dos veces que ninguna.
-      try { await window.storage?.set(INV_FISICO_KEY, JSON.stringify({ fecha: hoy(), items: base })); } catch {}
+      // NO se guarda todavia: en este punto `base` solo trae el "a mano" y los
+      // comprometidos vienen vacios. Guardarlo aqui pisaba el blob que dejo el
+      // cron de madrugada con 2,307 nulos — le borraba el trabajo a la sincronia
+      // a quien nada mas abriera la pestana.
       // 2) Los caros primero: mayor valor = mayor consecuencia si esta mal.
       const orden = Object.keys(base).sort((a, b) => (base[b].aMano * base[b].cost) - (base[a].aMano * base[a].cost));
       await completarComprometido(base, orden, (txt, parcial) => { setFisProg(txt); setFis(parcial); });
       const fecha = hoy();
       setFis({ ...base }); setFisFecha(fecha);
-      try { await window.storage?.set(INV_FISICO_KEY, JSON.stringify({ fecha, items: base })); } catch {}
+      // Misma regla que la sincronia de madrugada: un inventario con huecos es
+      // peor que uno viejo. Un comprometido en blanco se lee como "no hay nada
+      // apartado", y eso hace vender material que ya tiene duenno.
+      try {
+        const vals = Object.values(base);
+        const huecos = vals.filter((x) => x?.comprometido == null).length;
+        if (vals.length && huecos / vals.length > 0.02) {
+          setAviso({ t: "err", m: `Zoho no contestó por ${huecos} de ${vals.length} artículos. Se conserva el inventario anterior en vez de guardarlo con huecos.` });
+        } else {
+          await window.storage?.set(INV_FISICO_KEY, JSON.stringify({ fecha, items: base }));
+        }
+      } catch {}
       setAviso({ t: "ok", m: `Inventario fisico actualizado: ${Object.keys(base).length} SKU.` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudo leer el inventario de Zoho: " + (e.message || e) });
