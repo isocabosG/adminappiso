@@ -2349,6 +2349,14 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
         n++;
       }
       if (n) saveCatalogo(c);
+      // Zoho confirmo estos costos, asi que ya sabemos que hay alla. Sin esto,
+      // la comparacion sigue usando el catalogo que bajo el cron a las 5:00 y el
+      // boton seguiria pidiendo empujar algo que ya se empujo.
+      if (n) setZohoRates((z) => {
+        const rates = { ...(z?.rates || {}) };
+        for (const x of res) if (x.ok) rates[x.sku] = +x.costo;
+        return { fecha: z?.fecha || null, rates };
+      });
       const fallos = res.filter((x) => !x.ok);
       if (fallos.length) {
         setAviso({
