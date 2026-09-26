@@ -45,6 +45,15 @@ window.zohoEscribir = async (payload) => {
   return data
 }
 
+// Helper de la limpieza de ordenes de venta. Va a la Edge Function
+// 'so-limpieza'. Como en mrpEditar, el error NO se traga: una orden que no se
+// pudo cambiar tiene que verse en la bitacora de la pantalla.
+window.soLimpieza = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('so-limpieza', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  return data
+}
+
 // Helper del feed del MRP. Va a la Edge Function 'mrp-feed', que pega a IS-PMT
 // (/api/mrp) con el token guardado del lado servidor. Devuelve { ok, proyectos[] }.
 window.mrpFeed = async () => {

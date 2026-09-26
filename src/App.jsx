@@ -2163,7 +2163,7 @@ function App() {
             </div>
           </div>
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
-            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
+            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
@@ -2195,6 +2195,7 @@ function App() {
         {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vista === "mrp" && <MRP catalogo={catalogo} setAviso={setAviso} onVerOV={(ov) => { setIrOV(ov); setVista("proyectos"); }} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
+        {vista === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
         {vista === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
       </main>
     </div>
@@ -6297,6 +6298,272 @@ function Kpi({ t, v, alerta }) {
 }
 
 /* ===================== MÓDULO · ROADMAP ===================== */
+/* ---------- Limpieza masiva de órdenes de venta ----------
+   Quita un SKU de varias OV de Zoho, o lo sustituye. El orden de la pantalla ES
+   el orden del proceso: qué SKU → revisar → elegir → aplicar.
+
+   La revisión previa no es un favor que alguien hace antes de correr un script:
+   es parte del proceso. Por eso no hay forma de llegar a "aplicar" sin haber
+   visto la lista. */
+function LimpiezaSO({ setAviso }) {
+  const [sku, setSku] = useState("");
+  const [operacion, setOperacion] = useState("quitar");
+  const [sustituto, setSustituto] = useState("");
+
+  const [indice, setIndice] = useState(null);       // [{id, numero, cliente, ...}]
+  const [buscando, setBuscando] = useState(false);
+  const [progreso, setProgreso] = useState({ hechas: 0, total: 0, encontradas: 0 });
+  const [terminado, setTerminado] = useState(false);
+  const [hallazgos, setHallazgos] = useState([]);
+  const [fallas, setFallas] = useState([]);
+  const [marcados, setMarcados] = useState(() => new Set());
+  const [aplicando, setAplicando] = useState(false);
+  const [bitacora, setBitacora] = useState([]);
+  const corrida = useRef(0);                         // invalida búsquedas viejas
+
+  // Cambiar el SKU o la operación borra la vista previa: los montos de la
+  // pantalla se calcularon con los valores anteriores y dejarlos ahí invita a
+  // aplicar algo que ya no corresponde.
+  const limpiarVista = () => {
+    corrida.current++;
+    setHallazgos([]); setFallas([]); setTerminado(false); setBitacora([]);
+    setMarcados(new Set());
+    setProgreso({ hechas: 0, total: 0, encontradas: 0 });
+    setBuscando(false);
+  };
+
+  const llamar = async (payload) => {
+    if (typeof window.soLimpieza !== "function") throw new Error("Esta versión no tiene la limpieza. Recarga la página.");
+    return window.soLimpieza(payload);
+  };
+
+  const revisar = async () => {
+    const s = sku.trim().toUpperCase();
+    if (!s) return setAviso({ t: "err", m: "Escribe el SKU que hay que limpiar." });
+    if (operacion === "sustituir" && !sustituto.trim()) return setAviso({ t: "err", m: "Escribe el SKU que va a sustituirlo." });
+
+    limpiarVista();
+    const mia = corrida.current;
+    setBuscando(true);
+    try {
+      let lista = indice;
+      if (!lista) {
+        const d = await llamar({ accion: "indice" });
+        lista = d?.ordenes || [];
+        setIndice(lista);
+      }
+      if (corrida.current !== mia) return;
+      setProgreso({ hechas: 0, total: lista.length, encontradas: 0 });
+
+      const encontradas = [];
+      for (let i = 0; i < lista.length; i += 12) {
+        if (corrida.current !== mia) return;
+        const tramo = lista.slice(i, i + 12);
+        const d = await llamar({
+          accion: "revisar", sku: s, ids: tramo.map((o) => o.id),
+          ...(operacion === "sustituir" ? { sustituto: sustituto.trim().toUpperCase() } : {}),
+        });
+        if (corrida.current !== mia) return;
+        if (d?.error) throw new Error(d.error);
+        const nuevos = d?.hallazgos || [];
+        encontradas.push(...nuevos);
+        setHallazgos((h) => [...h, ...nuevos]);
+        if (d?.fallas?.length) setFallas((f) => [...f, ...d.fallas]);
+        // Vienen marcadas solas las que NO mueven el monto. Lo que mueve dinero
+        // se marca a mano, a propósito.
+        setMarcados((m) => {
+          const n = new Set(m);
+          for (const h of nuevos) if (h.sePuede && (operacion === "sustituir" || h.deltaQuitar === 0)) n.add(h.linea.lineId);
+          return n;
+        });
+        setProgreso({ hechas: Math.min(i + 12, lista.length), total: lista.length, encontradas: encontradas.length });
+      }
+      if (corrida.current === mia) setTerminado(true);
+    } catch (e) {
+      setAviso({ t: "err", m: "No se pudo revisar: " + (e?.message || e) });
+    } finally {
+      if (corrida.current === mia) setBuscando(false);
+    }
+  };
+
+  const elegidos = hallazgos.filter((h) => marcados.has(h.linea.lineId) && h.sePuede);
+  const dineroEnJuego = elegidos.reduce((a, h) => a + (operacion === "quitar" ? h.deltaQuitar : 0), 0);
+
+  const aplicar = async () => {
+    if (!elegidos.length) return;
+    const msg = operacion === "quitar"
+      ? `Se va a quitar ${sku.trim().toUpperCase()} de ${elegidos.length} orden(es)` + (dineroEnJuego !== 0 ? `, moviendo $${mx(Math.abs(dineroEnJuego))} del total.` : ", sin mover ningún monto.")
+      : `Se va a sustituir ${sku.trim().toUpperCase()} por ${sustituto.trim().toUpperCase()} en ${elegidos.length} orden(es), conservando cantidad y precio.`;
+    if (!window.confirm(msg + "\n\n¿Continuar?")) return;
+
+    setAplicando(true);
+    setBitacora([]);
+    try {
+      for (const h of elegidos) {
+        try {
+          const d = await llamar({
+            accion: "aplicar", soId: h.soId, numero: h.numero, sku: sku.trim().toUpperCase(),
+            lineId: h.linea.lineId, operacion,
+            ...(operacion === "sustituir" ? { sustituto: sustituto.trim().toUpperCase() } : {}),
+            aceptoPrecio: operacion === "quitar" && h.deltaQuitar !== 0,
+          });
+          setBitacora((b) => [...b, {
+            numero: h.numero, ok: !!d?.ok,
+            texto: d?.ok ? `${d.partidas_antes} → ${d.partidas_despues} partidas` : (d?.error || "no se pudo"),
+          }]);
+        } catch (e) {
+          setBitacora((b) => [...b, { numero: h.numero, ok: false, texto: String(e?.message || e) }]);
+        }
+        // Un respiro entre órdenes: las ráfagas son lo que hace que Zoho corte.
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      // Lo que quedó en Zoho cambió: la vista previa ya no vale.
+      setIndice(null);
+      setAviso({ t: "ok", m: "Corrida terminada. Revisa la bitácora de abajo." });
+    } finally { setAplicando(false); }
+  };
+
+  const nOk = bitacora.filter((b) => b.ok).length;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold">Limpieza de órdenes de venta</h2>
+        <p className="text-xs text-stone-500">Quita un SKU de varias órdenes de Zoho, o lo sustituye por otro. Siempre muestra antes de escribir.</p>
+      </div>
+
+      <div className="text-xs text-stone-600 bg-amber-50/70 border border-amber-200 rounded-lg p-3 space-y-1">
+        <p className="font-semibold text-amber-900">Esto escribe en la contabilidad</p>
+        <p>Las órdenes se leen de <strong>Zoho</strong>, no de los proyectos de la app: una obra cerrada aquí puede tener su orden abierta allá, y hay órdenes que la app no tiene amarradas a ningún proyecto.</p>
+        <p>Un renglón que ya se facturó, empacó o surtió <strong>no se puede tocar desde aquí</strong> — eso se cancela en Zoho, a mano.</p>
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-lg p-4 space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Operación</p>
+            <div className="flex gap-1">
+              {[["quitar", "Quitar"], ["sustituir", "Sustituir por otro"]].map(([k, t]) => (
+                <button key={k} onClick={() => { setOperacion(k); limpiarVista(); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded border ${operacion === k ? "bg-teal-700 text-white border-teal-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>{t}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">SKU a limpiar</p>
+            <input value={sku} onChange={(e) => { setSku(e.target.value.toUpperCase()); limpiarVista(); }}
+              placeholder="NDR12024" className="px-2 py-1.5 border border-stone-300 rounded text-xs font-mono w-40" />
+          </div>
+          {operacion === "sustituir" && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">SKU nuevo</p>
+              <input value={sustituto} onChange={(e) => { setSustituto(e.target.value.toUpperCase()); limpiarVista(); }}
+                placeholder="EDR15024" className="px-2 py-1.5 border border-stone-300 rounded text-xs font-mono w-40" />
+            </div>
+          )}
+          <button onClick={revisar} disabled={buscando || aplicando}
+            className="px-4 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800 disabled:opacity-40">
+            {buscando ? "Revisando…" : "Revisar órdenes"}
+          </button>
+        </div>
+
+        {(buscando || progreso.total > 0) && (
+          <p className="text-xs text-stone-600">
+            Revisadas <b>{progreso.hechas}</b> de <b>{progreso.total}</b> · <b>{progreso.encontradas}</b> encontrada{progreso.encontradas === 1 ? "" : "s"}
+            {buscando ? ", sigue buscando…" : ""}
+          </p>
+        )}
+
+        {/* La tarjeta de "no aparece" SOLO sale cuando la búsqueda terminó. Con
+            12 de 91 revisadas ya decía que el SKU no estaba, y se leía igualito
+            que una respuesta. No estaba: estaba en 11 órdenes. */}
+        {terminado && !hallazgos.length && (
+          <p className="text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded p-3">
+            <b>{sku}</b> no aparece en ninguna de las {progreso.total} órdenes abiertas. No hay nada que limpiar.
+          </p>
+        )}
+
+        {fallas.length > 0 && (
+          <p className="text-[11px] text-amber-700">{fallas.length} orden(es) no se pudieron leer y quedaron fuera de la revisión.</p>
+        )}
+      </div>
+
+      {hallazgos.length > 0 && (
+        <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-stone-50 text-[10px] uppercase tracking-widest text-stone-400">
+              <tr>
+                <th className="px-2 py-2 w-8"></th>
+                <th className="text-left px-2 py-2">OV · cliente</th>
+                <th className="text-left px-2 py-2">Renglón</th>
+                <th className="text-right px-2 py-2">Cant.</th>
+                <th className="text-right px-2 py-2">Precio</th>
+                <th className="text-right px-2 py-2">Δ monto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {/* Lo bloqueado se muestra EN GRIS con su motivo, no se esconde:
+                  esconderlo hace que el total de la pantalla no cuadre con lo
+                  que la gente ve en Zoho. */}
+              {hallazgos.map((h) => {
+                const delta = operacion === "quitar" ? h.deltaQuitar : 0;
+                const marcado = marcados.has(h.linea.lineId);
+                return (
+                  <tr key={h.linea.lineId} className={`border-t border-stone-100 ${h.sePuede ? "" : "bg-stone-50 text-stone-400"}`}>
+                    <td className="px-2 py-1.5 align-top">
+                      <input type="checkbox" disabled={!h.sePuede || aplicando} checked={marcado}
+                        onChange={(e) => setMarcados((m) => { const n = new Set(m); e.target.checked ? n.add(h.linea.lineId) : n.delete(h.linea.lineId); return n; })} />
+                    </td>
+                    <td className="px-2 py-1.5 align-top">
+                      <span className="font-mono font-semibold">{h.numero}</span>
+                      <span className="block text-[11px] text-stone-500">{h.cliente}</span>
+                      <span className="block text-[10px] text-stone-400">{h.partidas} partidas · {h.estado}</span>
+                      {h.frenos.map((f, i) => <span key={i} className="block text-[10px] text-red-600 mt-0.5">🚫 {f}</span>)}
+                      {h.avisos.map((a, i) => <span key={i} className="block text-[10px] text-amber-700 mt-0.5">⚠ {a}</span>)}
+                    </td>
+                    <td className="px-2 py-1.5 align-top">{h.linea.descripcion}</td>
+                    <td className="px-2 py-1.5 text-right font-mono align-top">{h.linea.cantidad}</td>
+                    <td className="px-2 py-1.5 text-right font-mono align-top">${mx(h.linea.precio)}</td>
+                    <td className={`px-2 py-1.5 text-right font-mono align-top ${delta !== 0 ? "text-red-600 font-semibold" : "text-stone-400"}`}>
+                      {delta !== 0 ? `$${mx(delta)}` : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div className="px-3 py-2.5 bg-stone-50 border-t border-stone-200 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-stone-600">
+              <b>{elegidos.length}</b> marcada{elegidos.length === 1 ? "" : "s"} de {hallazgos.length}
+              {dineroEnJuego !== 0 && <span className="text-red-600 font-semibold"> · mueve ${mx(Math.abs(dineroEnJuego))} del total</span>}
+            </p>
+            <button onClick={aplicar} disabled={!elegidos.length || aplicando || buscando}
+              className="px-4 py-2 bg-red-700 text-white text-xs font-medium rounded hover:bg-red-800 disabled:opacity-40">
+              {aplicando ? "Aplicando…" : `Aplicar a ${elegidos.length} orden${elegidos.length === 1 ? "" : "es"}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {bitacora.length > 0 && (
+        <div className="bg-white border border-stone-200 rounded-lg p-3">
+          <p className="text-xs font-semibold mb-2">Bitácora · {nOk} de {bitacora.length} aplicadas</p>
+          <ul className="space-y-0.5">
+            {bitacora.map((b, i) => (
+              <li key={i} className="text-[11px] font-mono">
+                <span className={b.ok ? "text-teal-700" : "text-red-600"}>{b.ok ? "✓" : "✗"}</span>{" "}
+                <span className="font-semibold">{b.numero}</span> · <span className={b.ok ? "text-stone-600" : "text-red-600"}>{b.texto}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[10px] text-stone-400">Queda registro permanente en la base, con tu correo y la fecha.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Mas(props) {
   return (
     <div className="space-y-5">
