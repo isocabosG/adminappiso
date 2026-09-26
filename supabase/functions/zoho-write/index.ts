@@ -1,7 +1,8 @@
 // Edge Function: zoho-write
 //
 // La UNICA via por la que esta app puede cambiar algo en Zoho, y solo puede
-// cambiar UNA cosa: el costo de compra (`purchase_rate`) de un articulo.
+// cambiar DOS campos de un articulo: `purchase_rate` (costo de compra) y `rate`
+// (precio de lista), ambos con el costo promedio ponderado.
 //
 // POR QUE EXISTE
 // El costo promedio ponderado se calcula aqui al cerrar una importacion. Hasta
@@ -22,8 +23,7 @@
 // problema que esta funcion viene a resolver.
 //
 // LO QUE ESTO **NO** HACE
-// `purchase_rate` es el precio de compra por omision del articulo, que es el
-// campo que la app ya lee. NO es la valuacion contable del inventario: esa la
+// Ninguno de los dos campos es la valuacion contable del inventario: esa la
 // calcula Zoho con las facturas de compra reales y moverla seria un ajuste de
 // inventario, con asiento contable. Eso es otra decision y no se toma aqui.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -53,7 +53,7 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     if (body.action !== "update_item_cost") {
-      return json({ ok: false, error: "Accion no soportada. Esta funcion solo actualiza el costo de compra de articulos." }, 400);
+      return json({ ok: false, error: "Accion no soportada. Esta funcion solo actualiza el costo y el precio de lista de articulos." }, 400);
     }
 
     // Quien pide el cambio, sacado del JWT del lado servidor. No se acepta del
@@ -84,7 +84,13 @@ Deno.serve(async (req) => {
       if (!isFinite(costo) || costo <= 0) { resultados.push({ sku, ok: false, error: `Costo invalido (${it?.costo}).` }); continue; }
 
       try {
-        await z.put(`/items/${encodeURIComponent(itemId)}`, { purchase_rate: costo });
+        // Los DOS campos con el mismo valor, por decision de Fran (26-sep):
+        // `purchase_rate` es el costo de compra y `rate` el precio de lista del
+        // articulo. En estas ordenes de venta el precio va todo en el renglon de
+        // "suministro e instalacion" y los demas renglones van en $0, asi que el
+        // `rate` del articulo no es lo que paga el cliente: sirve para que el
+        // catalogo refleje el costo en los dos lados.
+        await z.put(`/items/${encodeURIComponent(itemId)}`, { purchase_rate: costo, rate: costo });
         resultados.push({ sku, ok: true, costo });
       } catch (e) {
         resultados.push({ sku, ok: false, error: String((e as Error)?.message || e).slice(0, 220) });
