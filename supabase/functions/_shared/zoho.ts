@@ -89,6 +89,43 @@ export class Zoho {
     return v.token;
   }
 
+  // PUT a Zoho. Mismo manejo del freno que el GET.
+  async put(path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
+    for (let intento = 0; intento < 3; intento++) {
+      const token = await this.token();
+      const qs = new URLSearchParams({ organization_id: this.org, ...params });
+      const r = await fetch(`${API}${path}?${qs}`, {
+        method: "PUT",
+        headers: { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(cuerpo),
+      });
+      this.llamadas++;
+      if (r.status === 401 && intento < 2) { this.tok = null; continue; }
+
+      const txt = await r.text();
+      let j: any = null;
+      try { j = JSON.parse(txt); } catch { /* respuesta no-JSON */ }
+
+      const frena = r.status === 429 || /rate limit|too many/i.test(txt);
+      if (frena && intento < 2) {
+        const cab = Number(r.headers.get("retry-after") || 0) * 1000;
+        const enTexto = Number(txt.match(/retry after (\d+)\s*ms/i)?.[1] || 0);
+        const espera = Math.min(cab || enTexto || 5000, this.esperaMaxMs);
+        this.frenadas++; this.esperadoMs += espera;
+        await new Promise((res) => setTimeout(res, espera));
+        continue;
+      }
+      // Zoho contesta 200 con code != 0 cuando rechaza; sin esto una escritura
+      // fallida se leeria como exitosa, que es justo el error que estamos
+      // corrigiendo.
+      if (!r.ok || !j || (j.code !== undefined && j.code !== 0)) {
+        throw new Error(`Zoho ${path} (${r.status}): ${String(j?.message || txt).slice(0, 200)}`);
+      }
+      return j;
+    }
+    throw new Error(`Zoho ${path}: sin respuesta tras 3 intentos`);
+  }
+
   // GET a Zoho. Si Zoho frena, lee cuánto pide esperar y lo respeta.
   async get(path: string, params: Record<string, string> = {}): Promise<any> {
     for (let intento = 0; intento < 3; intento++) {

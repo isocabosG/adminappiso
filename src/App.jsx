@@ -204,7 +204,7 @@ function matchRenonSku(modelo, desc) {
 const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes uno o dos PDFs: (1) un PEDIMENTO de importación y, si viene, (2) una COTIZACIÓN de la Agencia Aduanal Perezgrovas. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
 
 Esquema exacto:
-{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"igiMXN":0}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
+{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"igiMXN":0}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
 
 Reglas:
 - numero, fecha, aduana: del PEDIMENTO. tc = TIPO DE CAMBIO oficial del PEDIMENTO (NO el de la cotización, que suele ser distinto).
@@ -214,7 +214,7 @@ Reglas:
 - partidas: una por cada renglón. Para CADA partida:
    · cantidad = CANTIDAD UMC = número de PIEZAS (la PRIMERA cantidad de la línea 1). NUNCA uses la CANTIDAD UMT: ESA ES EL PESO EN KILOS, no piezas ni precio.
    · fobUnitUSD = PRECIO UNITARIO en pesos (línea 2) ÷ tc. Equivale a (IMP. PRECIO PAGADO ÷ tc ÷ piezas). NO es la cantidad UMT.
-   · pesoUnitKg = CANTIDAD UMT (los kilos de la línea 1) ÷ cantidad (piezas).
+   · pesoPartidaKg = CANTIDAD UMT tal cual viene impresa (los kilos TOTALES de esa partida). NO la dividas entre nada: cópiala como está. La app saca el peso por pieza sola.
    · igiMXN = importe de IGI de esa partida en pesos (0 si la tasa IGI es 0%).
    · desc = descripción CORTA (máximo 40 caracteres, sin repetir texto).
 - fleteInternacionalMXN = renglón FLETES del pedimento — SIEMPRE EN PESOS, nunca en dólares. iccMXN = OTROS INCREMENTABLES del pedimento (pesos). dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento (pesos).
@@ -2207,6 +2207,7 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const [verTodos, setVerTodos] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
+  const [enviando, setEnviando] = useState(false);
   const [faltantes, setFaltantes] = useState(0);
 
   // Cuantos SKU de Zoho todavia no existen aqui. El catalogo de la app se sembro
@@ -2284,24 +2285,54 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
     return sku.toLowerCase().includes(q) || (a.descripcion || "").toLowerCase().includes(q);
   });
 
-  const enviarUno = (sku) => {
-    const a = catalogo[sku];
-    if (a.promedioPendiente == null) return;
-    const c = { ...catalogo, [sku]: { ...a, costoVigente: a.promedioPendiente, promedioPendiente: null, ultimoEnvio: { fecha: hoy(), costo: a.promedioPendiente } } };
-    saveCatalogo(c);
-    setAviso({ t: "ok", m: `${sku}: nuevo promedio $${mx(a.promedioPendiente)} enviado a Zoho.` });
+  // Empuja a Zoho y SOLO marca como enviado lo que Zoho confirmo. Antes esto
+  // movia el numero en la app y anunciaba "enviado a Zoho" sin mandar nada: la
+  // app y la contabilidad se separaban en silencio, que es peor que no tener el
+  // boton. Lo que falle se queda pendiente, a la vista, para reintentarlo.
+  const empujar = async (lista) => {
+    if (!lista.length) return;
+    if (typeof window.zohoEscribir !== "function") {
+      setAviso({ t: "err", m: "Esta version no puede escribir en Zoho. Recarga la pagina." });
+      return;
+    }
+    setEnviando(true);
+    try {
+      const items = lista.map(([sku, a]) => ({ sku, itemId: a.itemId, costo: +a.promedioPendiente }));
+      const r = await window.zohoEscribir({ action: "update_item_cost", items });
+      const res = r?.resultados || [];
+      const c = { ...catalogo };
+      let n = 0;
+      for (const x of res) {
+        if (!x.ok) continue;
+        const a = c[x.sku];
+        if (!a) continue;
+        c[x.sku] = { ...a, costoVigente: +x.costo, promedioPendiente: null, ultimoEnvio: { fecha: hoy(), costo: +x.costo } };
+        n++;
+      }
+      if (n) saveCatalogo(c);
+      const fallos = res.filter((x) => !x.ok);
+      if (fallos.length) {
+        setAviso({
+          t: n ? "err" : "err",
+          m: `${n} actualizado${n === 1 ? "" : "s"} en Zoho. ${fallos.length} no se pudo: ` +
+             fallos.slice(0, 3).map((f) => `${f.sku} (${f.error})`).join(" · ") + (fallos.length > 3 ? " …" : ""),
+        });
+      } else {
+        setAviso({ t: "ok", m: `${n} articulo${n === 1 ? "" : "s"} actualizado${n === 1 ? "" : "s"} en Zoho.` });
+      }
+    } catch (e) {
+      // Nada se marca como enviado: si no sabemos que llego, no llego.
+      setAviso({ t: "err", m: "No se pudo escribir en Zoho: " + (e?.message || e) });
+    } finally { setEnviando(false); }
   };
 
-  const enviarTodos = () => {
-    const c = { ...catalogo };
-    let n = 0;
-    conPendiente.forEach(([sku, a]) => {
-      c[sku] = { ...a, costoVigente: a.promedioPendiente, promedioPendiente: null, ultimoEnvio: { fecha: hoy(), costo: a.promedioPendiente } };
-      n++;
-    });
-    saveCatalogo(c);
-    setAviso({ t: "ok", m: `${n} artículos actualizados en Zoho con su nuevo promedio.` });
+  const enviarUno = (sku) => {
+    const a = catalogo[sku];
+    if (a?.promedioPendiente == null) return;
+    empujar([[sku, a]]);
   };
+
+  const enviarTodos = () => empujar(conPendiente);
 
   return (
     <div className="space-y-4">
@@ -2316,8 +2347,9 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
             {sincronizando ? "Sincronizando…" : faltantes ? `Traer ${faltantes} artículo${faltantes === 1 ? "" : "s"} nuevo${faltantes === 1 ? "" : "s"} de Zoho` : "Sincronizar con Zoho"}
           </button>
           {conPendiente.length > 0 && (
-            <button onClick={enviarTodos} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">
-              Actualizar {conPendiente.length} promedio{conPendiente.length > 1 ? "s" : ""} en Zoho
+            <button onClick={enviarTodos} disabled={enviando}
+              className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">
+              {enviando ? "Escribiendo en Zoho…" : `Actualizar ${conPendiente.length} promedio${conPendiente.length > 1 ? "s" : ""} en Zoho`}
             </button>
           )}
         </div>
@@ -3731,7 +3763,11 @@ function EstadoBadge({ estado }) {
 /* ---------- Motor de prorrateo ---------- */
 function prorratear(partidas, incrementables, tc) {
   const ls = partidas.filter((p) => p.sku.trim() && +p.cantidad > 0).map((p) => {
-    const cant = +p.cantidad || 0, fobU = +p.fobUnit || 0, peso = (+p.pesoKg || 0) * cant;
+    const cant = +p.cantidad || 0, fobU = +p.fobUnit || 0;
+    // `pesoPartida` son los kilos totales de la partida, como los imprime el
+    // pedimento. `pesoKg` (unitario) es la forma vieja: se respeta para no
+    // descuadrar las importaciones ya capturadas.
+    const peso = (+p.pesoPartida || 0) || ((+p.pesoKg || 0) * cant);
     return { ...p, cant, fobMXN: cant * fobU * tc, pesoTotal: peso };
   });
   const totV = ls.reduce((a, b) => a + b.fobMXN, 0), totP = ls.reduce((a, b) => a + b.pesoTotal, 0), totC = ls.reduce((a, b) => a + b.cant, 0);
@@ -3864,7 +3900,7 @@ const BORRADOR_IMP = "iso3-importacion-borrador";
 function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
   const editando = !!pedInicial;
   const [ped, setPed] = useState(pedInicial ? { numero: pedInicial.numero || "", fecha: pedInicial.fecha || hoy(), tc: String(pedInicial.tc || ""), proveedorExt: pedInicial.proveedorExt || "", ocZoho: pedInicial.ocZoho || "" } : { numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
-  const [partidas, setPartidas] = useState(pedInicial?.partidas?.length ? pedInicial.partidas.map((p) => ({ id: uid(), oc: p.oc || "", factura: p.factura || "", sku: p.sku || "", desc: p.desc || "", categoria: p.categoria || "Batería", cantidad: p.cantidad || "", fobUnit: p.fobUnit || "", pesoKg: p.pesoKg || "" })) : [{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }]);
+  const [partidas, setPartidas] = useState(pedInicial?.partidas?.length ? pedInicial.partidas.map((p) => ({ id: uid(), oc: p.oc || "", factura: p.factura || "", sku: p.sku || "", desc: p.desc || "", categoria: p.categoria || "Batería", cantidad: p.cantidad || "", fobUnit: p.fobUnit || "", pesoKg: p.pesoKg || "", pesoPartida: p.pesoPartida || "" })) : [{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoPartida: "" }]);
   const [incs, setIncs] = useState(() => pedInicial?.incrementables?.length ? pedInicial.incrementables.map((i) => ({ ...i, id: uid(), manual: i.manual || {} })) : [
     ...fletes.filter((f) => f.incrementable).map((f) => ({ id: uid(), concepto: f.tramo, proveedor: f.proveedor, monto: f.tarifa, moneda: f.moneda, metodo: "valor", capitaliza: true, estadoDoc: f.tarifa ? "estimado" : "estimado", manual: {} })),
     ...CONCEPTOS_FIJOS.map((c) => ({ id: uid(), ...c, monto: "", estadoDoc: "estimado", manual: {} })),
@@ -4013,7 +4049,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
       const allLineas = [];
       let guiaDetectada = "";
       for (let k = 0; k < pdfFacturas.length; k++) {
-        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","guia":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoUnitKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- guia = el número de contenedor / marca de embarque (columna "Marks&Ctn.No." o similar, ej. EMCUUH3864), si aparece; si no, "".\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = OBLIGATORIO: el código de la columna "Mark & No" del renglón, que empieza con R- (ej. R-EM096050-XTH01, R-MC050-XTH01, R-XC016161-H-US, R-EC060LCB02-US). NO uses la descripción genérica ("energy storage system", "lithium ion batteries") como modelo — usa SIEMPRE ese código R-.\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoUnitKg = N.W.(KG) de ese renglón ÷ cantidad (0 si no aparece).\n- sku = empata por el código de modelo Y por costo (fobUnitUSD×17.37 debe parecerse al costo del SKU): XTH=batería Extreme HV / XTL=batería Extreme LV / MC…-XTH=control HV / MC…-XTL=control LV / XC016=Xcellent / EC060=ECube 60. Si el costo de un candidato es MUY distinto al fobUnitUSD×17.37, NO lo elijas. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos ordenados por cercanía de costo. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
+        const prompt = `Lee esta FACTURA (commercial invoice / packing list) del proveedor Renon. Devuelve SOLO JSON compacto, sin markdown:\n{"factura":"","guia":"","lineas":[{"modelo":"","desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"sku":"","confianza":0,"alternativas":["",""]}]}\n- factura = el número de factura / "Contract No" de la factura (ej. RN-26012201JFA).\n- guia = el número de contenedor / marca de embarque (columna "Marks&Ctn.No." o similar, ej. EMCUUH3864), si aparece; si no, "".\n- Una línea por CADA renglón de mercancía de la factura (columna Description / Quantity / Unit price). Incluye TODOS los renglones (ej. batería y módulo de control por separado).\n- modelo = OBLIGATORIO: el código de la columna "Mark & No" del renglón, que empieza con R- (ej. R-EM096050-XTH01, R-MC050-XTH01, R-XC016161-H-US, R-EC060LCB02-US). NO uses la descripción genérica ("energy storage system", "lithium ion batteries") como modelo — usa SIEMPRE ese código R-.\n- cantidad = las PCS de ese renglón. fobUnitUSD = Unit price en USD. pesoPartidaKg = N.W.(KG) TOTAL de ese renglón, tal cual viene impreso, sin dividir (0 si no aparece).\n- sku = empata por el código de modelo Y por costo (fobUnitUSD×17.37 debe parecerse al costo del SKU): XTH=batería Extreme HV / XTL=batería Extreme LV / MC…-XTH=control HV / MC…-XTL=control LV / XC016=Xcellent / EC060=ECube 60. Si el costo de un candidato es MUY distinto al fobUnitUSD×17.37, NO lo elijas. Si ninguno encaja, sku="" y confianza=0.\n- confianza = 0 a 1. alternativas = hasta 3 SKU candidatos ordenados por cercanía de costo. Usa solo SKU que existan en el catálogo. Solo el JSON.\n\nCATÁLOGO:\n${JSON.stringify(cands)}`;
         const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfFacturas[k] } }, { type: "text", text: prompt }];
         const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
         if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
@@ -4031,7 +4067,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
         const forzado = matchRenonSku(l.modelo, l.desc);
         const skuOk = forzado && catalogo[forzado] ? forzado : (l.sku && catalogo[l.sku] ? l.sku : "");
         const conf = forzado ? 0.96 : (l.confianza ?? 0);
-        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoKg: l.pesoUnitKg || "", _conf: conf, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
+        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoPartida: l.pesoPartidaKg || "", _conf: conf, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
       });
       setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
       const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, cantidad: p.cantidad, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
@@ -4118,7 +4154,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
       setPed((old) => ({ ...old, numero: p.numero || old.numero, fecha: p.fecha || old.fecha, tc: p.tc || old.tc, aduana: p.aduana || "", proveedorExt: p.proveedorExt || old.proveedorExt }));
 
       if (Array.isArray(p.partidas) && p.partidas.length) {
-        setPartidas(p.partidas.map((x) => ({ id: uid(), sku: "", desc: x.desc || "", categoria: adivinaCategoria(x.desc), cantidad: x.cantidad || "", fobUnit: x.fobUnitUSD || "", pesoKg: x.pesoUnitKg || "", _igi: x.igiMXN || 0 })));
+        setPartidas(p.partidas.map((x) => ({ id: uid(), sku: "", desc: x.desc || "", categoria: adivinaCategoria(x.desc), cantidad: x.cantidad || "", fobUnit: x.fobUnitUSD || "", pesoPartida: x.pesoPartidaKg || "", _igi: x.igiMXN || 0 })));
       }
 
       // Volcar incrementables leídos a sus renglones (el flete internacional y el ICC del pedimento SIEMPRE son pesos)
@@ -4267,7 +4303,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
           <table className="w-full min-w-[860px]">
             <thead className="bg-stone-50 border-y border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
               <th className="text-left px-2 py-2">SKU</th><th className="text-left px-2 py-2">Desc. en pedimento</th><th className="text-left px-2 py-2">Desc. en Books</th><th className="text-left px-2 py-2">Tipo</th>
-              <th className="text-right px-2 py-2">Cant.</th><th className="text-right px-2 py-2">FOB u. USD</th><th className="text-right px-2 py-2">Peso u. kg</th><th></th>
+              <th className="text-right px-2 py-2">Cant.</th><th className="text-right px-2 py-2">FOB u. USD</th><th className="text-right px-2 py-2">Peso kg<span className="block text-[9px] font-normal text-stone-400 normal-case">de la partida</span></th><th></th>
             </tr></thead>
             <tbody>
               {partidas.map((p) => (
@@ -4280,7 +4316,15 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
                   <td className="px-2 py-1.5 w-28"><select className={inp} value={p.categoria} onChange={(e) => upd(setPartidas)(p.id, "categoria", e.target.value)}>{CATS.map((c) => <option key={c}>{c}</option>)}</select></td>
                   <td className="px-2 py-1.5 w-20"><input type="number" className={inp + " font-mono text-right"} value={p.cantidad} onChange={(e) => upd(setPartidas)(p.id, "cantidad", e.target.value)} /></td>
                   <td className="px-2 py-1.5 w-28"><input type="number" step="0.01" className={inp + " font-mono text-right"} value={p.fobUnit} onChange={(e) => upd(setPartidas)(p.id, "fobUnit", e.target.value)} /></td>
-                  <td className="px-2 py-1.5 w-24"><input type="number" step="0.01" className={inp + " font-mono text-right"} value={p.pesoKg} onChange={(e) => upd(setPartidas)(p.id, "pesoKg", e.target.value)} /></td>
+                  <td className="px-2 py-1.5 w-28">
+                    <input type="number" step="0.01" className={inp + " font-mono text-right"}
+                      value={p.pesoPartida ?? ""} onChange={(e) => upd(setPartidas)(p.id, "pesoPartida", e.target.value)} />
+                    {/* El unitario se muestra derivado: es lo que se compara contra
+                        la ficha del equipo, pero lo que se teclea es lo del papel. */}
+                    {+p.pesoPartida > 0 && +p.cantidad > 0 && (
+                      <p className="text-[9px] text-stone-400 text-right mt-0.5 font-mono">{(+p.pesoPartida / +p.cantidad).toFixed(2)} kg c/u</p>
+                    )}
+                  </td>
                   <td className="px-2 w-8"><button onClick={() => setPartidas((s) => (s.length > 1 ? s.filter((x) => x.id !== p.id) : s))} className="text-stone-400 hover:text-red-600 text-lg">×</button></td>
                 </tr>
               ))}
@@ -4299,7 +4343,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
               className="px-4 py-2.5 border border-stone-300 text-stone-700 text-sm font-medium rounded-lg hover:bg-white disabled:opacity-40">
               {empatando ? "Procesando…" : "🎯 Auto-asignar SKUs"}
             </button>
-            <button onClick={() => setPartidas((s) => [...s, { id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoKg: "" }])} className="text-xs font-medium text-stone-500 hover:text-stone-800">+ Agregar partida manual</button>
+            <button onClick={() => setPartidas((s) => [...s, { id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoPartida: "" }])} className="text-xs font-medium text-stone-500 hover:text-stone-800">+ Agregar partida manual</button>
           </div>
           <p className="text-[11px] text-stone-500">Con facturas cargadas, usa <b>Desglosar por factura</b> (es el flujo normal: separa baterías y controles de cada sistema). <b>Auto‑asignar</b> es solo para captura sin factura.</p>
           {empateMsg && <p className="text-[11px] text-teal-700 font-medium">{empateMsg}</p>}

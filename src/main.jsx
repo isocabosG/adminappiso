@@ -35,6 +35,16 @@ window.zohoBooks = async (payload) => {
   return data
 }
 
+// Helper de ESCRITURA a Zoho. Va a la Edge Function 'zoho-write', que solo
+// sabe cambiar el costo de compra de un articulo. Como en mrpEditar, aqui NO se
+// traga el error: un costo que no se guardo tiene que verse.
+window.zohoEscribir = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('zoho-write', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false && data.error) throw new Error(data.error)
+  return data
+}
+
 // Helper del feed del MRP. Va a la Edge Function 'mrp-feed', que pega a IS-PMT
 // (/api/mrp) con el token guardado del lado servidor. Devuelve { ok, proyectos[] }.
 window.mrpFeed = async () => {
