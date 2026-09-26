@@ -8,6 +8,7 @@
 -- HORARIOS (Los Cabos es UTC-7 todo el año, sin horario de verano)
 --   5:00 am  catalogo-zoho-5am   catálogo de artículos      (ya existía)
 --   5:10 am  oc-zoho             órdenes de compra
+--   5:15 am  comprometido-zoho   comprometido por orden de venta (para el MRP)
 --   5:40 am  inventario-zoho     existencias físicas, en tramos hasta las 5:58
 --
 -- El de IS-PMT corre a las 5:30 por acuerdo con ese equipo. El inventario va
@@ -74,3 +75,19 @@ select cron.schedule(
 --
 -- Para dispararlos a mano sin esperar a mañana, corre el net.http_post solo.
 -- El de inventario hay que repetirlo hasta que conteste "terminado": true.
+
+-- ── Comprometido por orden de venta ─────────────────────────────────────────
+-- El desglose de las existencias comprometidas: qué orden aparta cada SKU y de
+-- qué proyecto. Zoho solo da el total por artículo; el reparto por mes sale de
+-- aquí. Son ~105 llamadas (una por orden abierta), después de las OC y antes
+-- del proceso de IS-PMT.
+--
+-- Reusa el comando del job de OC para no volver a pegar la anon key: cambia la
+-- función y conserva la llave.
+select cron.unschedule('comprometido-zoho') where exists (select 1 from cron.job where jobname = 'comprometido-zoho');
+
+select cron.schedule(
+  'comprometido-zoho',
+  '15 12 * * *',            -- 5:15 am en Los Cabos
+  replace((select command from cron.job where jobname = 'oc-zoho'), '/oc-sync', '/comprometido-sync')
+);
