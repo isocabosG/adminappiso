@@ -114,7 +114,16 @@ function ZonaPDFs({ archivos, setArchivos, onCambio }) {
           setIgnorados((x) => [...x, f.name + " (no se pudo leer)"]);
         }
       }
-      if (nuevos.length) setArchivos((prev) => unoSolo([...prev, ...nuevos]));
+      if (nuevos.length) setArchivos((prev) => {
+        let out = unoSolo([...prev, ...nuevos]);
+        // Toda importacion necesita un pedimento. Si ningun nombre lo delato, se
+        // lo queda el primer archivo: es corregible de un clic, y deja el boton
+        // de extraer vivo en vez de muerto sin explicacion.
+        if (!out.some((a) => a.tipo === "pedimento") && out.length) {
+          out = out.map((a, i) => (i === 0 ? { ...a, tipo: "pedimento" } : a));
+        }
+        return out;
+      });
       onCambio?.();
     } finally { setLeyendo(0); }
   };
@@ -4074,9 +4083,11 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
           <p className="text-[10px] text-stone-400">Las facturas del proveedor (Renon) traen el modelo real de cada equipo — sirven para que la app empate mejor los SKU.</p>
           <div className="flex items-center gap-3">
             <button onClick={extraer} disabled={!pdfPed || extrayendo}
+              title={pdfPed ? "" : "Marca uno de los archivos como Pedimento en la lista de arriba"}
               className="px-4 py-2 bg-teal-700 text-white text-sm font-medium rounded hover:bg-teal-800 disabled:opacity-40">
               {extrayendo ? "Leyendo PDF…" : "Extraer artículos del pedimento"}
             </button>
+            {!pdfPed && <span className="text-xs text-amber-700">Marca cuál de los archivos es el <strong>Pedimento</strong> para poder extraer.</span>}
             {extraido && !errExtrac && <span className="text-xs text-teal-700">✓ Datos extraídos. Revísalos abajo antes de guardar.</span>}
           </div>
           {errExtrac && <div className="px-3 py-2 rounded text-xs bg-amber-50 border border-amber-300 text-amber-900">{errExtrac}</div>}
