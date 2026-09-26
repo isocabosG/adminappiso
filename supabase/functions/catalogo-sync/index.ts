@@ -18,6 +18,7 @@
 // Reutiliza la función `zoho-books` para el OAuth: el refresh token y su cache
 // viven ahí y no hay por qué duplicarlos.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { Zoho } from "../_shared/zoho.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -37,16 +38,16 @@ Deno.serve(async (req) => {
       { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
   }
 
-  const zoho = async (params: Record<string, string>) => {
-    const r = await fetch(`${SB}/functions/v1/zoho-books`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${SRV}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "list_items", params }),
-    });
-    const j = await r.json();
-    if (j?.error) throw new Error("zoho-books: " + j.error);
-    return j;
-  };
+  // Zoho directo, sin pasar por el Edge Function `zoho-books`. Esta era la
+  // ultima sincronia que llamaba funcion-a-funcion, y era la razon de que
+  // corriera todos los dias y no escribiera nada desde el 24: Supabase la
+  // frenaba y el cron reportaba "succeeded" porque el disparo si salia. Ver
+  // _shared/zoho.ts.
+  const ORG = Deno.env.get("ZOHO_ORG_ID");
+  if (!ORG) return new Response(JSON.stringify({ ok: false, error: "Falta el secreto ZOHO_ORG_ID." }),
+    { status: 500, headers: { ...CORS, "Content-Type": "application/json" } });
+  const z = new Zoho(SB, SRV, ORG);
+  const zoho = (params: Record<string, string>) => z.get("/items", params);
 
   try {
     const items: Record<string, unknown> = {};
