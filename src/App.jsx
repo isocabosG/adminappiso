@@ -2226,6 +2226,29 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
     })();
   }, [catalogo]);
 
+  // Que SKU tienen aqui un costo distinto al de Zoho.
+  //
+  // Hace falta porque durante un tiempo el boton decia "enviado a Zoho" sin
+  // enviar nada: se quedaron articulos con el promedio aplicado aqui y el costo
+  // viejo alla, sin marca de pendiente. Comparar es la unica forma de
+  // encontrarlos; la app ya no sabe cuales fueron.
+  const [zohoRates, setZohoRates] = useState(null);   // { fecha, rates }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage?.get("iso3-catalogo-zoho");
+        if (!r?.value) return;
+        const z = JSON.parse(r.value);
+        const rates = {};
+        for (const [sku, x] of Object.entries(z.items || {})) rates[String(sku).toUpperCase()] = +x.rate || 0;
+        setZohoRates({ fecha: z.fecha || null, rates });
+      } catch {}
+    })();
+  }, [catalogo]);
+
+
+
   const sincronizarCatalogo = async () => {
     setSincronizando(true);
     try {
@@ -2278,6 +2301,22 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
   const conPendiente = todos.filter(([, a]) => a.promedioPendiente != null);
   const esDeApp = (a) => (a.historia?.length || 0) > 0 || a.promedioPendiente != null;
 
+  // Solo los que la app toco: un SKU que nadie ha costeado aqui no tiene por que
+  // empujarse a Zoho, aunque los numeros difieran por redondeo del catalogo.
+  const divergentes = useMemo(() => {
+    if (!zohoRates) return [];
+    return todos.filter(([sku, a]) => {
+      if (!esDeApp(a) && !a.ultimoEnvio) return false;
+      if (a.promedioPendiente != null) return false;      // ese va por el otro boton
+      const mio = +a.costoVigente || 0;
+      const suyo = +zohoRates.rates[sku];
+      if (!(mio > 0) || suyo === undefined) return false;
+      return Math.abs(mio - suyo) > 0.01;
+    });
+  }, [todos, zohoRates]);
+
+  const empujarDivergentes = () => empujar(divergentes.map(([sku, a]) => [sku, a, +a.costoVigente]));
+
   const q = busca.trim().toLowerCase();
   const rows = todos.filter(([sku, a]) => {
     if (!verTodos && !esDeApp(a)) return false;
@@ -2297,7 +2336,7 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
     }
     setEnviando(true);
     try {
-      const items = lista.map(([sku, a]) => ({ sku, itemId: a.itemId, costo: +a.promedioPendiente }));
+      const items = lista.map(([sku, a, costo]) => ({ sku, itemId: a.itemId, costo: +(costo != null ? costo : a.promedioPendiente) }));
       const r = await window.zohoEscribir({ action: "update_item_cost", items });
       const res = r?.resultados || [];
       const c = { ...catalogo };
@@ -2346,6 +2385,13 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
             className={`px-3 py-2 text-xs font-medium rounded border disabled:opacity-40 ${faltantes ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
             {sincronizando ? "Sincronizando…" : faltantes ? `Traer ${faltantes} artículo${faltantes === 1 ? "" : "s"} nuevo${faltantes === 1 ? "" : "s"} de Zoho` : "Sincronizar con Zoho"}
           </button>
+          {divergentes.length > 0 && (
+            <button onClick={empujarDivergentes} disabled={enviando}
+              title={`Comparado contra el catálogo de Zoho del ${zohoRates?.fecha || "—"}`}
+              className="px-3 py-2 bg-amber-600 text-white text-xs font-medium rounded hover:bg-amber-700 disabled:opacity-40">
+              {enviando ? "Escribiendo en Zoho…" : `Empujar ${divergentes.length} costo${divergentes.length > 1 ? "s" : ""} que Zoho no tiene`}
+            </button>
+          )}
           {conPendiente.length > 0 && (
             <button onClick={enviarTodos} disabled={enviando}
               className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">
