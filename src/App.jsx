@@ -2051,7 +2051,10 @@ class ErrorBoundary extends Component {
       return (
         <div style={{ padding: 20, fontFamily: "monospace", background: "#fef2f2", color: "#991b1b", minHeight: "100vh" }}>
           <p style={{ fontWeight: 700, marginBottom: 8 }}>Se cayó la app. Manda esta captura:</p>
-          <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{String(this.state.error?.stack || this.state.error?.message || this.state.error)}</pre>
+          {/* El mensaje va PRIMERO y aparte: en Firefox `stack` no lo incluye, y
+              sin el mensaje una captura de pantalla no dice que fallo. */}
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 13, fontWeight: 700, marginBottom: 10 }}>{String(this.state.error?.message || this.state.error)}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{String(this.state.error?.stack || "")}</pre>
         </div>
       );
     return this.props.children;
@@ -3874,6 +3877,25 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
   const [borrador, setBorrador] = useState(null);     // borrador encontrado al abrir
   const [restaurado, setRestaurado] = useState(false);
 
+
+  const descartarBorrador = () => {
+    window.storage?.set(BORRADOR_IMP, JSON.stringify({})).catch(() => {});
+    setBorrador(null);
+  };
+  const pdfPed = useMemo(() => archivos.find((a) => a.tipo === "pedimento")?.b64 || null, [archivos]);
+  const pdfCot = useMemo(() => archivos.find((a) => a.tipo === "cotizacion")?.b64 || null, [archivos]);
+  const pdfFacturas = useMemo(() => archivos.filter((a) => a.tipo === "factura").map((a) => a.b64), [archivos]);
+  const [extrayendo, setExtrayendo] = useState(false);
+  const [errExtrac, setErrExtrac] = useState(null);
+  const [extraido, setExtraido] = useState(false);
+  const [adjuntos, setAdjuntos] = useState(pedInicial?.adjuntos || []);
+  const [empatando, setEmpatando] = useState(false);
+  const [dudosos, setDudosos] = useState(null);   // null = modal cerrado; array = abierto
+  const [empateMsg, setEmpateMsg] = useState(null);
+  const [buscandoOC, setBuscandoOC] = useState(false);
+  const [ocMsg, setOcMsg] = useState(null);
+  const [guiaEmbarque, setGuiaEmbarque] = useState("");   // no. de contenedor/guía del embarque (identifica esta importación)
+  const [pendPOs, setPendPOs] = useState([]);             // OC de Renon pendientes por surtir (para el datalist)
   // Al abrir una captura nueva: si quedo un borrador, se ofrece. No se restaura
   // solo — quien abre "Nueva importacion" puede querer empezar de cero, y
   // pisarle la pantalla con algo de ayer seria peor que preguntarle.
@@ -3915,25 +3937,6 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
     setRestaurado(true);
     setBorrador(null);
   };
-
-  const descartarBorrador = () => {
-    window.storage?.set(BORRADOR_IMP, JSON.stringify({})).catch(() => {});
-    setBorrador(null);
-  };
-  const pdfPed = useMemo(() => archivos.find((a) => a.tipo === "pedimento")?.b64 || null, [archivos]);
-  const pdfCot = useMemo(() => archivos.find((a) => a.tipo === "cotizacion")?.b64 || null, [archivos]);
-  const pdfFacturas = useMemo(() => archivos.filter((a) => a.tipo === "factura").map((a) => a.b64), [archivos]);
-  const [extrayendo, setExtrayendo] = useState(false);
-  const [errExtrac, setErrExtrac] = useState(null);
-  const [extraido, setExtraido] = useState(false);
-  const [adjuntos, setAdjuntos] = useState(pedInicial?.adjuntos || []);
-  const [empatando, setEmpatando] = useState(false);
-  const [dudosos, setDudosos] = useState(null);   // null = modal cerrado; array = abierto
-  const [empateMsg, setEmpateMsg] = useState(null);
-  const [buscandoOC, setBuscandoOC] = useState(false);
-  const [ocMsg, setOcMsg] = useState(null);
-  const [guiaEmbarque, setGuiaEmbarque] = useState("");   // no. de contenedor/guía del embarque (identifica esta importación)
-  const [pendPOs, setPendPOs] = useState([]);             // OC de Renon pendientes por surtir (para el datalist)
 
   const tc = +ped.tc || 0;
   const calc = useMemo(() => prorratear(partidas, incs, tc), [partidas, incs, tc]);
