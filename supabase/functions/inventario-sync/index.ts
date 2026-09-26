@@ -45,10 +45,18 @@ const EN_PARALELO = 3;
 const GAP_MS = 250;
 const ESPERA_MAX_MS = 30000;  // lo más que aceptamos esperar cuando Zoho frena
 const INTENTOS_MAX = 2;
-const FORMATO = 2;             // sube si cambia la forma del parcial
+// SOLO el Almacén Central cuenta como material disponible.
+//
+// Zoho tiene diez almacenes: RMA (lo que se devuelve al proveedor por
+// garantía), Devolución, Desecho, Semi-OK, Laboratorio, Coordinación y dos de
+// importación en San Diego. El total global los suma todos. SARK30K tenía 15
+// globales: 9 en Central y 6 en RMA — seis inversores apartados para devolver,
+// contados como vendibles. Lo cachó Fran el 26-sep.
+const ALMACEN = Deno.env.get("ZOHO_ALMACEN_ID") || "4053294000001024003";
+const FORMATO = 3;             // sube si cambia la forma del parcial
 const HUECOS_TOLERADOS = 0.02; // 2% de artículos sin leer y ya no se publica
 
-type Pend = { sku: string; itemId: string; desc: string; activo: boolean; aMano: number; cost: number; pregunta: boolean; intentos?: number };
+type Pend = { sku: string; itemId: string; desc: string; activo: boolean; aMano: number; cost: number; dispZoho: number | null; pregunta: boolean; intentos?: number };
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -130,6 +138,11 @@ Deno.serve(async (req) => {
           const cs = +it.committed_stock || 0;
           const as = +it.available_stock || 0;
           const aas = +it.actual_available_stock || 0;
+          // `available_for_sale` es el disponible que calcula Zoho por su cuenta
+          // (a mano menos comprometido). No se usa para decidir: se guarda para
+          // poder comparar nuestro STOCK FINAL contra el suyo todos los dias. Un
+          // numero que solo nosotros calculamos no tiene quien lo contradiga.
+          const afs = it.available_for_sale != null ? +it.available_for_sale : null;
           // Se pregunta sólo por los que se mueven. Un artículo en ceros por
           // todos lados no puede tener comprometido físico.
           const pregunta = activo && (sh !== 0 || cs !== 0 || as !== 0 || aas !== 0);
@@ -140,6 +153,7 @@ Deno.serve(async (req) => {
             activo,
             aMano: Math.max(0, aas),
             cost: +it.purchase_rate || 0,
+            dispZoho: afs,
             pregunta,
           });
         }
@@ -170,20 +184,28 @@ Deno.serve(async (req) => {
         // Un artículo de baja, o uno en ceros por todos lados, se registra con
         // lo que ya trae la lista y se ahorra la llamada.
         if (!x.pregunta) {
-          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: x.aMano, comprometido: 0, disponible: x.aMano, cost: x.cost };
+          // Sin existencia ni comprometido en ningún almacén: tampoco los hay
+          // en Central, así que va en ceros sin gastar la llamada.
+          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: 0, comprometido: 0, disponible: 0, cost: x.cost, dispZoho: 0 };
           return;
         }
         try {
           const d = await zoho("get_item", { item_id: x.itemId });
           const it = d.item || {};
-          const comp = Math.max(0, +it.actual_committed_stock || 0);
+          // `warehouses[]` solo viene en get_item, no en el listado. Por eso el
+          // "a mano" se toma aquí y no en la pasada barata de arriba.
+          const alm = (it.warehouses || []).find((w: any) => String(w.warehouse_id) === ALMACEN);
+          const aManoAlm = alm ? Math.max(0, +alm.warehouse_actual_available_stock || 0) : 0;
+          const comp = alm
+            ? Math.max(0, +alm.warehouse_actual_committed_stock || 0)
+            : Math.max(0, +it.actual_committed_stock || 0);
           // El disponible NO se aplasta a cero: un negativo significa que hay
           // más comprometido que existencia, y esa es justo la señal que
           // interesa. Taparla convierte un problema en un cero tranquilo.
-          const disp = it.actual_available_for_sale_stock != null
-            ? +it.actual_available_for_sale_stock
-            : (x.aMano - comp);
-          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: true, aMano: x.aMano, comprometido: comp, disponible: disp, cost: x.cost };
+          const disp = alm && alm.warehouse_actual_available_for_sale_stock != null
+            ? +alm.warehouse_actual_available_for_sale_stock
+            : (aManoAlm - comp);
+          parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: true, aMano: aManoAlm, comprometido: comp, disponible: disp, cost: x.cost, dispZoho: disp };
           parcial.preguntados = (parcial.preguntados || 0) + 1;
         } catch {
           // Un fallo casi siempre es el límite de Zoho, no un artículo roto.
@@ -194,7 +216,7 @@ Deno.serve(async (req) => {
           if (intentos <= INTENTOS_MAX) {
             lista.push({ ...x, intentos });
           } else {
-            parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: x.aMano, comprometido: null, disponible: null, cost: x.cost };
+            parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: x.activo, aMano: x.aMano, comprometido: null, disponible: null, cost: x.cost, dispZoho: x.dispZoho ?? null };
             parcial.huecos = (parcial.huecos || 0) + 1;
           }
         }

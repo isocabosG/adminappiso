@@ -33,6 +33,9 @@ const CORS = {
 const KEY = "iso3-comprometido-ov";
 const KEY_INV = "iso3-inventario-fisico";
 const GAP_MS = 350;
+// Solo lo apartado en el Almacén Central. Un renglón surtido desde RMA o desde
+// un almacén de importación no compromete el material con el que se trabaja.
+const ALMACEN = Deno.env.get("ZOHO_ALMACEN_ID") || "4053294000001024003";
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -86,6 +89,11 @@ Deno.serve(async (req) => {
           // Solo articulos de inventario: un servicio no aparta nada.
           const esInventario = String(l.item_type || "") === "inventory" || String(l.product_type || "") === "goods";
           if (!esInventario) continue;
+          // Si el renglón dice de qué almacén sale y no es Central, no es
+          // nuestro. Si no lo dice (renglones viejos), se cuenta: dejarlo fuera
+          // reportaría menos comprometido del que hay, y eso se lee como
+          // material libre.
+          if (l.warehouse_id && String(l.warehouse_id) !== ALMACEN) continue;
           const sku = up(l.sku);
           if (!sku) continue;
           const comp = num(l.quantity) - num(l.quantity_delivered);
