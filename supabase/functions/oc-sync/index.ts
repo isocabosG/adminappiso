@@ -147,7 +147,19 @@ Deno.serve(async (req) => {
           if (po.fecha > pv.ult) pv.ult = po.fecha;
         }
         if (paraTransito) {
-          const q = (li.quantity_yet_to_receive != null) ? +li.quantity_yet_to_receive : (+li.quantity || 0);
+          // PENDIENTE = pedido - recibido - cancelado.
+          //
+          // Antes se leia `quantity_yet_to_receive`, pero ESE CAMPO NO EXISTE a
+          // nivel renglon: solo viene en el encabezado de la orden. Al no
+          // encontrarlo se caia al respaldo y tomaba la cantidad COMPLETA como
+          // pendiente, asi que toda orden parcialmente recibida inflaba el
+          // transito. Lo encontro Fran el 26-sep con M00163: la PO-02843 decia
+          // 50 en camino cuando las 50 ya se habian recibido el 22.
+          //
+          // Un transito inflado es peor que no tenerlo: el MRP cree que viene
+          // material que no viene, y compras pide de menos.
+          if (li.is_receivable === false) continue;   // fletes y servicios no llegan al almacen
+          const q = (+li.quantity || 0) - (+li.quantity_received || 0) - (+li.quantity_cancelled || 0);
           if (q > 0) {
             trans[sku] = (trans[sku] || 0) + q;
             (lotes[sku] = lotes[sku] || []).push({ qty: q, eta: po.eta, oc: po.numero });
