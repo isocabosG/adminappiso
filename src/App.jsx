@@ -2203,6 +2203,72 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
   const [abierto, setAbierto] = useState(null);
   const [busca, setBusca] = useState("");
   const [verTodos, setVerTodos] = useState(false);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [faltantes, setFaltantes] = useState(0);
+
+  // Cuantos SKU de Zoho todavia no existen aqui. El catalogo de la app se sembro
+  // una sola vez desde una lista escrita en el codigo, asi que todo lo dado de
+  // alta en Zoho despues de esa siembra era invisible: no aparecia al capturar
+  // una importacion y la partida se quedaba sin SKU. El cron de las 5:00 ya baja
+  // el catalogo completo cada noche; esto solo lo conecta.
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage?.get("iso3-catalogo-zoho");
+        if (!r?.value) return;
+        const z = JSON.parse(r.value);
+        setFaltantes(Object.keys(z.items || {}).filter((sku) => !catalogo[String(sku).toUpperCase()]).length);
+      } catch {}
+    })();
+  }, [catalogo]);
+
+  const sincronizarCatalogo = async () => {
+    setSincronizando(true);
+    try {
+      const r = await window.storage?.get("iso3-catalogo-zoho");
+      if (!r?.value) { setAviso({ t: "err", m: "Todavia no hay catalogo de Zoho descargado. Corre de madrugada." }); return; }
+      const z = JSON.parse(r.value);
+
+      // La existencia sale del inventario fisico si esta; no del contable.
+      let fisico = {};
+      try {
+        const rf = await window.storage?.get("iso3-inventario-fisico");
+        if (rf?.value) fisico = JSON.parse(rf.value).items || {};
+      } catch {}
+
+      const c = { ...catalogo };
+      let nuevos = 0, marcados = 0;
+      for (const [skuRaw, x] of Object.entries(z.items || {})) {
+        const sku = String(skuRaw).toUpperCase();
+        const prev = c[sku];
+        if (!prev) {
+          c[sku] = {
+            descripcion: x.desc || sku,
+            categoria: adivinaCategoria(x.desc || ""),
+            existencia: +(fisico[sku]?.aMano || 0),
+            costoVigente: +x.rate || 0,
+            itemId: x.itemId,
+            bajaZoho: !x.activo,
+          };
+          nuevos++;
+        } else {
+          // Al que ya existe NO se le toca el costo: el promedio de la app es mas
+          // reciente que el de Zoho, porque la escritura de vuelta todavia no
+          // existe. Solo se completa lo que falte y se marca si murio en Zoho.
+          const upd = { ...prev };
+          let cambio = false;
+          if (!upd.itemId && x.itemId) { upd.itemId = x.itemId; cambio = true; }
+          if (!!upd.bajaZoho !== !x.activo) { upd.bajaZoho = !x.activo; cambio = true; marcados++; }
+          if (cambio) c[sku] = upd;
+        }
+      }
+      if (!nuevos && !marcados) { setAviso({ t: "ok", m: "El catalogo ya estaba al dia." }); return; }
+      saveCatalogo(c);
+      setAviso({ t: "ok", m: `${nuevos} articulo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} de Zoho${marcados ? ` y ${marcados} marcado${marcados === 1 ? "" : "s"} de baja` : ""}. Revisa su categoria.` });
+    } catch (e) {
+      setAviso({ t: "err", m: "No se pudo sincronizar: " + (e?.message || e) });
+    } finally { setSincronizando(false); }
+  };
 
   const todos = Object.entries(catalogo).sort((a, b) => a[0].localeCompare(b[0]));
   const conPendiente = todos.filter(([, a]) => a.promedioPendiente != null);
@@ -2241,11 +2307,17 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
           <h2 className="text-sm font-semibold">Catálogo de costos</h2>
           <p className="text-xs text-stone-500">El costo vigente es el que está en Zoho. El nuevo promedio se calcula al cerrar importaciones y se envía cuando tú lo apruebas.</p>
         </div>
-        {conPendiente.length > 0 && (
-          <button onClick={enviarTodos} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">
-            Actualizar {conPendiente.length} promedio{conPendiente.length > 1 ? "s" : ""} en Zoho
+        <div className="flex items-center gap-2">
+          <button onClick={sincronizarCatalogo} disabled={sincronizando}
+            className={`px-3 py-2 text-xs font-medium rounded border disabled:opacity-40 ${faltantes ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+            {sincronizando ? "Sincronizando…" : faltantes ? `Traer ${faltantes} artículo${faltantes === 1 ? "" : "s"} nuevo${faltantes === 1 ? "" : "s"} de Zoho` : "Sincronizar con Zoho"}
           </button>
-        )}
+          {conPendiente.length > 0 && (
+            <button onClick={enviarTodos} className="px-3 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">
+              Actualizar {conPendiente.length} promedio{conPendiente.length > 1 ? "s" : ""} en Zoho
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
