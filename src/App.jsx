@@ -3774,6 +3774,18 @@ function ProrrateoDetalle({ pedNumero, lineas, incs, tc, catalogo, setPartidas, 
   );
 }
 
+// Llave del borrador de una importacion nueva.
+//
+// Capturar un pedimento son ocho o diez partidas tecleadas a mano. Perderlas
+// porque falta un SKU en el catalogo, porque se recargo la pagina o porque hubo
+// que desplegar un arreglo a media captura no es un accidente: es la aplicacion
+// castigando a quien la usa. Se guarda solo cada pocos segundos.
+//
+// Los PDF NO se guardan: son megas de base64 y volver a arrastrarlos cuesta un
+// segundo. Lo caro de reponer es lo tecleado, y eso es lo que se respalda; se
+// guardan los NOMBRES de los archivos para saber cuales volver a soltar.
+const BORRADOR_IMP = "iso3-importacion-borrador";
+
 function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
   const editando = !!pedInicial;
   const [ped, setPed] = useState(pedInicial ? { numero: pedInicial.numero || "", fecha: pedInicial.fecha || hoy(), tc: String(pedInicial.tc || ""), proveedorExt: pedInicial.proveedorExt || "", ocZoho: pedInicial.ocZoho || "" } : { numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
@@ -3787,6 +3799,55 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
   // Un solo monton de archivos; pedimento, cotizacion y facturas se derivan de
   // como quedo marcado cada uno. Asi el resto del componente no cambia.
   const [archivos, setArchivos] = useState([]);
+  const [borrador, setBorrador] = useState(null);     // borrador encontrado al abrir
+  const [restaurado, setRestaurado] = useState(false);
+
+  // Al abrir una captura nueva: si quedo un borrador, se ofrece. No se restaura
+  // solo — quien abre "Nueva importacion" puede querer empezar de cero, y
+  // pisarle la pantalla con algo de ayer seria peor que preguntarle.
+  useEffect(() => {
+    if (editando) return;
+    (async () => {
+      try {
+        const r = await window.storage?.get(BORRADOR_IMP);
+        if (!r?.value) return;
+        const b = JSON.parse(r.value);
+        const algo = (b.partidas || []).some((x) => x.sku || x.desc || x.cantidad) || b.ped?.numero;
+        if (algo) setBorrador(b);
+      } catch {}
+    })();
+  }, [editando]);
+
+  // Guardado automatico. Se aplaza 1.5 s para no escribir en cada tecla.
+  useEffect(() => {
+    if (editando) return;
+    const algo = partidas.some((x) => x.sku || x.desc || x.cantidad) || ped.numero;
+    if (!algo) return;
+    const t = setTimeout(() => {
+      const v = {
+        ts: Date.now(), ped, partidas, incs, guiaEmbarque, adjuntos,
+        archivos: archivos.map((a) => ({ nombre: a.nombre, tipo: a.tipo })),
+      };
+      window.storage?.set(BORRADOR_IMP, JSON.stringify(v)).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [editando, ped, partidas, incs, guiaEmbarque, adjuntos, archivos]);
+
+  const retomarBorrador = () => {
+    if (!borrador) return;
+    if (borrador.ped) setPed(borrador.ped);
+    if (borrador.partidas?.length) setPartidas(borrador.partidas);
+    if (borrador.incs?.length) setIncs(borrador.incs);
+    if (borrador.guiaEmbarque) setGuiaEmbarque(borrador.guiaEmbarque);
+    if (borrador.adjuntos?.length) setAdjuntos(borrador.adjuntos);
+    setRestaurado(true);
+    setBorrador(null);
+  };
+
+  const descartarBorrador = () => {
+    window.storage?.set(BORRADOR_IMP, JSON.stringify({})).catch(() => {});
+    setBorrador(null);
+  };
   const pdfPed = useMemo(() => archivos.find((a) => a.tipo === "pedimento")?.b64 || null, [archivos]);
   const pdfCot = useMemo(() => archivos.find((a) => a.tipo === "cotizacion")?.b64 || null, [archivos]);
   const pdfFacturas = useMemo(() => archivos.filter((a) => a.tipo === "factura").map((a) => a.b64), [archivos]);
@@ -4023,6 +4084,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
 
   const guardar = () => {
     if (!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC) return;
+    // Guardado en firme: el borrador ya cumplio su trabajo.
+    if (!editando) window.storage?.set(BORRADOR_IMP, JSON.stringify({})).catch(() => {});
     onSave({ id: pedInicial?.id || uid(), ...ped, ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
   };
 
@@ -4079,6 +4142,26 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
             <p><span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-700 text-white text-[10px] font-bold mr-1.5">2</span>Presiona <strong>“Extraer artículos del pedimento”</strong> y luego <strong>“🧩 Desglosar por factura”</strong>.</p>
             <p><span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-teal-700 text-white text-[10px] font-bold mr-1.5">3</span>En <strong>Órdenes de compra</strong> dale <strong>“Auto‑buscar OC”</strong>, confírmala y edita que la OC sea la correcta. <em>¡Confiamos en ti!</em> 🙌</p>
           </div>
+          {borrador && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 flex flex-wrap items-center gap-2">
+              <div className="flex-1 min-w-[220px]">
+                <p className="text-xs font-semibold text-amber-900">Quedo una captura sin terminar</p>
+                <p className="text-[11px] text-amber-800">
+                  {borrador.ped?.numero ? `Pedimento ${borrador.ped.numero}` : "Sin numero de pedimento"}
+                  {" \u00b7 "}{(borrador.partidas || []).length} partida{(borrador.partidas || []).length === 1 ? "" : "s"}
+                  {borrador.ts ? ` \u00b7 ${new Date(borrador.ts).toLocaleString("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}` : ""}
+                </p>
+                {borrador.archivos?.length > 0 && (
+                  <p className="text-[10px] text-amber-700 mt-0.5">Vuelve a arrastrar: {borrador.archivos.map((a) => a.nombre).join(", ")}</p>
+                )}
+              </div>
+              <button onClick={retomarBorrador} className="px-3 py-1.5 bg-amber-700 text-white text-xs font-medium rounded hover:bg-amber-800">Retomar</button>
+              <button onClick={descartarBorrador} className="px-3 py-1.5 border border-amber-400 text-amber-800 text-xs font-medium rounded hover:bg-amber-100">Empezar de cero</button>
+            </div>
+          )}
+          {restaurado && (
+            <p className="text-[11px] text-teal-700">Captura recuperada. Los PDF no se guardan — vuelve a arrastrarlos si necesitas desglosar por factura.</p>
+          )}
           <ZonaPDFs archivos={archivos} setArchivos={setArchivos} onCambio={() => setErrExtrac(null)} />
           <p className="text-[10px] text-stone-400">Las facturas del proveedor (Renon) traen el modelo real de cada equipo — sirven para que la app empate mejor los SKU.</p>
           <div className="flex items-center gap-3">
