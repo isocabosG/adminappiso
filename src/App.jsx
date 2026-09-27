@@ -2411,6 +2411,12 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
         </div>
       </div>
 
+      {nDiscrepan > 0 && (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded p-2">
+          <b>{mx0(nDiscrepan)}</b> artículo{nDiscrepan === 1 ? "" : "s"} donde nuestro cálculo no coincide con el disponible que reporta Zoho. Vienen marcados con <span className="text-amber-700 font-bold">▲</span> en STOCK FINAL; pasa el cursor encima para ver los dos números.
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
           className="flex-1 min-w-[180px] px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
@@ -6607,6 +6613,7 @@ function LimpiezaSO({ setAviso }) {
 const MESES_ES = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
 const mesClave = (f) => String(f || "").slice(0, 7);                       // "2026-09"
 const mesTitulo = (k) => (k === "SIN" ? "SIN FECHA" : `${MESES_ES[+k.slice(5, 7) - 1]} ${k.slice(2, 4)}`);
+const mesAhora = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
 const QTY_KEY = "iso3-mrp-qty";
 
 function MrpCompras({ setAviso }) {
@@ -6655,8 +6662,8 @@ function MrpCompras({ setAviso }) {
   };
 
   // ── La tabla ────────────────────────────────────────────────────────────
-  const { filas, meses } = useMemo(() => {
-    if (!cat) return { filas: [], meses: [] };
+  const { filas, meses, totPorMes } = useMemo(() => {
+    if (!cat) return { filas: [], meses: [], totPorMes: {} };
     const transito = oc?.transito || {};
     const items = inv?.items || {};
     const porSku = comp?.porSku || {};
@@ -6679,19 +6686,50 @@ function MrpCompras({ setAviso }) {
 
       const backOrder = +transito[sku] || 0;
       const stock = +(items[sku]?.aMano ?? 0);
+      // Zoho calcula su propio disponible (a mano menos comprometido). Nuestro
+      // equivalente, sin contar lo que viene en camino, tiene que dar lo mismo.
+      // Cuando no da, uno de los dos está mal y hay que mirarlo — en vez de
+      // enterarnos meses después por una compra que no cuadró.
+      const dz = items[sku]?.dispZoho;
+      const nuestroSinTransito = stock - porSurtir;
+      const discrepa = dz != null && Math.abs(+dz - nuestroSinTransito) > 0.01;
       return {
         sku, desc: x.desc || sku, activo: x.activo !== false,
         backOrder, porSurtir, stock,
         stockFinal: backOrder + stock - porSurtir,
+        dispZoho: dz ?? null, discrepa,
         porMes,
       };
     }).sort((a, b) => a.desc.localeCompare(b.desc, "es"));
 
-    // Meses en orden, y SIN FECHA al final: es el cajón de lo no calendarizado.
+    // Horizonte fijo: los meses que YA tienen material apartado, más los 12
+    // siguientes a partir de hoy. Sin esto, diciembre no existía como columna
+    // hasta que alguien calendarizara una obra de diciembre — la tabla cambiaba
+    // de forma sola y no se podía comparar de una semana a otra. Un mes vacío
+    // también dice algo: que todavía no hay nada programado.
+    const hoyD = new Date();
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(hoyD.getFullYear(), hoyD.getMonth() + i, 1);
+      setMeses.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    }
+    // Cuánto hay en cada mes, para saber cuáles vienen prendidos.
+    const totPorMes = {};
+    for (const f of filas) for (const [k, v] of Object.entries(f.porMes)) totPorMes[k] = (totPorMes[k] || 0) + v;
+
+    // SIN FECHA al final: es el cajón de lo no calendarizado, no un mes.
     const meses = [...setMeses].filter((k) => k !== "SIN").sort();
     if (setMeses.has("SIN")) meses.push("SIN");
-    return { filas, meses };
+    return { filas, meses, totPorMes };
   }, [cat, inv, oc, comp, fechaOv]);
+
+  // Los meses sin nada arrancan apagados: el botón está para prenderlos cuando
+  // se quiera mirar adelante, no para llenar la tabla de columnas en cero.
+  const yaInicie = useRef(false);
+  useEffect(() => {
+    if (yaInicie.current || !meses.length) return;
+    yaInicie.current = true;
+    setMesesOff(new Set(meses.filter((m) => !(totPorMes[m] > 0))));
+  }, [meses, totPorMes]);
 
   const mesesVisibles = meses.filter((m) => !mesesOff.has(m));
 
@@ -6700,6 +6738,8 @@ function MrpCompras({ setAviso }) {
     () => (q ? filas.filter((f) => f.sku.includes(q) || f.desc.toUpperCase().includes(q)) : filas),
     [filas, q],
   );
+
+  const nDiscrepan = useMemo(() => vistas.filter((f) => f.discrepa).length, [vistas]);
 
   // Ventana de render: 2,300 renglones de golpe hacen que la pantalla se
   // arrastre. Se pintan los que caben más un colchón; el scroll manda.
@@ -6711,9 +6751,9 @@ function MrpCompras({ setAviso }) {
   const totMes = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0), 0);
 
   const exportar = () => {
-    const cab = ["SKU", "DESCRIPCION", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", ...mesesVisibles.map(mesTitulo)];
+    const cab = ["SKU", "DESCRIPCION", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "DISPONIBLE SEGUN ZOHO", ...mesesVisibles.map(mesTitulo)];
     const filasCsv = vistas.map((f) => [
-      f.sku, f.desc, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "",
+      f.sku, f.desc, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "", f.dispZoho ?? "",
       ...mesesVisibles.map((m) => f.porMes[m] || 0),
     ]);
     const csv = [cab, ...filasCsv].map((r) => r.map(csvCell).join(",")).join("\n");
@@ -6754,14 +6794,28 @@ function MrpCompras({ setAviso }) {
       </div>
 
       {meses.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] uppercase tracking-widest text-stone-400 mr-1">Meses</span>
-          {meses.map((m) => (
-            <button key={m} onClick={() => setMesesOff((s) => { const n = new Set(s); n.has(m) ? n.delete(m) : n.add(m); return n; })}
-              className={`px-2 py-1 text-[11px] font-medium rounded border ${mesesOff.has(m) ? "border-stone-300 text-stone-400 line-through" : "bg-teal-700 text-white border-teal-700"}`}>
-              {mesTitulo(m)}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest text-stone-400 shrink-0">Meses</span>
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 flex-nowrap">
+            {meses.map((m) => {
+              const prendido = !mesesOff.has(m);
+              const vacio = !(totPorMes[m] > 0);
+              // Un mes ya pasado con material apartado es demanda atrasada: el
+              // equipo debió instalarse y el material sigue comprometido.
+              const pasado = m !== "SIN" && m < mesAhora();
+              return (
+                <button key={m} onClick={() => setMesesOff((st) => { const n = new Set(st); n.has(m) ? n.delete(m) : n.add(m); return n; })}
+                  title={vacio ? "Sin material apartado todavía" : `${mx0(totPorMes[m])} piezas`}
+                  className={`shrink-0 px-2 py-1 text-[11px] font-medium rounded border whitespace-nowrap ${
+                    prendido
+                      ? (pasado ? "bg-red-700 text-white border-red-700" : "bg-teal-700 text-white border-teal-700")
+                      : `border-stone-300 ${vacio ? "text-stone-300" : "text-stone-400 line-through"}`}`}>
+                  {mesTitulo(m)}
+                  {!vacio && <span className="ml-1 opacity-70">{mx0(totPorMes[m])}</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -6799,7 +6853,12 @@ function MrpCompras({ setAviso }) {
                   <td className="px-2 py-1 text-right font-mono">{f.porSurtir || ""}</td>
                   <td className="px-2 py-1 text-right font-mono">{f.stock || ""}</td>
                   {/* Lo negativo en rojo: es exactamente lo que hay que comprar. */}
-                  <td className={`px-2 py-1 text-right font-mono font-semibold bg-stone-50 ${f.stockFinal < 0 ? "text-red-600" : ""}`}>{f.stockFinal}</td>
+                  <td className={`px-2 py-1 text-right font-mono font-semibold bg-stone-50 ${f.stockFinal < 0 ? "text-red-600" : ""}`}>
+                    {f.discrepa && (
+                      <span className="text-amber-600 mr-1" title={`Zoho reporta ${f.dispZoho} disponible; nosotros calculamos ${f.stock - f.porSurtir} (${f.stock} a mano − ${f.porSurtir} comprometido). Sin contar el back order.`}>▲</span>
+                    )}
+                    {f.stockFinal}
+                  </td>
                   <td className="px-2 py-1">
                     <input type="number" value={qty[f.sku] ?? ""} onChange={(e) => guardarQty(f.sku, e.target.value)}
                       className="w-16 px-1 py-0.5 border border-stone-200 rounded text-right font-mono text-[11px]" />
