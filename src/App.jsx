@@ -6586,48 +6586,53 @@ function LimpiezaSO({ setAviso }) {
 }
 
 /* ---------- MRP de compras (formato Jesús) ----------
-   Réplica de la hoja que compras ya usaba en Excel, con los mismos nombres de
-   columna y la misma fórmula, pero conectada:
+   Réplica de la hoja que compras usaba en Excel, con los mismos nombres de
+   columna y la misma fórmula, conectada a Zoho:
 
      STOCK FINAL = BACK ORDER + STOCK AL DIA − POR SURTIR
 
-   NO FILTRA NADA. Salen los ~2,300 SKU del catálogo de Zoho, tengan o no
-   movimiento. Esa fue la petición explícita, y tiene razón de ser: la decisión
-   de compra se toma mirando el total, no una selección que alguien hizo antes.
+   NO FILTRA NADA por omisión: salen los ~2,300 SKU del catálogo completo. La
+   decisión de compra se toma mirando el total, no una selección que alguien
+   hizo antes. Los filtros existen, pero hay que prenderlos a mano y la pantalla
+   dice cuántos renglones está escondiendo.
 
    DE DÓNDE SALE CADA COLUMNA
-     BACK ORDER   · lo pedido que no ha llegado (OC abiertas de Zoho)
-     POR SURTIR   · lo comprometido en órdenes de venta abiertas
-     STOCK AL DIA · existencia física a mano
+     BACK ORDER   · pedido y no recibido (OC abiertas de Zoho)
+     POR SURTIR   · apartado en órdenes de venta abiertas
+     STOCK AL DIA · existencia física en el Almacén Central
      MESES        · el MISMO POR SURTIR, repartido por la fecha de instalación
-                    de la obra de cada orden
-
-   Los meses salen del mismo número que POR SURTIR, no de otra fuente. Por eso
-   siempre cuadran contra el total — que es lo que en el Excel ya no pasaba,
-   porque los meses se pegaban a mano y envejecían aparte.
-
-   Lo que no tiene obra calendarizada NO desaparece: cae en SIN FECHA y sigue
-   contando en POR SURTIR. Un requerimiento sin fecha sigue siendo material que
-   hay que comprar; esconderlo es como no tenerlo. */
+     QTY          · decisión de compras. Nada la pisa.
+     ●            · lo que IS-PMT pide para obra, que puede no estar en la OV */
 
 const MESES_ES = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
-const mesClave = (f) => String(f || "").slice(0, 7);                       // "2026-09"
+const mesClave = (f) => String(f || "").slice(0, 7);
 const mesTitulo = (k) => (k === "SIN" ? "SIN FECHA" : `${MESES_ES[+k.slice(5, 7) - 1]} ${k.slice(2, 4)}`);
 const mesAhora = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
 const QTY_KEY = "iso3-mrp-qty";
+const ALTO = 30;          // alto fijo de renglón, para el scroll virtual
+const COLCHON = 12;       // renglones de más arriba y abajo del área visible
 
 function MrpCompras({ setAviso }) {
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState(null);
-  const [cat, setCat] = useState(null);        // { fecha, items }
+  const [cat, setCat] = useState(null);
   const [inv, setInv] = useState(null);
   const [oc, setOc] = useState(null);
   const [comp, setComp] = useState(null);
-  const [fechaOv, setFechaOv] = useState({});  // ov -> fecha_instalacion
+  const [pmt, setPmt] = useState({});        // sku -> obras que lo piden en IS-PMT
+  const [fechaOv, setFechaOv] = useState({});
   const [qty, setQty] = useState({});
   const [busca, setBusca] = useState("");
   const [mesesOff, setMesesOff] = useState(() => new Set());
-  const [desde, setDesde] = useState(0);       // ventana de render
+  const [soloFalta, setSoloFalta] = useState(false);
+  const [soloQty, setSoloQty] = useState(false);
+  const [soloPmt, setSoloPmt] = useState(false);
+  const [ocultaBaja, setOcultaBaja] = useState(false);
+  const [sel, setSel] = useState(() => new Set());
+  const [detalle, setDetalle] = useState(null);   // sku cuyo desglose de obra está abierto
+  const [scroll, setScroll] = useState(0);
+  const cajaRef = useRef(null);
+  const yaInicie = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -6638,17 +6643,30 @@ function MrpCompras({ setAviso }) {
           leer("iso3-mrp-oc-cache-v2"), leer("iso3-comprometido-ov"), leer(QTY_KEY),
         ]);
         setCat(c); setInv(i); setOc(o); setComp(cm); setQty(blobQty?.qty || {});
-        // Las fechas de instalación vienen de IS-PMT. Si el feed no contesta, la
-        // tabla sigue sirviendo: todo cae en SIN FECHA y POR SURTIR no cambia.
+        // IS-PMT: fechas de instalación y qué material pide cada obra. Si el feed
+        // no contesta, la tabla sigue sirviendo — los meses caen en SIN FECHA.
         try {
           const f = await window.mrpFeed?.();
-          const m = {};
-          for (const p of (f?.proyectos || [])) if (p.ov) m[String(p.ov).trim().toUpperCase()] = p.fecha_instalacion || null;
-          setFechaOv(m);
-        } catch { /* sin feed, todo va a SIN FECHA */ }
-      } catch (e) {
-        setErr(String(e?.message || e));
-      } finally { setCargando(false); }
+          const fo = {}, porSku = {};
+          for (const p of (f?.proyectos || [])) {
+            const ov = String(p.ov || "").trim().toUpperCase();
+            if (ov) fo[ov] = p.fecha_instalacion || null;
+            for (const m of (p.materiales || [])) {
+              const sku = String(m.sku || "").trim().toUpperCase();
+              if (!sku) continue;
+              const pide = +(m.cant_disenada ?? m.qty ?? 0) || 0;
+              const entregado = +(m.cant_entregada || 0);
+              if (pide <= 0) continue;
+              (porSku[sku] = porSku[sku] || []).push({
+                proyecto: p.name || "(sin nombre)", ov, fecha: p.fecha_instalacion || null,
+                pide, entregado, falta: Math.max(0, pide - entregado),
+              });
+            }
+          }
+          setFechaOv(fo); setPmt(porSku);
+        } catch { /* sin feed, la tabla sigue */ }
+      } catch (e) { setErr(String(e?.message || e)); }
+      finally { setCargando(false); }
     })();
   }, []);
 
@@ -6661,10 +6679,10 @@ function MrpCompras({ setAviso }) {
     });
   };
 
-  // ── La tabla ────────────────────────────────────────────────────────────
   const { filas, meses, totPorMes } = useMemo(() => {
     if (!cat) return { filas: [], meses: [], totPorMes: {} };
     const transito = oc?.transito || {};
+    const provDe = oc?.proveedor || {};
     const items = inv?.items || {};
     const porSku = comp?.porSku || {};
     const setMeses = new Set();
@@ -6673,9 +6691,6 @@ function MrpCompras({ setAviso }) {
       const sku = String(skuRaw).toUpperCase();
       const c = porSku[sku];
       const porSurtir = c ? c.total : 0;
-
-      // El reparto por mes: cada orden de venta cae en el mes en que se instala
-      // su obra. Sin fecha de obra, cae en SIN FECHA — nunca se pierde.
       const porMes = {};
       for (const o of (c?.ovs || [])) {
         const f = fechaOv[String(o.ov).trim().toUpperCase()];
@@ -6683,54 +6698,39 @@ function MrpCompras({ setAviso }) {
         porMes[k] = (porMes[k] || 0) + o.cant;
         setMeses.add(k);
       }
-
       const backOrder = +transito[sku] || 0;
       const stock = +(items[sku]?.aMano ?? 0);
-      // Zoho calcula su propio disponible (a mano menos comprometido). Nuestro
-      // equivalente, sin contar lo que viene en camino, tiene que dar lo mismo.
-      // Cuando no da, uno de los dos está mal y hay que mirarlo — en vez de
-      // enterarnos meses después por una compra que no cuadró.
       const dz = items[sku]?.dispZoho;
       const nuestroSinTransito = stock - porSurtir;
-      const discrepa = dz != null && Math.abs(+dz - nuestroSinTransito) > 0.01;
+      const obras = pmt[sku] || [];
       return {
         sku, desc: x.desc || sku, activo: x.activo !== false,
+        prov: provDe[sku] || "",
         backOrder, porSurtir, stock,
         stockFinal: backOrder + stock - porSurtir,
-        dispZoho: dz ?? null, discrepa,
+        dispZoho: dz ?? null,
+        discrepa: dz != null && Math.abs(+dz - nuestroSinTransito) > 0.01,
+        obras, pideObra: obras.reduce((a, o) => a + o.falta, 0),
         porMes,
       };
     }).sort((a, b) => a.desc.localeCompare(b.desc, "es"));
 
-    // Horizonte fijo: los meses que YA tienen material apartado, más los 12
-    // siguientes a partir de hoy. Sin esto, diciembre no existía como columna
-    // hasta que alguien calendarizara una obra de diciembre — la tabla cambiaba
-    // de forma sola y no se podía comparar de una semana a otra. Un mes vacío
-    // también dice algo: que todavía no hay nada programado.
+    // Horizonte fijo: los meses con material apartado, más 12 hacia adelante.
     const hoyD = new Date();
     for (let i = 0; i < 12; i++) {
       const d = new Date(hoyD.getFullYear(), hoyD.getMonth() + i, 1);
       setMeses.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
     }
-    // Cuánto hay en cada mes, para saber cuáles vienen prendidos.
     const totPorMes = {};
     for (const f of filas) for (const [k, v] of Object.entries(f.porMes)) totPorMes[k] = (totPorMes[k] || 0) + v;
-
-    // SIN FECHA al final: es el cajón de lo no calendarizado, no un mes.
     const meses = [...setMeses].filter((k) => k !== "SIN").sort();
     if (setMeses.has("SIN")) meses.push("SIN");
     return { filas, meses, totPorMes };
-  }, [cat, inv, oc, comp, fechaOv]);
+  }, [cat, inv, oc, comp, fechaOv, pmt]);
 
-  // Los meses sin nada arrancan apagados: el botón está para prenderlos cuando
-  // se quiera mirar adelante, no para llenar la tabla de columnas en cero.
-  const yaInicie = useRef(false);
   useEffect(() => {
     if (yaInicie.current || !meses.length) return;
     yaInicie.current = true;
-    // Arrancan apagados los meses vacíos y los ya pasados. Los dos siguen ahí
-    // para prenderlos: un mes pasado con material apartado es demanda atrasada
-    // y hay que poder mirarla, pero no estorbando la vista de lo que viene.
     const ahora = mesAhora();
     setMesesOff(new Set(meses.filter((m) => !(totPorMes[m] > 0) || (m !== "SIN" && m < ahora))));
   }, [meses, totPorMes]);
@@ -6738,65 +6738,108 @@ function MrpCompras({ setAviso }) {
   const mesesVisibles = meses.filter((m) => !mesesOff.has(m));
 
   const q = busca.trim().toUpperCase();
-  const vistas = useMemo(
-    () => (q ? filas.filter((f) => f.sku.includes(q) || f.desc.toUpperCase().includes(q)) : filas),
-    [filas, q],
-  );
+  const vistas = useMemo(() => filas.filter((f) => {
+    if (q && !(f.sku.includes(q) || f.desc.toUpperCase().includes(q) || f.prov.toUpperCase().includes(q))) return false;
+    if (soloFalta && f.stockFinal >= 0) return false;
+    if (soloQty && !(qty[f.sku] > 0)) return false;
+    if (soloPmt && !f.obras.length) return false;
+    if (ocultaBaja && !f.activo) return false;
+    return true;
+  }), [filas, q, soloFalta, soloQty, soloPmt, ocultaBaja, qty]);
 
+  const escondidos = filas.length - vistas.length;
   const totQty = useMemo(() => vistas.reduce((a, f) => a + (+qty[f.sku] || 0), 0), [vistas, qty]);
   const nDiscrepan = useMemo(() => vistas.filter((f) => f.discrepa).length, [vistas]);
 
-  // Ventana de render: 2,300 renglones de golpe hacen que la pantalla se
-  // arrastre. Se pintan los que caben más un colchón; el scroll manda.
-  const ALTO = 28, VENTANA = 90;
-  const fin = Math.min(vistas.length, desde + VENTANA);
-  const enPantalla = vistas.slice(desde, fin);
+  // Scroll virtual de verdad: se pintan solo los renglones que caen en la
+  // ventana visible. Antes se pintaban 90 y el resto era hueco — la tabla decía
+  // 2,307 y al bajar no había nada.
+  const alto = cajaRef.current?.clientHeight || 560;
+  const primero = Math.max(0, Math.floor(scroll / ALTO) - COLCHON);
+  const ultimo = Math.min(vistas.length, primero + Math.ceil(alto / ALTO) + COLCHON * 2);
+  const enPantalla = vistas.slice(primero, ultimo);
 
   const tot = (campo) => vistas.reduce((a, f) => a + (f[campo] || 0), 0);
   const totMes = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0), 0);
 
-  const exportar = () => {
-    const cab = ["SKU", "DESCRIPCION", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "DISPONIBLE SEGUN ZOHO", ...mesesVisibles.map(mesTitulo)];
-    const filasCsv = vistas.map((f) => [
-      f.sku, f.desc, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "", f.dispZoho ?? "",
-      ...mesesVisibles.map((m) => f.porMes[m] || 0),
-    ]);
+  const alterna = (sku) => setSel((s) => { const n = new Set(s); n.has(sku) ? n.delete(sku) : n.add(sku); return n; });
+  const marcarVistos = () => setSel(new Set(vistas.map((f) => f.sku)));
+  const seleccionados = vistas.filter((f) => sel.has(f.sku));
+
+  const bajar = (nombre, cab, filasCsv) => {
     const csv = [cab, ...filasCsv].map((r) => r.map(csvCell).join(",")).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
-    a.download = `MRP_${hoy()}.csv`;
-    a.click();
+    a.download = nombre; a.click();
+  };
+
+  const exportar = () => bajar(`MRP_${hoy()}.csv`,
+    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "DISPONIBLE SEGUN ZOHO", "PIDE OBRA", ...mesesVisibles.map(mesTitulo)],
+    vistas.map((f) => [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "", f.dispZoho ?? "", f.pideObra || "", ...mesesVisibles.map((m) => f.porMes[m] || 0)]));
+
+  // Orden de compra: solo lo marcado, agrupado por proveedor. La cantidad es la
+  // de QTY; si no la capturó, el faltante. Nunca se inventa un número cuando no
+  // falta nada — esos renglones salen en blanco para que los llene a mano.
+  const exportarOC = () => {
+    if (!seleccionados.length) return;
+    const orden = [...seleccionados].sort((a, b) => (a.prov || "zzz").localeCompare(b.prov || "zzz", "es") || a.desc.localeCompare(b.desc, "es"));
+    bajar(`OrdenCompra_${hoy()}.csv`,
+      ["PROVEEDOR", "SKU", "DESCRIPCION", "CANTIDAD", "FALTA", "STOCK AL DIA", "EN CAMINO", "APARTADO"],
+      orden.map((f) => [f.prov || "(sin proveedor)", f.sku, f.desc,
+        qty[f.sku] ?? (f.stockFinal < 0 ? -f.stockFinal : ""), f.stockFinal < 0 ? -f.stockFinal : 0,
+        f.stock, f.backOrder, f.porSurtir]));
+    setAviso({ t: "ok", m: `${orden.length} artículo(s) exportados, agrupados por proveedor.` });
   };
 
   if (cargando) return <p className="text-xs text-stone-500">Cargando el MRP…</p>;
   if (err) return <p className="text-xs text-red-600">No se pudo cargar: {err}</p>;
 
   const faltaAlgo = !cat || !inv || !comp;
+  const obraAbierta = detalle ? filas.find((f) => f.sku === detalle) : null;
+  const chip = (on, set, txt, n) => (
+    <button onClick={() => set(!on)}
+      className={`px-2 py-1 text-[11px] font-medium rounded border whitespace-nowrap ${on ? "bg-stone-800 text-white border-stone-800" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+      {txt}{n != null && <span className="ml-1 opacity-70">{mx0(n)}</span>}
+    </button>
+  );
 
   return (
     <div className="space-y-3">
       <div className="rounded-lg bg-gradient-to-r from-emerald-700 to-teal-600 text-white px-4 py-3">
         <p className="text-sm font-semibold">JESÚS: YA PUEDES PONERTE CONTENTO CON TU MRP 🎉</p>
         <p className="text-[11px] text-emerald-50 mt-0.5">
-          Mismo formato y misma fórmula que tu Excel, con el catálogo completo de Zoho y sin filtrar nada. Ya no hay que pegar nada a mano.
+          Mismo formato y misma fórmula que tu Excel, con el catálogo completo de Zoho. Ya no hay que pegar nada a mano.
         </p>
       </div>
 
       {faltaAlgo && (
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded p-2">
-          Falta alguna de las sincronías de la madrugada: {[!cat && "catálogo", !inv && "inventario", !comp && "comprometido"].filter(Boolean).join(", ")}. Los números de esas columnas salen en cero.
+          Falta alguna sincronía de la madrugada: {[!cat && "catálogo", !inv && "inventario", !comp && "comprometido"].filter(Boolean).join(", ")}. Esas columnas salen en cero.
+        </p>
+      )}
+      {nDiscrepan > 0 && (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded p-2">
+          <b>{mx0(nDiscrepan)}</b> artículo(s) donde nuestro cálculo no coincide con el disponible que reporta Zoho. Vienen con <span className="text-amber-700 font-bold">▲</span> en STOCK FINAL.
         </p>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <input value={busca} onChange={(e) => { setBusca(e.target.value); setDesde(0); }}
-          placeholder="Buscar SKU o descripción…" className="px-2 py-1.5 border border-stone-300 rounded text-xs w-60" />
-        <span className="text-xs text-stone-500">{mx0(vistas.length)} de {mx0(filas.length)} SKU</span>
-        <button onClick={exportar} className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50">Exportar CSV</button>
-        <span className="text-[10px] text-stone-400">
-          Catálogo {cat?.fecha || "—"} · inventario {inv?.fecha || "—"} · OC {oc?.fecha || "—"} · comprometido {comp?.fecha || "—"}
+        <input value={busca} onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar SKU, descripción o proveedor…" className="px-2 py-1.5 border border-stone-300 rounded text-xs w-64" />
+        {chip(soloFalta, setSoloFalta, "Solo faltantes")}
+        {chip(soloQty, setSoloQty, "Solo con QTY")}
+        {chip(soloPmt, setSoloPmt, "Solo los que pide obra")}
+        {chip(ocultaBaja, setOcultaBaja, "Ocultar dados de baja")}
+        <span className="text-xs text-stone-500">
+          {mx0(vistas.length)} de {mx0(filas.length)} SKU
+          {escondidos > 0 && <span className="text-amber-700"> · {mx0(escondidos)} escondidos por filtros</span>}
         </span>
+        <button onClick={exportar} className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50">Exportar tabla</button>
       </div>
+
+      <p className="text-[10px] text-stone-400">
+        Catálogo {cat?.fecha || "—"} · inventario {inv?.fecha || "—"} · OC {oc?.fecha || "—"} · comprometido {comp?.fecha || "—"}
+      </p>
 
       {meses.length > 0 && (
         <div className="flex items-center gap-2">
@@ -6805,18 +6848,14 @@ function MrpCompras({ setAviso }) {
             {meses.map((m) => {
               const prendido = !mesesOff.has(m);
               const vacio = !(totPorMes[m] > 0);
-              // Un mes ya pasado con material apartado es demanda atrasada: el
-              // equipo debió instalarse y el material sigue comprometido.
               const pasado = m !== "SIN" && m < mesAhora();
               return (
                 <button key={m} onClick={() => setMesesOff((st) => { const n = new Set(st); n.has(m) ? n.delete(m) : n.add(m); return n; })}
                   title={vacio ? "Sin material apartado todavía" : `${mx0(totPorMes[m])} piezas`}
                   className={`shrink-0 px-2 py-1 text-[11px] font-medium rounded border whitespace-nowrap ${
-                    prendido
-                      ? (pasado ? "bg-red-700 text-white border-red-700" : "bg-teal-700 text-white border-teal-700")
-                      : `border-stone-300 ${vacio ? "text-stone-300" : "text-stone-400 line-through"}`}`}>
-                  {mesTitulo(m)}
-                  {!vacio && <span className="ml-1 opacity-70">{mx0(totPorMes[m])}</span>}
+                    prendido ? (pasado ? "bg-red-700 text-white border-red-700" : "bg-teal-700 text-white border-teal-700")
+                             : `border-stone-300 ${vacio ? "text-stone-300" : "text-stone-400 line-through"}`}`}>
+                  {mesTitulo(m)}{!vacio && <span className="ml-1 opacity-70">{mx0(totPorMes[m])}</span>}
                 </button>
               );
             })}
@@ -6824,76 +6863,116 @@ function MrpCompras({ setAviso }) {
         </div>
       )}
 
-      <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-[11px]">
-            <thead className="bg-stone-100 text-[9px] uppercase tracking-wider text-stone-500 sticky top-0">
-              <tr>
-                <th className="text-left px-2 py-2">SKU</th>
-                <th className="text-left px-2 py-2">DESCRIPCION</th>
-                <th className="text-right px-2 py-2">BACK ORDER</th>
-                <th className="text-right px-2 py-2">POR SURTIR</th>
-                <th className="text-right px-2 py-2">STOCK AL DIA</th>
-                <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
-                <th className="text-right px-2 py-2">QTY</th>
-                {mesesVisibles.map((m) => <th key={m} className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>)}
-              </tr>
+      {obraAbierta && (
+        <div className="bg-purple-50 border border-purple-300 rounded-lg p-3">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-xs font-semibold text-purple-900">
+              {obraAbierta.sku} · lo piden {obraAbierta.obras.length} obra(s) en IS-PMT
+            </p>
+            <button onClick={() => setDetalle(null)} className="text-[11px] text-purple-700 hover:underline">cerrar</button>
+          </div>
+          <table className="w-full text-[11px] mt-2">
+            <thead className="text-[9px] uppercase tracking-wider text-purple-500">
+              <tr><th className="text-left py-1">Proyecto</th><th className="text-left">OV</th><th className="text-left">Instala</th>
+                <th className="text-right">Pide</th><th className="text-right">Entregado</th><th className="text-right">Falta</th></tr>
             </thead>
             <tbody>
-              <tr className="bg-stone-50 border-b-2 border-stone-300 font-semibold">
-                <td className="px-2 py-1.5" colSpan={2}>TOTALES</td>
-                <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("backOrder"))}</td>
-                <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("porSurtir"))}</td>
-                <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
-                <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
-                {mesesVisibles.map((m) => <td key={m} className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>)}
-              </tr>
-              {desde > 0 && <tr><td colSpan={7 + mesesVisibles.length} style={{ height: desde * ALTO }} /></tr>}
-              {enPantalla.map((f) => (
-                <tr key={f.sku} className="border-t border-stone-100 hover:bg-teal-50/40" style={{ height: ALTO }}>
-                  <td className={`px-2 py-1 font-mono font-semibold whitespace-nowrap ${f.activo ? "" : "text-stone-400 line-through"}`} title={f.activo ? "" : "Dado de baja en Zoho"}>{f.sku}</td>
-                  <td className="px-2 py-1 text-stone-600 max-w-xs truncate" title={f.desc}>{f.desc}</td>
-                  <td className="px-2 py-1 text-right font-mono">{f.backOrder || ""}</td>
-                  <td className="px-2 py-1 text-right font-mono">{f.porSurtir || ""}</td>
-                  <td className="px-2 py-1 text-right font-mono">{f.stock || ""}</td>
-                  {/* Lo negativo en rojo: es exactamente lo que hay que comprar. */}
-                  <td className={`px-2 py-1 text-right font-mono font-semibold bg-stone-50 ${f.stockFinal < 0 ? "text-red-600" : ""}`}>
-                    {f.discrepa && (
-                      <span className="text-amber-600 mr-1" title={`Zoho reporta ${f.dispZoho} disponible; nosotros calculamos ${f.stock - f.porSurtir} (${f.stock} a mano − ${f.porSurtir} comprometido). Sin contar el back order.`}>▲</span>
-                    )}
-                    {f.stockFinal}
-                  </td>
-                  <td className="px-2 py-1">
-                    {/* El faltante se muestra en gris DENTRO del campo, como
-                        sugerencia. No se rellena solo: cuánto pedir es criterio
-                        de compras — a veces se redondea al paquete, a veces se
-                        pide parcial, y a veces se abastece algo que sobra
-                        porque rota. La app no sabe nada de eso. */}
-                    <input type="number" value={qty[f.sku] ?? ""} onChange={(e) => guardarQty(f.sku, e.target.value)}
-                      placeholder={f.stockFinal < 0 ? String(-f.stockFinal) : ""}
-                      title={f.stockFinal < 0 ? `Faltan ${-f.stockFinal}` : ""}
-                      className="w-16 px-1 py-0.5 border border-stone-200 rounded text-right font-mono text-[11px] placeholder:text-stone-300" />
-                  </td>
-                  {mesesVisibles.map((m) => <td key={m} className="px-2 py-1 text-right font-mono bg-teal-50/40">{f.porMes[m] || ""}</td>)}
+              {obraAbierta.obras.slice().sort((a, b) => String(a.fecha || "9").localeCompare(String(b.fecha || "9"))).map((o, i) => (
+                <tr key={i} className="border-t border-purple-100">
+                  <td className="py-1 text-purple-900">{o.proyecto}</td>
+                  <td className="font-mono text-purple-700">{o.ov || "—"}</td>
+                  <td className="text-purple-700">{o.fecha || "sin fecha"}</td>
+                  <td className="text-right font-mono">{o.pide}</td>
+                  <td className="text-right font-mono text-stone-500">{o.entregado || ""}</td>
+                  <td className="text-right font-mono font-semibold">{o.falta || ""}</td>
                 </tr>
               ))}
-              {fin < vistas.length && <tr><td colSpan={7 + mesesVisibles.length} style={{ height: (vistas.length - fin) * ALTO }} /></tr>}
             </tbody>
           </table>
         </div>
-      </div>
+      )}
 
-      <div className="flex items-center justify-between gap-2">
-        <button onClick={() => setDesde((d) => Math.max(0, d - VENTANA))} disabled={desde === 0}
-          className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs rounded disabled:opacity-30">← Anteriores</button>
-        <span className="text-[11px] text-stone-500">{mx0(desde + 1)} – {mx0(fin)} de {mx0(vistas.length)}</span>
-        <button onClick={() => setDesde((d) => (d + VENTANA < vistas.length ? d + VENTANA : d))} disabled={fin >= vistas.length}
-          className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs rounded disabled:opacity-30">Siguientes →</button>
+      {sel.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 bg-teal-50 border border-teal-300 rounded-lg px-3 py-2">
+          <span className="text-xs text-teal-900"><b>{mx0(sel.size)}</b> artículo(s) marcados</span>
+          <button onClick={exportarOC} className="px-3 py-1.5 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">Exportar orden de compra</button>
+          <button onClick={() => setSel(new Set())} className="text-[11px] text-teal-700 hover:underline">quitar marcas</button>
+        </div>
+      )}
+
+      <div ref={cajaRef} onScroll={(e) => setScroll(e.currentTarget.scrollTop)}
+        className="bg-white border border-stone-200 rounded-lg overflow-auto" style={{ maxHeight: "65vh" }}>
+        <table className="w-full text-[11px]" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead className="bg-stone-100 text-[9px] uppercase tracking-wider text-stone-500 sticky top-0 z-10">
+            <tr>
+              <th className="px-1 py-2 w-8"><input type="checkbox" checked={sel.size > 0 && sel.size >= vistas.length} onChange={(e) => (e.target.checked ? marcarVistos() : setSel(new Set()))} /></th>
+              <th className="text-right px-1 py-2 w-10">#</th>
+              <th className="text-left px-2 py-2">SKU</th>
+              <th className="text-left px-2 py-2">DESCRIPCION</th>
+              <th className="text-left px-2 py-2">PROVEEDOR</th>
+              <th className="text-right px-2 py-2">BACK ORDER</th>
+              <th className="text-right px-2 py-2">POR SURTIR</th>
+              <th className="text-right px-2 py-2">STOCK AL DIA</th>
+              <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
+              <th className="text-right px-2 py-2">QTY</th>
+              {mesesVisibles.map((m) => <th key={m} className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>)}
+            </tr>
+            <tr className="bg-stone-50 text-stone-700">
+              <td className="px-1 py-1.5" colSpan={4}><span className="text-[10px] font-semibold">TOTALES</span></td>
+              <td className="px-2 py-1.5"></td>
+              <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("backOrder"))}</td>
+              <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("porSurtir"))}</td>
+              <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
+              <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
+              <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
+              {mesesVisibles.map((m) => <td key={m} className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>)}
+            </tr>
+          </thead>
+          <tbody>
+            {primero > 0 && <tr style={{ height: primero * ALTO }}><td colSpan={10 + mesesVisibles.length} /></tr>}
+            {enPantalla.map((f, i) => (
+              <tr key={f.sku} style={{ height: ALTO }}
+                className={`border-t border-stone-100 ${sel.has(f.sku) ? "bg-teal-50/70" : "hover:bg-stone-50"}`}>
+                <td className="px-1"><input type="checkbox" checked={sel.has(f.sku)} onChange={() => alterna(f.sku)} /></td>
+                <td className="px-1 text-right font-mono text-[10px] text-stone-400">{mx0(primero + i + 1)}</td>
+                <td className="px-2 whitespace-nowrap">
+                  {/* Morado = IS-PMT lo pide para obra. Puede no estar en la OV:
+                      el BOM de la obra y lo apartado en Zoho no siempre coinciden. */}
+                  {f.obras.length > 0 && (
+                    <button onClick={() => setDetalle(detalle === f.sku ? null : f.sku)}
+                      title={`${f.obras.length} obra(s) lo piden · faltan ${f.pideObra}`}
+                      className="mr-1 text-purple-600 hover:text-purple-800">●</button>
+                  )}
+                  <span className={`font-mono font-semibold ${f.activo ? "" : "text-stone-400 line-through"}`}
+                    title={f.activo ? "" : "Dado de baja en Zoho"}>{f.sku}</span>
+                </td>
+                <td className="px-2 text-stone-600 max-w-xs truncate" title={f.desc}>{f.desc}</td>
+                <td className="px-2 text-stone-500 max-w-[10rem] truncate" title={f.prov}>{f.prov}</td>
+                <td className="px-2 text-right font-mono">{f.backOrder || ""}</td>
+                <td className="px-2 text-right font-mono">{f.porSurtir || ""}</td>
+                <td className="px-2 text-right font-mono">{f.stock || ""}</td>
+                <td className={`px-2 text-right font-mono font-semibold bg-stone-50 ${f.stockFinal < 0 ? "text-red-600" : ""}`}>
+                  {f.discrepa && <span className="text-amber-600 mr-1" title={`Zoho reporta ${f.dispZoho} disponible; nosotros ${f.stock - f.porSurtir}. Sin contar el back order.`}>▲</span>}
+                  {f.stockFinal}
+                </td>
+                <td className="px-2">
+                  {/* El faltante va en gris como sugerencia, no como valor:
+                      cuánto pedir es criterio de compras. */}
+                  <input type="number" value={qty[f.sku] ?? ""} onChange={(e) => guardarQty(f.sku, e.target.value)}
+                    placeholder={f.stockFinal < 0 ? String(-f.stockFinal) : ""}
+                    className="w-16 px-1 py-0.5 border border-stone-200 rounded text-right font-mono text-[11px] placeholder:text-stone-300" />
+                </td>
+                {mesesVisibles.map((m) => <td key={m} className="px-2 text-right font-mono bg-teal-50/40">{f.porMes[m] || ""}</td>)}
+              </tr>
+            ))}
+            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO }}><td colSpan={10 + mesesVisibles.length} /></tr>}
+          </tbody>
+        </table>
       </div>
 
       <p className="text-[10px] text-stone-400">
         STOCK FINAL = BACK ORDER + STOCK AL DIA − POR SURTIR. La columna QTY es tuya: se guarda sola y nadie la pisa.
+        El <span className="text-purple-600">●</span> marca lo que IS-PMT pide para obra; haz clic para ver en qué proyecto.
       </p>
     </div>
   );
