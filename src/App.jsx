@@ -6728,7 +6728,11 @@ function MrpCompras({ setAviso }) {
   useEffect(() => {
     if (yaInicie.current || !meses.length) return;
     yaInicie.current = true;
-    setMesesOff(new Set(meses.filter((m) => !(totPorMes[m] > 0))));
+    // Arrancan apagados los meses vacíos y los ya pasados. Los dos siguen ahí
+    // para prenderlos: un mes pasado con material apartado es demanda atrasada
+    // y hay que poder mirarla, pero no estorbando la vista de lo que viene.
+    const ahora = mesAhora();
+    setMesesOff(new Set(meses.filter((m) => !(totPorMes[m] > 0) || (m !== "SIN" && m < ahora))));
   }, [meses, totPorMes]);
 
   const mesesVisibles = meses.filter((m) => !mesesOff.has(m));
@@ -6739,6 +6743,7 @@ function MrpCompras({ setAviso }) {
     [filas, q],
   );
 
+  const totQty = useMemo(() => vistas.reduce((a, f) => a + (+qty[f.sku] || 0), 0), [vistas, qty]);
   const nDiscrepan = useMemo(() => vistas.filter((f) => f.discrepa).length, [vistas]);
 
   // Ventana de render: 2,300 renglones de golpe hacen que la pantalla se
@@ -6841,7 +6846,7 @@ function MrpCompras({ setAviso }) {
                 <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("porSurtir"))}</td>
                 <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
                 <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
-                <td className="px-2 py-1.5"></td>
+                <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
                 {mesesVisibles.map((m) => <td key={m} className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>)}
               </tr>
               {desde > 0 && <tr><td colSpan={7 + mesesVisibles.length} style={{ height: desde * ALTO }} /></tr>}
@@ -6860,8 +6865,15 @@ function MrpCompras({ setAviso }) {
                     {f.stockFinal}
                   </td>
                   <td className="px-2 py-1">
+                    {/* El faltante se muestra en gris DENTRO del campo, como
+                        sugerencia. No se rellena solo: cuánto pedir es criterio
+                        de compras — a veces se redondea al paquete, a veces se
+                        pide parcial, y a veces se abastece algo que sobra
+                        porque rota. La app no sabe nada de eso. */}
                     <input type="number" value={qty[f.sku] ?? ""} onChange={(e) => guardarQty(f.sku, e.target.value)}
-                      className="w-16 px-1 py-0.5 border border-stone-200 rounded text-right font-mono text-[11px]" />
+                      placeholder={f.stockFinal < 0 ? String(-f.stockFinal) : ""}
+                      title={f.stockFinal < 0 ? `Faltan ${-f.stockFinal}` : ""}
+                      className="w-16 px-1 py-0.5 border border-stone-200 rounded text-right font-mono text-[11px] placeholder:text-stone-300" />
                   </td>
                   {mesesVisibles.map((m) => <td key={m} className="px-2 py-1 text-right font-mono bg-teal-50/40">{f.porMes[m] || ""}</td>)}
                 </tr>
