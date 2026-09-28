@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Component } from "react";
 import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
+import Preguntar from "./Preguntar.jsx";
 import { buildMRP, calendarioCompra, buildMRPPorFecha, bomPorHito } from "./mrp.js";
 import { hitoById, LEAD_EQUIPO_CRITICO } from "./hitos.js";
 import { CAMARO_IMG } from "./camaroImg.js";
@@ -2162,6 +2163,10 @@ function App() {
               `}</style>
             </div>
           </div>
+          {/* El buscador con IA: arriba y siempre visible, para preguntar desde
+              cualquier pantalla sin perder donde estabas. */}
+          <Preguntar />
+
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
             {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}

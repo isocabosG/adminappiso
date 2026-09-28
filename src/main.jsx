@@ -56,6 +56,17 @@ window.soLimpieza = async (payload) => {
 
 // Helper del feed del MRP. Va a la Edge Function 'mrp-feed', que pega a IS-PMT
 // (/api/mrp) con el token guardado del lado servidor. Devuelve { ok, proyectos[] }.
+// El buscador con IA. Va a la Edge Function 'preguntar', que es la unica que
+// ve los datos: el navegador solo manda el texto y pinta la respuesta. Como en
+// mrpEditar, el error NO se traga — una respuesta que no se pudo calcular tiene
+// que verse, no quedarse en blanco.
+window.preguntar = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('preguntar', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false && data.error) throw new Error(data.error)
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))
