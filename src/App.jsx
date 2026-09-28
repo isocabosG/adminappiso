@@ -2410,12 +2410,6 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
         </div>
       </div>
 
-      {nDiscrepan > 0 && (
-        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded p-2">
-          <b>{mx0(nDiscrepan)}</b> artículo{nDiscrepan === 1 ? "" : "s"} donde nuestro cálculo no coincide con el disponible que reporta Zoho. Vienen marcados con <span className="text-amber-700 font-bold">▲</span> en STOCK FINAL; pasa el cursor encima para ver los dos números.
-        </p>
-      )}
-
       <div className="flex flex-wrap items-center gap-2">
         <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU o artículo…"
           className="flex-1 min-w-[180px] px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
