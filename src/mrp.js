@@ -24,7 +24,8 @@
 // piden primero (150 d). Por eso el calendario se ordena por lead descendente.
 
 import {
-  HITOS, hitoById, hitoDe, leadDe, leadHito, fechaPedido,
+  HITOS, HITOS_POR_SISTEMA, SISTEMAS, hitoById, hitoDe, sistemaDe, claveHito,
+  leadDe, leadHito, porqueLead, fechaPedido,
   LEAD_DIAS, LEAD_EQUIPO_CRITICO,
 } from './hitos.js'
 
@@ -45,13 +46,17 @@ export function lineasDeProyecto(p) {
   const D = Dde(p)
   return (p.materiales || []).map((m) => {
     const hito = hitoDe(m)
+    const sistema = sistemaDe(m)
     const lead = leadDe(m)
     return {
       // id de project_materials: es el `materialId` que pide /api/mrp/material.
       id: m.id || null, projectId: p.id || null,
       ov: p.ov, proyecto: p.name, D,
       sku: m.sku || null, descripcion: m.descripcion || '', seccion: m.seccion || null,
-      hito, lead, fechaCompra: fechaPedido(D, lead),
+      // `hito` solo agrupa y etiqueta. La fecha de compra la manda el MATERIAL:
+      // si IS-PMT renumera los hitos, esta fecha no se mueve.
+      hito, sistema, clave: claveHito(m),
+      lead, leadPorque: porqueLead(m), fechaCompra: fechaPedido(D, lead),
       critico: lead >= LEAD_EQUIPO_CRITICO,
       provisional: !!m.provisional, // true = viene de la OV (sin BOM sincronizado)
       // Del feed de IS-PMT: true vigente · false dado de baja · null no se sabe.
@@ -291,10 +296,15 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
 // BOM de UN proyecto agrupado por hito — para la ficha del proyecto.
 export function bomPorHito(p) {
   const lineas = lineasDeProyecto(p)
-  return [1, 2, 3, 4, 5].map((h) => {
-    const mats = lineas.filter((l) => l.hito === h).sort((a, b) => b.lead - a.lead)
+  // Se recorre sistema por sistema: SOLAR:4, GEN:4 y BOMBA:4 son tres hitos
+  // distintos que pueden convivir en la misma obra. Agrupar por el numero solo
+  // los fundiria en uno.
+  const pares = SISTEMAS.flatMap((s) => (HITOS_POR_SISTEMA[s] || []).map((h) => [s, h.id]))
+  return pares.map(([s, h]) => {
+    const clave = `${s}:${h}`
+    const mats = lineas.filter((l) => l.clave === clave).sort((a, b) => b.lead - a.lead)
     return {
-      hito: h, meta: hitoById(h), materiales: mats,
+      hito: h, sistema: s, clave, meta: hitoById(h, s), materiales: mats,
       lead: mats.reduce((n, m) => Math.max(n, m.lead), 0),
       fechaCompra: mats.map((m) => m.fechaCompra).filter(Boolean).sort()[0] || null,
       piezas: mats.reduce((a, m) => a + m.requerido, 0),

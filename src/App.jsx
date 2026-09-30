@@ -3636,7 +3636,12 @@ ${porPagar >= 0
                   return (
                     <div key={g.hito}>
                       <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
-                        <p className="text-[10px] uppercase tracking-widest text-stone-500">Hito {g.hito} · {g.meta?.nombre}</p>
+                        <p className="text-[10px] uppercase tracking-widest text-stone-500">
+                          {/* El sistema va al frente: SOLAR 4 y GEN 4 son hitos
+                              distintos y pueden estar los dos en la misma obra. */}
+                          <span className="text-violet-700 font-semibold">{g.sistema}</span>
+                          {" · "}Hito {g.hito} · {g.meta?.nombre}
+                        </p>
                         <p className="text-[10px] font-mono text-stone-500">
                           {nfMrp.format(g.piezas)} pzas · pedir antes de <b className={tarde ? "text-red-700" : "text-stone-700"}>{g.fechaCompra || "—"}</b>
                           <span className="text-stone-400"> (lead {g.lead} d)</span>
