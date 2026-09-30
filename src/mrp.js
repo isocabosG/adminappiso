@@ -25,7 +25,7 @@
 
 import {
   HITOS, HITOS_POR_SISTEMA, SISTEMAS, hitoById, hitoDe, sistemaDe, claveHito,
-  leadDe, leadHito, porqueLead, fechaPedido,
+  leadDe, leadHito, porqueLead, fechaPedido, mapaHitos,
   LEAD_DIAS, LEAD_EQUIPO_CRITICO,
 } from './hitos.js'
 
@@ -294,17 +294,21 @@ export function buildMRPPorFecha(proyectos, invPorSku = {}, opts = {}) {
 }
 
 // BOM de UN proyecto agrupado por hito — para la ficha del proyecto.
-export function bomPorHito(p) {
+export function bomPorHito(p, hitosDelFeed) {
   const lineas = lineasDeProyecto(p)
   // Se recorre sistema por sistema: SOLAR:4, GEN:4 y BOMBA:4 son tres hitos
   // distintos que pueden convivir en la misma obra. Agrupar por el numero solo
-  // los fundiria en uno.
-  const pares = SISTEMAS.flatMap((s) => (HITOS_POR_SISTEMA[s] || []).map((h) => [s, h.id]))
+  // los fundiria en uno. El orden lo manda el feed (orden_sistema, num) y si no
+  // hay feed, el de la tabla local.
+  const mapa = mapaHitos(hitosDelFeed)
+  const pares = Object.values(mapa)
+    .sort((a, b) => a.ordenSistema - b.ordenSistema || a.num - b.num)
+    .map((h) => [h.sistema, h.num])
   return pares.map(([s, h]) => {
     const clave = `${s}:${h}`
     const mats = lineas.filter((l) => l.clave === clave).sort((a, b) => b.lead - a.lead)
     return {
-      hito: h, sistema: s, clave, meta: hitoById(h, s), materiales: mats,
+      hito: h, sistema: s, clave, meta: mapa[clave] || hitoById(h, s), materiales: mats,
       lead: mats.reduce((n, m) => Math.max(n, m.lead), 0),
       fechaCompra: mats.map((m) => m.fechaCompra).filter(Boolean).sort()[0] || null,
       piezas: mats.reduce((a, m) => a + m.requerido, 0),

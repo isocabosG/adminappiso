@@ -157,6 +157,42 @@ export function fechaPedido(fechaInstalacion, dias) {
   return f.toISOString().slice(0, 10)
 }
 
+// ── Los nombres vienen del feed; esta tabla es el respaldo ─────────────────
+// IS-PMT expone `hitos` en GET /api/mrp (doce claves, una sola vez por
+// respuesta). Esa es la fuente de verdad de los NOMBRES, para que ninguna de
+// las tres apps los tenga escritos a mano y se desincronicen.
+//
+// Los nombres sí se comparten y los días NO, a propósito: un nombre viejo se ve
+// feo y alguien lo reporta; un lead viejo compra equipo tarde y no avisa a
+// nadie. Por eso la tabla de días se queda aquí, medida y revisada, y no viaja
+// por el feed.
+//
+// Lo que llega del feed es dato de otro sistema, no se cree a ciegas: se
+// aceptan solo los renglones con sistema, número y nombre utilizables, y
+// cualquier hueco lo cubre HITOS_POR_SISTEMA. Si el feed no contesta, las
+// etiquetas siguen saliendo — viejas, pero salen.
+export function mapaHitos(hitosDelFeed) {
+  const mapa = {}
+  for (const s of SISTEMAS) {
+    for (const h of HITOS_POR_SISTEMA[s]) {
+      mapa[`${s}:${h.id}`] = { sistema: s, num: h.id, nombre: h.nombre, encabezado: null, ordenSistema: SISTEMAS.indexOf(s), origen: 'local' }
+    }
+  }
+  for (const h of (Array.isArray(hitosDelFeed) ? hitosDelFeed : [])) {
+    const sis = String(h?.sistema || '').trim().toUpperCase()
+    const num = Number(h?.num)
+    const nombre = String(h?.nombre || '').trim()
+    if (!SISTEMAS.includes(sis) || !(num >= 1 && num <= 4) || !nombre) continue
+    mapa[`${sis}:${num}`] = {
+      sistema: sis, num, nombre,
+      encabezado: String(h?.encabezado || '').trim() || null,
+      ordenSistema: Number.isFinite(Number(h?.orden_sistema)) ? Number(h.orden_sistema) : SISTEMAS.indexOf(sis),
+      origen: 'feed',
+    }
+  }
+  return mapa
+}
+
 // ── Compatibilidad ─────────────────────────────────────────────────────────
 // `HITOS` y `LEAD_DIAS` siguen exportados porque mrp.js los importa. LEAD_DIAS
 // ya NO es fuente de verdad de nada: es un piso de 10 días por hito, y el lead

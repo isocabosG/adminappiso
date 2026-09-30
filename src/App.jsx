@@ -2679,6 +2679,9 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   // Se cruza con las OV de Zoho por `zoho_so_id`.
   const [calById, setCalById] = useState({});
   const [feedErr, setFeedErr] = useState(null);
+  // Catálogo de hitos de IS-PMT: los nombres los manda el feed para que no
+  // vivan escritos a mano en tres apps. Si no llega, hitos.js los cubre.
+  const [feedHitos, setFeedHitos] = useState(null);
   const [soloCal, setSoloCal] = useState(false);   // chip: ver solo calendarizados
   const [cobF, setCobF] = useState("todos");      // cubo de antigüedad en Cobranza
 
@@ -2704,7 +2707,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           if (p.zoho_so_id) m[String(p.zoho_so_id)] = p;
           if (p.ov) m["ov:" + String(p.ov).trim().toUpperCase()] = p;
         }
-        setCalById(m); setFeedErr(null);
+        setCalById(m); setFeedHitos(Array.isArray(d.hitos) ? d.hitos : null); setFeedErr(null);
       } catch (e) {
         // Antes esto se tragaba el error y la lista se veía "normal": sin
         // morados y sin orden, idéntica a un día en que nada está
@@ -2732,7 +2735,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   };
   if (modo.startsWith("so:")) {
     const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
-    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr }} />;
+    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos }} />;
   }
 
   const q = busca.trim().toLowerCase();
@@ -3251,7 +3254,7 @@ function FilaMaterial({ m, projectId, onGuardado }) {
   );
 }
 
-function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr }) {
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr, feedHitos }) {
   // materialId -> valores ya guardados en IS-PMT en esta sesión
   const [matEdit, setMatEdit] = useState({});
   const [so, setSo] = useState(null);
@@ -3626,7 +3629,7 @@ ${porPagar >= 0
                 const e = matEdit[x.id];
                 return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked, locked_at: e.lockedAt } : x;
               }),
-            });
+            }, feedHitos);
             if (!grupos.length) return <p className="px-3 py-4 text-xs text-stone-400">Este proyecto no tiene lista de materiales en IS-PMT todavía. El MRP jala los equipos de la orden de venta como provisional.</p>;
             const hoyISO = hoy();
             return (
