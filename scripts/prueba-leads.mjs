@@ -49,8 +49,28 @@ const CASOS = [
   { n: 'Smart meter',
     m: { descripcion: 'SMART METER TRIFASICO', seccion: 'MONITOREO', sistema: 'SOLAR', milestone_id: 4 },
     espera: 25 },
-  { n: 'Cable normal (todo lo demás)',
-    m: { descripcion: 'CABLE THHN 12 AWG NEGRO', seccion: 'CABLEADO', sistema: 'SOLAR', milestone_id: 3 },
+  // CORREGIDO 30-sep. Este caso decía `milestone_id: 3` y de ahí salía un
+  // "antes: 65d" que yo reporté como si el cable se hubiera estado comprando
+  // mal. Era falso: el clasificador viejo de IS-PMT mandaba el cable al hito 1
+  // (/CABLE|RHW|THHW|KCMIL|.../), y sin milestone_id caía a hito 4 por sección.
+  // Por los dos caminos daban 10 días, que es lo correcto. El 65 lo produjo mi
+  // fixture, no los datos. Inventar una entrada y luego reportar su salida como
+  // un hallazgo es la misma falla que este archivo existe para evitar.
+  { n: 'Cable THHN, como llega de verdad (sin milestone_id)',
+    m: { descripcion: 'CABLE THHN 12 AWG NEGRO', seccion: 'CABLEADO', sistema: 'SOLAR' },
+    espera: 10 },
+  { n: 'Cable THHN en su hito real (1)',
+    m: { descripcion: 'CABLE THHN 12 AWG NEGRO', seccion: 'CABLEADO', sistema: 'SOLAR', milestone_id: 1 },
+    espera: 10 },
+
+  // El caso que SÍ era real, y que encontró IS-PMT: material local que vivía en
+  // el hito 3 heredaba los 65 días del hito. Son 4 partidas en sus datos
+  // —manómetros y reguladores de gas del generador—, no el cable.
+  { n: 'Manómetro de gas en hito 3 (local, heredaba 65d)',
+    m: { descripcion: 'MANOMETRO PARA GAS LP', seccion: 'EQUIPOS', sistema: 'GEN', milestone_id: 3 },
+    espera: 10 },
+  { n: 'Regulador de gas en hito 3 (local, heredaba 65d)',
+    m: { descripcion: 'REGULADOR DE GAS DOS ETAPAS', seccion: 'EQUIPOS', sistema: 'GEN', milestone_id: 3 },
     espera: 10 },
   { n: 'Red de seguridad: batería sin descripción, solo SKU',
     m: { descripcion: '', sku: 'BREHV5K', seccion: 'EQUIPOS', sistema: 'SOLAR', milestone_id: 4 },
