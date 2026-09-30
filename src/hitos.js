@@ -175,7 +175,7 @@ export function mapaHitos(hitosDelFeed) {
   const mapa = {}
   for (const s of SISTEMAS) {
     for (const h of HITOS_POR_SISTEMA[s]) {
-      mapa[`${s}:${h.id}`] = { sistema: s, num: h.id, nombre: h.nombre, encabezado: null, ordenSistema: SISTEMAS.indexOf(s), origen: 'local' }
+      mapa[`${s}:${h.id}`] = { sistema: s, num: h.id, nombre: h.nombre, encabezado: `${s} — ${h.nombre}`, ordenSistema: SISTEMAS.indexOf(s), origen: 'local' }
     }
   }
   for (const h of (Array.isArray(hitosDelFeed) ? hitosDelFeed : [])) {
@@ -185,7 +185,10 @@ export function mapaHitos(hitosDelFeed) {
     if (!SISTEMAS.includes(sis) || !(num >= 1 && num <= 4) || !nombre) continue
     mapa[`${sis}:${num}`] = {
       sistema: sis, num, nombre,
-      encabezado: String(h?.encabezado || '').trim() || null,
+      // IS-PMT: `nombre` cuando el sistema ya se dijo; `encabezado` cuando la
+      // lista mezcla sistemas. Si no llega, se arma, para que la pantalla
+      // siempre tenga una etiqueta que distinga el sistema.
+      encabezado: String(h?.encabezado || '').trim() || `${sis} — ${nombre}`,
       ordenSistema: Number.isFinite(Number(h?.orden_sistema)) ? Number(h.orden_sistema) : SISTEMAS.indexOf(sis),
       origen: 'feed',
     }
@@ -194,9 +197,8 @@ export function mapaHitos(hitosDelFeed) {
 }
 
 // ── Compatibilidad ─────────────────────────────────────────────────────────
-// `HITOS` y `LEAD_DIAS` siguen exportados porque mrp.js los importa. LEAD_DIAS
-// ya NO es fuente de verdad de nada: es un piso de 10 días por hito, y el lead
-// real siempre lo manda el material. Se deja para no romper la firma mientras
-// se limpia el motor viejo.
+// Ya no queda ninguna tabla que traduzca un hito a dias. Ese piso existia
+// mientras sobrevivia el motor viejo; se borro junto con el, para que no
+// quede en el archivo un mapeo hito->dias esperando a que alguien lo
+// llame por error.
 export const HITOS = HITOS_POR_SISTEMA.SOLAR
-export const LEAD_DIAS = { 1: 10, 2: 10, 3: 10, 4: 10 }

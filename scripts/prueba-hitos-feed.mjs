@@ -42,6 +42,24 @@ chk('num 5 → ignorado (ya no existe)', !d['GEN:5'])
 chk('minúsculas normalizadas', d['GEN:2'].nombre === 'Generador OK')
 chk('sigue en 12 claves', Object.keys(d).length === 12)
 
+console.log('\n  ENCABEZADO: dos hitos distintos no pueden verse iguales')
+// Lo advirtió IS-PMT: SOLAR:3 y GEN:3 se llaman los dos "Instalación general",
+// y SOLAR:4, GEN:4 y BOMBA:4 los tres "Inst. de equipos". En una lista que
+// mezcla sistemas, pintar `nombre` los vuelve indistinguibles — el mismo error
+// que la clave compuesta evita en los datos, reaparecido en la pantalla.
+// El choque es real en los nombres de IS-PMT, no en nuestra tabla local, así
+// que se prueba con un feed que los trae repetidos, como ellos lo describieron.
+const choque = H.mapaHitos([
+  { sistema: 'SOLAR', num: 3, nombre: 'Instalación general', encabezado: 'SOLAR — Instalación general' },
+  { sistema: 'GEN', num: 3, nombre: 'Instalación general', encabezado: 'GEN — Instalación general' },
+])
+chk('el feed manda el mismo nombre para SOLAR:3 y GEN:3', choque['SOLAR:3'].nombre === choque['GEN:3'].nombre)
+chk('...y aun así el encabezado los distingue', choque['SOLAR:3'].encabezado !== choque['GEN:3'].encabezado)
+chk('los tres hitos 4 tienen encabezado distinto',
+  new Set(['SOLAR:4', 'GEN:4', 'BOMBA:4'].map((k) => a[k].encabezado)).size === 3)
+chk('el respaldo local también trae encabezado', Object.values(a).every((x) => !!x.encabezado))
+chk('feed sin encabezado → se arma igual', H.mapaHitos([{ sistema: 'GEN', num: 3, nombre: 'Gas' }])['GEN:3'].encabezado === 'GEN — Gas')
+
 console.log('\n  ORDEN Y ETIQUETA EN LA PANTALLA')
 const p = { name: 'X', fecha_instalacion: '2027-03-15', materiales: [
   { id: 1, sku: 'BREHV5K', descripcion: 'BATERIA RENON XTREME HV', seccion: 'EQUIPOS', sistema: 'SOLAR', milestone_id: 4, cant_disenada: 8 },

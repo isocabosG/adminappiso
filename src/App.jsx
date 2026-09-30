@@ -2,28 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Com
 import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
 import Preguntar from "./Preguntar.jsx";
-import { buildMRP, calendarioCompra, buildMRPPorFecha, bomPorHito } from "./mrp.js";
-import { hitoById, LEAD_EQUIPO_CRITICO, leadDe, porqueLead, fechaPedido } from "./hitos.js";
+import { bomPorHito } from "./mrp.js";
+import { leadDe, porqueLead, fechaPedido } from "./hitos.js";
 import { CAMARO_IMG } from "./camaroImg.js";
-
-// Chevrolet Camaro (broma para Jesús 🏎️): corre bajo el título del header.
-function CamaroCar({ className = "" }) {
-  return (
-    <svg viewBox="0 0 100 34" className={className} aria-hidden="true">
-      {/* carrocería baja tipo muscle coupe */}
-      <path d="M3 23 C4 17 8 16 13 15 L30 15 C33 10 40 7 52 7 C64 7 73 9 82 13 L92 15 C96 16 97 19 97 22 L97 23 C97 24.5 96 25 94 25 L86 25 A7 7 0 0 0 72 25 L44 25 A7 7 0 0 0 30 25 L6 25 C4 25 3 24.5 3 23 Z" fill="#e5e7eb" />
-      {/* cabina */}
-      <path d="M34 14 L41 9.2 C47 7.8 58 7.9 64 9.6 L71 13 Z" fill="#0e7490" />
-      {/* franjas SS en el cofre */}
-      <rect x="49.5" y="7.4" width="2" height="7.6" fill="#111" /><rect x="52.5" y="7.4" width="2" height="7.6" fill="#111" />
-      {/* ruedas */}
-      <circle cx="37" cy="25" r="6" fill="#111" /><circle cx="37" cy="25" r="2.3" fill="#cbd5e1" />
-      <circle cx="79" cy="25" r="6" fill="#111" /><circle cx="79" cy="25" r="2.3" fill="#cbd5e1" />
-      {/* faro */}
-      <circle cx="6.5" cy="19" r="1.4" fill="#fde68a" />
-    </svg>
-  );
-}
 
 function extraerJSON(txt) {
   if (!txt || !txt.trim()) throw new Error("la IA devolvió una respuesta vacía");
@@ -3639,11 +3620,16 @@ ${porPagar >= 0
                   return (
                     <div key={g.hito}>
                       <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+                        {/* `encabezado`, no `nombre`: esta lista mezcla
+                            sistemas, y SOLAR:3 y GEN:3 se llaman los dos
+                            "Instalación general". Con `nombre` dos hitos
+                            distintos se verían idénticos — el mismo error que la
+                            clave compuesta evita en los datos, reaparecido en
+                            la pantalla. La etiqueta completa la manda IS-PMT;
+                            aquí no se arma a mano. */}
                         <p className="text-[10px] uppercase tracking-widest text-stone-500">
-                          {/* El sistema va al frente: SOLAR 4 y GEN 4 son hitos
-                              distintos y pueden estar los dos en la misma obra. */}
-                          <span className="text-violet-700 font-semibold">{g.sistema}</span>
-                          {" · "}Hito {g.hito} · {g.meta?.nombre}
+                          <span className="text-violet-700 font-semibold">{g.meta?.encabezado || g.meta?.nombre}</span>
+                          {" · "}Hito {g.hito}
                         </p>
                         <p className="text-[10px] font-mono text-stone-500">
                           {nfMrp.format(g.piezas)} pzas · pedir antes de <b className={tarde ? "text-red-700" : "text-stone-700"}>{g.fechaCompra || "—"}</b>
@@ -4740,79 +4726,8 @@ function Fletes({ fletes, saveFletes }) {
   );
 }
 
-/* ===================== MÓDULO · INVENTARIO (almacén) ===================== */
-// ===================== MRP de compras por hito =====================
-// Cruza el feed de IS-PMT (/api/mrp → Edge Function mrp-feed) con el inventario
-// físico (cache de la pestaña Inventario) y las órdenes de compra abiertas de
-// Zoho, y arma el calendario de compra por hito. La clasificación por hito y los
-// leads vienen de src/hitos.js (copia literal de is-pmt/lib/hitos.js); aquí NO se
-// reclasifica: se consume milestone_id. El motor está en src/mrp.js.
-const HITO_UI = {
-  1: { chip: "bg-amber-100 text-amber-800 border-amber-300",   bar: "bg-amber-500" },
-  2: { chip: "bg-cyan-100 text-cyan-800 border-cyan-300",     bar: "bg-cyan-500" },
-  3: { chip: "bg-violet-100 text-violet-800 border-violet-300", bar: "bg-violet-500" },
-  4: { chip: "bg-red-100 text-red-800 border-red-300",         bar: "bg-red-500" },
-  5: { chip: "bg-emerald-100 text-emerald-800 border-emerald-300", bar: "bg-emerald-500" },
-};
-const upMrp = (s) => String(s || "").toUpperCase();
 const nfMrp = new Intl.NumberFormat("es-MX");
-const MESES_MRP = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-const fechaCortaMrp = (iso) => { if (!iso) return "—"; const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number); return (y && m && d) ? `${String(d).padStart(2, "0")} ${MESES_MRP[m - 1]} ${y}` : String(iso); };
-const diasMrp = (iso, hoyISO) => { if (!iso) return null; const a = Date.parse(String(iso).slice(0, 10) + "T00:00:00"), b = Date.parse(String(hoyISO).slice(0, 10) + "T00:00:00"); return (isNaN(a) || isNaN(b)) ? null : Math.round((a - b) / 86400000); };
-const urgMrp = (dias) => dias == null ? "text-stone-400" : dias <= 14 ? "text-red-700 font-semibold" : dias <= 30 ? "text-amber-600 font-semibold" : "text-stone-500";
-const urgTxt = (dias) => dias == null ? "" : dias < 0 ? `vencido ${-dias} d` : dias === 0 ? "hoy" : `en ${dias} d`;
-
-// Clasificación mínima para equipos que vienen de la OV (sin milestone_id de la BD).
-// La OV trae equipos de alto nivel; leadDe() del motor deriva el crítico (baterías 150 d) del texto.
-const hitoDeOV = (txt) => {
-  const t = String(txt || "").toLowerCase();
-  if (/bater|renon|blue planet|pytes|ecube|extreme|brel|breh|brch|mpack/.test(t)) return 3;
-  if (/inversor|inverter|sol-?ark|sol ark/.test(t)) return 3;
-  if (/cerebro|control|gabinete|fuente|generador|kohler/.test(t)) return 3;
-  if (/panel|módulo|modulo/.test(t)) return 2;
-  if (/estructura|racking|riel|clamp/.test(t)) return 2;
-  return 3; // la OV suele ser equipos → default Equipos
-};
-const esServicioMrp = (l) => (l.line_item_type === "service" || l.product_type === "service") || String(l.sku || "").toUpperCase().startsWith("INST") || /suministro\s*e?\s*instalaci/i.test(`${l.name || ""} ${l.description || ""}`);
-
-/* ---------------------------------------------------------------------------
-   Inventario FISICO neto de la empresa (sin desglose por almacen).
-
-   Zoho no entrega los tres numeros en el mismo endpoint:
-     - list_items  -> actual_available_stock            (A MANO fisico)
-     - get_item    -> actual_committed_stock            (COMPROMETIDAS fisicas)
-                      actual_available_for_sale_stock   (DISPONIBLE fisico)
-   Por eso son dos pasadas: una barata para todo el catalogo y luego una
-   llamada por SKU. Verificado contra la API el 21-sep-2026.
---------------------------------------------------------------------------- */
 const INV_FISICO_KEY = "iso3-inventario-fisico";
-// Empate por descripción para proponer el reemplazo de un SKU dado de baja.
-const normDesc = (s) => String(s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-  .replace(/[^A-Z0-9/ ]/g, " ").replace(/\s+/g, " ").trim();
-function sugerirReemplazo(desc, cat) {
-  const t = normDesc(desc).split(" ").filter(Boolean);
-  if (t.length < 2 || !cat) return null;
-  let best = null, bestScore = 0;
-  for (const [sku, x] of Object.entries(cat)) {
-    if (!x.activo) continue;
-    const c = normDesc(x.desc);
-    let hit = 0; for (const w of t) if (c.includes(w)) hit++;
-    const score = hit / t.length;
-    if (score > bestScore) { bestScore = score; best = { sku, desc: x.desc, aMano: x.aMano || 0 }; }
-  }
-  // 0.85 y no 1.0: "ARANDELA PLANA 3/8" contra "ARANDELA PLANA INOX 3/8" empata
-  // 4 de 4 palabras, pero casos con una palabra extra no deben quedar fuera.
-  return bestScore >= 0.85 ? best : null;
-}
-
-const OV_BOM_KEY = "iso3-mrp-ov-bom";   // BOM provisional jalado de la OV, por proyecto
-
-// Estatus de IS-PMT que SÍ entran al MRP. Decisión de Fran (24-sep-2026):
-// obras calendarizadas y las entregadas a Post Venta (esas también compran).
-// El feed manda además `instalando`, `anclaje`, `puesta_marcha`, `pausa` y
-// `sin_fecha`; quedan fuera — no se compra para una obra detenida, ni para una
-// que IS-PMT marca como sin fecha en calendario.
-// Para incluir otra, se agrega aquí y en ningún otro lado.
 const ESTATUS_MRP = new Set(["calendarizado", "postventa"]);
 const esCalendarizado = (p) => ESTATUS_MRP.has(String(p?.status || "").toLowerCase());
 const LOTE_GET_ITEM = 6;   // llamadas en paralelo; subirlo arriesga el rate-limit de Zoho
@@ -4881,370 +4796,6 @@ async function completarComprometido(items, orden, onProg) {
 /* Buscar un SKU en TODOS los proyectos del feed, estén o no calendarizados.
    A diferencia del resto del MRP, aquí no se filtra por estatus ni por fecha:
    la pregunta es "¿dónde se usa esto?", no "¿qué compro?". */
-function BuscarSku({ feed, ovMats, skuInfo }) {
-  const [q, setQ] = useState("");
-  const termino = q.trim().toUpperCase();
-  const hits = useMemo(() => {
-    if (termino.length < 3) return null;
-    const out = [];
-    for (const p of feed?.proyectos || []) {
-      const mats = (p.materiales || []).length ? p.materiales : (ovMats[p.id] || []);
-      for (const m of mats) {
-        const sku = upMrp(m.sku);
-        if (!sku.includes(termino) && !String(m.descripcion || "").toUpperCase().includes(termino)) continue;
-        out.push({ sku, desc: m.descripcion, qty: +m.cant_disenada || 0, entregado: +m.cant_entregada || 0,
-                   ov: p.ov, name: p.name, status: p.status, fecha: p.fecha_instalacion });
-      }
-    }
-    return out.sort((a, b) => String(a.fecha || "9999").localeCompare(String(b.fecha || "9999")));
-  }, [termino, feed, ovMats]);
-
-  const info = skuInfo && skuInfo[termino];
-  return (
-    <details className="bg-white border border-stone-200 rounded-lg">
-      <summary className="px-3 py-2 text-xs font-medium text-stone-700 cursor-pointer">
-        ▸ ¿Dónde se usa un SKU? <span className="ml-1 font-normal text-stone-400">en todos los proyectos, calendarizados o no</span>
-      </summary>
-      <div className="px-3 pb-3 space-y-2">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="SKU o descripción…"
-          className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-violet-600" />
-        {info && (
-          <p className="text-[11px] text-stone-500">
-            {termino}: {info.desc} · {info.activo ? <span className="text-emerald-700">activo</span> : <span className="text-orange-700 font-semibold">dado de baja</span>} · {nfMrp.format(info.aMano || 0)} en almacén
-          </p>
-        )}
-        {hits === null ? <p className="text-[11px] text-stone-400">Escribe al menos 3 caracteres.</p>
-         : hits.length === 0 ? <p className="text-[11px] text-stone-400">No aparece en ningún proyecto del feed.</p>
-         : (
-          <>
-            <p className="text-[11px] text-stone-500">{hits.length} renglón{hits.length === 1 ? "" : "es"} · {nfMrp.format(hits.reduce((a, h) => a + h.qty, 0))} pzas en total</p>
-            <table className="w-full text-xs">
-              <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
-                <th className="text-left py-1">Obra</th><th className="text-left py-1">OV</th><th className="text-left py-1">Estatus</th>
-                <th className="text-left py-1">Fecha obra</th><th className="text-right py-1">Req.</th><th className="text-right py-1">Entreg.</th>
-              </tr></thead>
-              <tbody>
-                {hits.slice(0, 60).map((h, i) => (
-                  <tr key={i} className="border-b border-stone-50">
-                    <td className="py-1 truncate max-w-[220px]">{h.name}</td>
-                    <td className="py-1 font-mono text-stone-500">{h.ov || "—"}</td>
-                    <td className="py-1 text-stone-500">{h.status}</td>
-                    <td className="py-1 font-mono text-stone-500">{h.fecha || "—"}</td>
-                    <td className="py-1 text-right font-mono">{nfMrp.format(h.qty)}</td>
-                    <td className="py-1 text-right font-mono text-stone-400">{h.entregado ? nfMrp.format(h.entregado) : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {hits.length > 60 && <p className="text-[10px] text-stone-400">Mostrando 60 de {hits.length}.</p>}
-          </>
-        )}
-      </div>
-    </details>
-  );
-}
-
-function MrpPorFecha({ proyectos, invPorSku, skuInfo }) {
-  // Se memoiza porque el empate recorre todo el catálogo por cada SKU muerto.
-  const sugeridos = useMemo(() => {
-    if (!skuInfo) return {};
-    const out = {};
-    for (const [sku, x] of Object.entries(skuInfo)) if (!x.activo) out[sku] = sugerirReemplazo(x.desc, skuInfo);
-    return out;
-  }, [skuInfo]);
-  const estadoSku = (sku) => {
-    if (!sku || !skuInfo) return null;
-    const x = skuInfo[upMrp(sku)];
-    if (!x) return { tipo: "inexistente" };
-    if (!x.activo) return { tipo: "baja", sug: sugeridos[upMrp(sku)] || null };
-    return null;
-  };
-
-  const [soloFalta, setSoloFalta] = useState(true);
-  const [filtro, setFiltro] = useState("todo");   // todo | vencido | semana | proxima | mes | muertos
-  const [abierta, setAbierta] = useState(null);
-  const hoyISO = hoy();
-  const fechas = useMemo(
-    () => buildMRPPorFecha(proyectos, invPorSku, { soloFaltante: soloFalta, hoyISO }),
-    [proyectos, invPorSku, soloFalta, hoyISO]);
-
-  // ---- Filtro por FECHA DE PEDIDO (no de obra). Es la pregunta de compras:
-  // "¿qué tengo que pedir esta semana?". Se filtran los MATERIALES y luego se
-  // recalculan los totales, para que el encabezado de cada tarjeta no mienta.
-  const addDias = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
-  const dow = new Date(hoyISO + "T00:00:00").getDay();            // 0 = domingo
-  const finEstaSemana = addDias(hoyISO, (7 - dow) % 7);
-  const finProxima = addDias(finEstaSemana, 7);
-  const finMes = (() => { const d = new Date(hoyISO + "T00:00:00"); return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10); })();
-
-  const pasa = (m) => {
-    if (filtro === "todo") return true;
-    if (filtro === "muertos") return !!estadoSku(m.sku);
-    if (!(m.sinPedir > 0)) return false;            // los demás filtros son "por pedir"
-    const f = m.fechaCompra;
-    if (filtro === "vencido") return !!f && f < hoyISO;
-    if (!f) return false;
-    if (filtro === "semana") return f <= finEstaSemana;
-    if (filtro === "proxima") return f > finEstaSemana && f <= finProxima;
-    if (filtro === "mes") return f <= finMes;
-    return true;
-  };
-
-  const vista = useMemo(() => fechas.map((f) => {
-    const hitos = f.hitos.map((g) => ({ ...g, materiales: g.materiales.filter(pasa) })).filter((g) => g.materiales.length);
-    if (!hitos.length) return null;
-    const mats = hitos.flatMap((g) => g.materiales);
-    const mapObras = new Map();
-    for (const m of mats) for (const pr of m.proyectos) { const k = pr.ov || pr.name; if (k && !mapObras.has(k)) mapObras.set(k, { ov: pr.ov || null, name: pr.name || "" }); }
-    return {
-      ...f, hitos, obras: [...mapObras.values()],
-      totSinPedir: mats.reduce((a, m) => a + (m.sinPedir || 0), 0),
-      totPedidoTarde: mats.reduce((a, m) => a + (m.pedidoTarde || 0), 0),
-      tarde: mats.some((m) => m.tarde),
-      // diasMrp(fechaCompra, hoy) es negativo cuando la fecha de pedido ya pasó;
-      // el signo invertido son los días de atraso.
-      diasTarde: mats.reduce((k, m) => (m.tarde && m.fechaCompra) ? Math.max(k, -(diasMrp(m.fechaCompra, hoyISO) || 0)) : k, 0),
-    };
-  }).filter(Boolean), [fechas, filtro, skuInfo]);
-
-  // ---- Proyección de salidas: agrupa lo que falta pedir por SEMANA DE PEDIDO
-  // y lo valúa al costo del catálogo. Se calcula sobre TODAS las fechas, no
-  // sobre el filtro: una proyección incompleta engaña más que no tenerla.
-  const lunesDe = (iso) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
-  const flujo = useMemo(() => {
-    const porSemana = {};
-    let sinFechaPzas = 0, sinCosto = 0;
-    for (const f of fechas) for (const g of f.hitos) for (const m of g.materiales) {
-      const q = m.sinPedir || 0; if (q <= 0) continue;
-      if (!m.fechaCompra) { sinFechaPzas += q; continue; }
-      const k = lunesDe(m.fechaCompra);
-      const costo = (skuInfo && m.sku && skuInfo[upMrp(m.sku)]?.cost) || 0;
-      if (!costo) sinCosto += q;
-      const s = porSemana[k] || (porSemana[k] = { semana: k, pzas: 0, monto: 0, obras: new Set() });
-      s.pzas += q; s.monto += q * costo;
-      for (const pr of m.proyectos) if (pr.ov || pr.name) s.obras.add(pr.ov || pr.name);
-    }
-    return { semanas: Object.values(porSemana).sort((a, b) => a.semana.localeCompare(b.semana)), sinFechaPzas, sinCosto };
-  }, [fechas, skuInfo]);
-
-  const CHIPS = [
-    ["todo", "Todo"], ["vencido", "Vencido"], ["semana", "Pedir esta semana"],
-    ["proxima", "Próxima semana"], ["mes", "Este mes"], ["muertos", "SKU de baja"],
-  ];
-
-  // Sin obras en el feed no hay conclusión que dar. "Nada por comprar" sobre
-  // cero datos es un visto bueno falso, y se ve igual que un día tranquilo.
-  if (!proyectos.length) return (
-    <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-6 text-center">
-      <p className="text-sm font-semibold text-amber-900">Sin datos de IS-PMT — el MRP no puede decir nada.</p>
-      <p className="text-xs text-amber-800 mt-1">
-        El feed no trajo ninguna obra. Esto <b>no</b> quiere decir que no haya nada que comprar:
-        quiere decir que no sabemos. Revisa el aviso de error arriba antes de tomar cualquier decisión de compra.
-      </p>
-    </div>
-  );
-
-  if (!fechas.length) return (
-    <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">
-      {soloFalta ? "Nada por comprar: el stock y el material en tránsito cubren todas las obras calendarizadas." : "Sin obras calendarizadas con material."}
-    </div>
-  );
-
-  return (
-    <div className="space-y-2">
-      {/* Qué es esta sección, para alguien que la abre por primera vez. */}
-      <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2.5">
-        <p className="text-xs font-semibold text-red-900">En esta sección verás los SKU que debemos pedir, ordenados por qué tan críticos son.</p>
-        <p className="text-[11px] text-red-800 mt-0.5">
-          Cada tarjeta es una fecha de obra. Dentro van los materiales que se necesitan ese día y cuánto falta comprar.
-          Dale clic a cualquier <b>número de orden de venta</b> para abrir ese proyecto y corregir ahí las cantidades o el SKU.
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {CHIPS.map(([k, t]) => (
-          <button key={k} onClick={() => setFiltro(k)}
-            className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${filtro === k ? "bg-violet-700 text-white border-violet-700" : "bg-white text-stone-600 border-stone-300 hover:border-violet-400"}`}>
-            {t}
-          </button>
-        ))}
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[11px] text-stone-500">{vista.length} de {fechas.length} fecha{fechas.length === 1 ? "" : "s"} de obra · el stock se asigna a la obra <b>más próxima primero</b>.</p>
-          {(() => {
-            if (!skuInfo) return null;
-            const malos = new Set();
-            for (const f of fechas) for (const g of f.hitos) for (const m of g.materiales) { const e = estadoSku(m.sku); if (e) malos.add(m.sku); }
-            if (!malos.size) return null;
-            return <p className="text-[11px] text-orange-700 mt-0.5"><b>{malos.size} SKU</b> dados de baja o inexistentes en Zoho — revísalos antes de comprar.</p>;
-          })()}
-        </div>
-        <label className="inline-flex items-center gap-1.5 text-xs text-stone-600 cursor-pointer">
-          <input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo lo que falta comprar
-        </label>
-      </div>
-
-      {flujo.semanas.length > 0 && (
-        <details className="bg-white border border-stone-200 rounded-lg">
-          <summary className="px-3 py-2 text-xs font-medium text-stone-700 cursor-pointer">
-            ▸ Proyección de compras por semana
-            <span className="ml-2 font-normal text-stone-400">
-              {flujo.semanas.length} semanas · ${mx0(flujo.semanas.reduce((a, s) => a + s.monto, 0))} MXN
-            </span>
-          </summary>
-          <div className="px-3 pb-3">
-            <table className="w-full text-xs">
-              <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
-                <th className="text-left py-1">Semana de pedido</th><th className="text-right py-1">Piezas</th>
-                <th className="text-right py-1">Monto MXN</th><th className="text-left py-1 pl-3">Obras</th>
-              </tr></thead>
-              <tbody>
-                {flujo.semanas.map((s) => (
-                  <tr key={s.semana} className={`border-b border-stone-50 ${s.semana < lunesDe(hoyISO) ? "bg-red-50" : ""}`}>
-                    <td className="py-1 font-mono">{s.semana}{s.semana < lunesDe(hoyISO) && <span className="ml-1 text-[9px] text-red-700">vencida</span>}</td>
-                    <td className="py-1 text-right font-mono">{nfMrp.format(s.pzas)}</td>
-                    <td className="py-1 text-right font-mono font-semibold">${mx0(s.monto)}</td>
-                    <td className="py-1 pl-3 text-stone-500 truncate max-w-[280px]">{[...s.obras].join(" · ")}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="text-[10px] text-stone-400 mt-1">
-              Valuado al costo del catálogo (promedio de Costos, o el de compra de Zoho).
-              {flujo.sinCosto > 0 && <> {nfMrp.format(flujo.sinCosto)} pzas <b>sin costo en catálogo</b> cuentan como $0.</>}
-              {flujo.sinFechaPzas > 0 && <> {nfMrp.format(flujo.sinFechaPzas)} pzas sin fecha de pedido quedan fuera.</>}
-            </p>
-          </div>
-        </details>
-      )}
-
-      {vista.map((f) => {
-        const open = abierta === f.fecha;
-        return (
-          <div key={f.fecha} className={`bg-white border rounded-lg overflow-hidden ${f.tarde ? "border-red-300" : "border-stone-200"}`}>
-            <button onClick={() => setAbierta(open ? null : f.fecha)} className="w-full px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left hover:bg-stone-50">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-semibold">{f.fecha}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${f.dias < 0 ? "bg-stone-200 text-stone-600" : f.dias <= 14 ? "bg-red-100 text-red-700" : f.dias <= 30 ? "bg-amber-100 text-amber-800" : "bg-stone-100 text-stone-600"}`}>
-                    {f.dias < 0 ? `hace ${-f.dias} d` : f.dias === 0 ? "hoy" : `en ${f.dias} d`}
-                  </span>
-                  {f.tarde && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${f.diasTarde >= 60 ? "bg-red-600 text-white" : f.diasTarde >= 15 ? "bg-amber-500 text-white" : "bg-stone-300 text-stone-700"}`}>
-                      sin pedir · {f.diasTarde} d tarde
-                    </span>
-                  )}
-                  {!f.tarde && f.totPedidoTarde > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-sky-100 text-sky-800">ya pedido, llega tarde</span>
-                  )}
-                </div>
-                <p className="text-[12px] text-stone-700 truncate max-w-[560px]">{f.obras.map((o) => o.name).filter(Boolean).join(" · ")}</p>
-                {/* Cada OV lleva a su proyecto, donde se corrigen SKU y cantidades. */}
-                <p className="text-[10px] font-mono text-stone-400 truncate max-w-[560px]">
-                  {f.obras.filter((o) => o.ov).map((o, i) => (
-                    <span key={o.ov + i}>
-                      {i > 0 && " · "}
-                      <button onClick={(e) => { e.stopPropagation(); onVerOV?.(o.ov); }}
-                        title={`Abrir ${o.ov} para corregir SKU o cantidades`}
-                        className="underline decoration-dotted hover:text-violet-700 hover:decoration-solid">
-                        {o.ov}
-                      </button>
-                    </span>
-                  ))}
-                </p>
-              </div>
-              <div className="text-right font-mono text-xs">
-                <p className="text-stone-400">falta pedir</p>
-                <p className={`text-base font-bold ${f.totSinPedir > 0 ? "text-violet-800" : "text-stone-400"}`}>{nfMrp.format(f.totSinPedir)}</p>
-                {f.totPedidoTarde > 0 && <p className="text-[10px] text-sky-700">{nfMrp.format(f.totPedidoTarde)} ya en OC</p>}
-              </div>
-            </button>
-
-            {open && (
-              <div className="border-t border-stone-200 px-3 py-2 space-y-3">
-                {f.hitos.map((g) => (
-                  <div key={g.hito}>
-                    <p className="text-[10px] uppercase tracking-widest text-stone-500 mb-1">
-                      Hito {g.hito} · {g.meta?.nombre} <span className="text-stone-400 normal-case tracking-normal">— {nfMrp.format(g.materiales.reduce((a, m) => a + (m.sinPedir || 0), 0))} pzas por pedir</span>
-                    </p>
-                    <table className="w-full text-xs">
-                      <thead><tr className="text-[9px] uppercase tracking-widest text-stone-400 border-b border-stone-100">
-                        <th className="text-left py-1">SKU</th><th className="text-left py-1">Material</th><th className="text-left py-1">Obra</th>
-                        <th className="text-right py-1">Req.</th><th className="text-right py-1">Stock</th>
-                        <th className="text-right py-1">Tránsito</th><th className="text-right py-1">Falta pedir</th><th className="text-right py-1 whitespace-nowrap">En OC tarde</th>
-                        <th className="text-right py-1 whitespace-nowrap">Pedir antes de</th>
-                      </tr></thead>
-                      <tbody>
-                        {g.materiales.map((m) => (
-                          <tr key={m.key} className={`border-b border-stone-50 ${m.tarde ? "bg-red-50" : ""}`}>
-                            <td className="py-1 font-mono font-semibold">
-                              {m.sku || "—"}
-                              {m.provisional && <span title="viene de la OV, sin BOM sincronizado" className="ml-1 text-[9px] text-amber-600">OV</span>}
-                              {(() => {
-                                const e = estadoSku(m.sku); if (!e) return null;
-                                if (e.tipo === "inexistente") return <span title="Este SKU no existe en el catálogo de Zoho" className="ml-1 text-[9px] px-1 rounded bg-stone-700 text-white">NO EXISTE</span>;
-                                return <span title={e.sug ? `Dado de baja en Zoho. Vigente: ${e.sug.sku} — ${e.sug.desc} (${nfMrp.format(e.sug.aMano)} pzas)` : "Dado de baja en Zoho"} className="ml-1 text-[9px] px-1 rounded bg-orange-600 text-white">BAJA</span>;
-                              })()}
-                            </td>
-                            <td className="py-1 text-stone-600 max-w-[220px]">
-                              <div className="truncate">{m.desc}</div>
-                              {(() => {
-                                const e = estadoSku(m.sku);
-                                if (e?.tipo === "baja" && e.sug) return (
-                                  <div className="text-[10px] text-emerald-700 truncate">↳ usar <b className="font-mono">{e.sug.sku}</b> · {nfMrp.format(e.sug.aMano)} en almacén</div>
-                                );
-                                return null;
-                              })()}
-                            </td>
-                            {/* Sin esto, dos obras que caen el mismo día se ven como una sola
-                                y el material de una parece de la otra. */}
-                            <td className="py-1 text-[10px] text-stone-500 whitespace-nowrap"
-                                title={m.proyectos.map((pr) => `${pr.ov || pr.name}: ${nfMrp.format(pr.qty)}`).join("\n")}>
-                              {(() => {
-                                const ovs = [...new Set(m.proyectos.map((pr) => pr.ov || pr.name).filter(Boolean))];
-                                return ovs.length <= 2 ? ovs.join(" · ") : `${ovs[0]} +${ovs.length - 1}`;
-                              })()}
-                            </td>
-                            <td className="py-1 text-right font-mono">{nfMrp.format(m.requerido)}</td>
-                            <td className="py-1 text-right font-mono text-stone-500">{nfMrp.format(m.deStock)}</td>
-                            <td className="py-1 text-right font-mono text-stone-500">
-                              {nfMrp.format(m.deTransito)}
-                              {m.sinFecha > 0 && <span title={`${m.sinFecha} pzas en OC sin fecha de llegada: no se cuentan para esta obra`} className="ml-1 text-[9px] text-amber-600">+{nfMrp.format(m.sinFecha)}?</span>}
-                              {/* Fecha de llegada según IS-PMT. La cantidad es nuestra (de las OC
-                                  de Zoho); la fecha es de ellos, porque allá se puede corregir a
-                                  mano con lo que el proveedor confirmó y eso no lo sabe el PO. */}
-                              {m.etaAlmacen && (
-                                <span className="block text-[9px] font-normal leading-tight"
-                                  title={
-                                    m.etaOrigen === "manual" ? "Fecha capturada a mano en IS-PMT: el proveedor la confirmó. Manda sobre la del PO."
-                                    : m.etaOrigen === "ov" ? "La orden de compra nombraba esta obra. Fecha asignada."
-                                    : m.etaOrigen === "sku" ? "La orden de compra no decía para qué obra era. Puede ser material de piso que ya está contado como inventario — no la tomes como apartada."
-                                    : "Origen de la fecha desconocido."
-                                  }>
-                                  <span className={m.etaOrigen === "manual" ? "text-emerald-700 font-medium" : m.etaOrigen === "sku" ? "text-amber-700" : "text-stone-400"}>
-                                    llega {m.etaAlmacen}{m.etaOrigen === "manual" ? " ✓" : m.etaOrigen === "sku" ? " ?" : ""}
-                                  </span>
-                                </span>
-                              )}
-                            </td>
-                            <td className={`py-1 text-right font-mono font-bold ${m.sinPedir > 0 ? "text-violet-800" : "text-stone-300"}`}>{nfMrp.format(m.sinPedir || 0)}</td>
-                            <td className={`py-1 text-right font-mono ${m.pedidoTarde > 0 ? "text-sky-700" : "text-stone-300"}`}>{nfMrp.format(m.pedidoTarde || 0)}</td>
-                            <td className={`py-1 text-right font-mono ${m.tarde ? "text-red-700 font-bold" : "text-stone-500"}`}>{m.fechaCompra || "—"}{m.critico && <span title={`lead crítico ${m.lead} d`} className="ml-1 text-[9px] text-red-600">!</span>}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const [modo, setModo] = useState("lista");
@@ -5698,23 +5249,6 @@ Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"
   );
 }
 
-function Kpi({ t, v, alerta }) {
-  return (
-    <div className={`rounded-lg border p-3 ${alerta ? "bg-amber-50 border-amber-300" : "bg-white border-stone-200"}`}>
-      <p className="text-[10px] uppercase tracking-widest text-stone-500">{t}</p>
-      <p className={`text-xl font-semibold font-mono ${alerta ? "text-amber-700" : "text-stone-900"}`}>{v}</p>
-    </div>
-  );
-}
-
-/* ===================== MÓDULO · ROADMAP ===================== */
-/* ---------- Limpieza masiva de órdenes de venta ----------
-   Quita un SKU de varias OV de Zoho, o lo sustituye. El orden de la pantalla ES
-   el orden del proceso: qué SKU → revisar → elegir → aplicar.
-
-   La revisión previa no es un favor que alguien hace antes de correr un script:
-   es parte del proceso. Por eso no hay forma de llegar a "aplicar" sin haber
-   visto la lista. */
 function LimpiezaSO({ setAviso }) {
   const [sku, setSku] = useState("");
   const [operacion, setOperacion] = useState("quitar");
@@ -6835,13 +6369,6 @@ function Roadmap() {
 
 /* ===================== MÓDULO · TESORERÍA / OPERACIÓN DIARIA ===================== */
 const enUSD = (monto, moneda, tc) => (moneda === "USD" ? monto : (tc ? monto / tc : 0));
-const lunesDe = (fechaStr) => {
-  const d = new Date(fechaStr + "T00:00:00");
-  const day = (d.getDay() + 6) % 7; // 0 = lunes
-  d.setDate(d.getDate() - day);
-  return d.toISOString().slice(0, 10);
-};
-
 function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }) {
   const [modo, setModo] = useState("resumen"); // resumen | nueva | movimientos
   const [editando, setEditando] = useState(null);
