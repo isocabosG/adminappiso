@@ -3,7 +3,7 @@ import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
 import Preguntar from "./Preguntar.jsx";
 import { buildMRP, calendarioCompra, buildMRPPorFecha, bomPorHito } from "./mrp.js";
-import { hitoById, LEAD_EQUIPO_CRITICO } from "./hitos.js";
+import { hitoById, LEAD_EQUIPO_CRITICO, leadDe, porqueLead, fechaPedido } from "./hitos.js";
 import { CAMARO_IMG } from "./camaroImg.js";
 
 // Chevrolet Camaro (broma para Jesús 🏎️): corre bajo el título del header.
@@ -6054,6 +6054,11 @@ function MrpCompras({ setAviso }) {
               if (pide <= 0) continue;
               (porSku[sku] = porSku[sku] || []).push({
                 proyecto: p.name || "(sin nombre)", ov, fecha: p.fecha_instalacion || null,
+                // La sección se guarda porque la regla de lead la necesita: la
+                // tornillería de ESTRUCTURA tarda 20 días y la misma tuerca
+                // comprada local tarda 10.
+                seccion: m.seccion || null,
+                descripcion: m.descripcion || "",
                 pide, entregado, falta: Math.max(0, pide - entregado),
               });
             }
@@ -6128,6 +6133,21 @@ function MrpCompras({ setAviso }) {
       }
       const lineas = Object.values(porOv).sort((a, b) =>
         String(a.fecha || "9999").localeCompare(String(b.fecha || "9999")) || String(a.ov).localeCompare(String(b.ov)));
+
+      // CUÁNDO HAY QUE PEDIRLO.
+      // El lead sale del MATERIAL (src/hitos.js), no del hito: una batería
+      // RENON son 150 días esté en el hito que esté. La fecha límite se mide
+      // contra la obra calendarizada MÁS PRÓXIMA que todavía lo necesita — no
+      // contra la más lejana, porque la que manda es la primera que se queda
+      // parada esperando.
+      const paraLead = {
+        sku, descripcion: obras.find((o) => o.descripcion)?.descripcion || x.desc || sku,
+        seccion: obras.find((o) => o.seccion)?.seccion || null,
+      };
+      const lead = leadDe(paraLead);
+      const obrasPendientes = obras.filter((o) => o.falta > 0 && o.fecha).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+      const obraProxima = obrasPendientes[0] || null;
+      const pedirAntes = obraProxima ? fechaPedido(obraProxima.fecha, lead) : null;
       return {
         sku, desc: x.desc || sku, activo: x.activo !== false,
         prov: provDe[sku] || "", costo, lotes, eta,
@@ -6136,6 +6156,9 @@ function MrpCompras({ setAviso }) {
         dispZoho: dz ?? null,
         discrepa: dz != null && Math.abs(+dz - nuestroSinTransito) > 0.01,
         obras, lineas, pideObra: obras.reduce((a, o) => a + o.falta, 0),
+        lead, leadPorque: porqueLead(paraLead), pedirAntes,
+        obraProxima: obraProxima ? obraProxima.proyecto : null,
+        instalaProxima: obraProxima ? obraProxima.fecha : null,
         // Calendarizado = al menos una de las obras que lo piden tiene fecha.
         calendarizado: obras.some((o) => !!o.fecha),
         porMes,
@@ -6195,6 +6218,9 @@ function MrpCompras({ setAviso }) {
   const escondidos = filas.length - vistas.length;
   const totQty = useMemo(() => vistas.reduce((a, f) => a + (+qty[f.sku] || 0), 0), [vistas, qty]);
   const nDiscrepan = useMemo(() => filas.filter((f) => f.discrepa).length, [filas]);
+  // Vencido = la fecha límite para pedirlo ya pasó y la obra lo sigue
+  // necesitando. Es la cuenta que de verdad urge en esta pantalla.
+  const nVencidos = useMemo(() => vistas.filter((f) => f.pedirAntes && f.pedirAntes < hoy() && f.stockFinal < 0).length, [vistas]);
 
   // Scroll virtual de verdad: se pintan solo los renglones que caen en la
   // ventana visible. Antes se pintaban 90 y el resto era hueco — la tabla decía
@@ -6224,21 +6250,124 @@ function MrpCompras({ setAviso }) {
   };
 
   const exportar = () => bajar(`MRP_${hoy()}.csv`,
-    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "DISPONIBLE SEGUN ZOHO", "PIDE OBRA", ...mesesVisibles.map(mesTitulo)],
-    vistas.map((f) => [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "", f.dispZoho ?? "", f.pideObra || "", ...mesesVisibles.map((m) => f.porMes[m] || 0)]));
+    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "PEDIR ANTES DE", "DIAS DE ENTREGA", "DISPONIBLE SEGUN ZOHO", "PIDE OBRA", ...mesesVisibles.map(mesTitulo)],
+    vistas.map((f) => [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "", f.pedirAntes || "", f.lead, f.dispZoho ?? "", f.pideObra || "", ...mesesVisibles.map((m) => f.porMes[m] || 0)]));
 
   // Orden de compra: solo lo marcado, agrupado por proveedor. La cantidad es la
   // de QTY; si no la capturó, el faltante. Nunca se inventa un número cuando no
   // falta nada — esos renglones salen en blanco para que los llene a mano.
-  const exportarOC = () => {
-    if (!seleccionados.length) return;
-    const orden = [...seleccionados].sort((a, b) => (a.prov || "zzz").localeCompare(b.prov || "zzz", "es") || a.desc.localeCompare(b.desc, "es"));
-    bajar(`OrdenCompra_${hoy()}.csv`,
-      ["PROVEEDOR", "SKU", "DESCRIPCION", "CANTIDAD", "FALTA", "STOCK AL DIA", "EN CAMINO", "APARTADO"],
-      orden.map((f) => [f.prov || "(sin proveedor)", f.sku, f.desc,
-        qty[f.sku] ?? (f.stockFinal < 0 ? -f.stockFinal : ""), f.stockFinal < 0 ? -f.stockFinal : 0,
-        f.stock, f.backOrder, f.porSurtir]));
-    setAviso({ t: "ok", m: `${orden.length} artículo(s) exportados, agrupados por proveedor.` });
+  // ── Solicitud de cotización ───────────────────────────────────────────────
+  // Este documento SALE DE LA EMPRESA: se le manda a varios proveedores para
+  // que cada uno ponga su precio. Por eso lleva SOLO lo que el proveedor
+  // necesita para cotizar — código, concepto y cantidad — y nada de lo nuestro.
+  //
+  // Lo que se quitó a propósito, y por qué:
+  //   · PROVEEDOR      mandarle a uno la cotización con el nombre de otro
+  //                    impreso delata con quién lo estamos comparando.
+  //   · STOCK, EN CAMINO, APARTADO, FALTA
+  //                    le dicen al proveedor qué tan urgidos estamos y cuánto
+  //                    inventario tenemos. Eso es posición de negociación, y se
+  //                    la estábamos regalando en cada envío.
+  const partidasCotizacion = () => [...seleccionados]
+    .sort((a, b) => a.desc.localeCompare(b.desc, "es"))
+    .map((f) => ({ sku: f.sku, desc: f.desc, cant: +(qty[f.sku] ?? (f.stockFinal < 0 ? -f.stockFinal : 0)) || 0 }))
+    .filter((x) => x.cant > 0);
+
+  const folioCot = () => {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, "0");
+    return `COT-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`;
+  };
+
+  // El documento con membrete, listo para mandarse. Mismo patrón que el estado
+  // de pagos del proyecto: se abre en ventana aparte y se guarda como PDF.
+  const exportarCotizacion = () => {
+    const items = partidasCotizacion();
+    if (!items.length) { setAviso({ t: "err", m: "Ningún artículo marcado tiene cantidad. Captura QTY o marca algo que falte." }); return; }
+    const folio = folioCot();
+    const ahora = new Date();
+    const fechaLarga = ahora.toLocaleDateString("es-MX", { day: "2-digit", month: "long", year: "numeric" });
+    const horaCorta = ahora.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+    const esc = (v) => String(v ?? "").replace(/[<>&]/g, (x) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[x]));
+    const EMP = { nombre: "INNOVACIÓN SOLAR", dir: "KM 3.5 Carretera CSL–SJC, Cabo San Lucas, B.C.S. 23454, México", tel: "+52 624 105 94 78", web: "www.innovacionsolar.com" };
+    const filas = items.map((x, i) => `<tr><td class="n">${i + 1}</td><td class="sku">${esc(x.sku)}</td><td>${esc(x.desc)}</td><td class="c">${x.cant}</td><td class="c">PZA</td><td class="llenar"></td><td class="llenar"></td></tr>`).join("");
+    const nombrePDF = `Solicitud de cotizacion ${folio}.pdf`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(nombrePDF)}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"><\/script>
+<style>
+  body{font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1a1d21;background:#eef1f0;margin:0;padding:18px}
+  #doc{max-width:760px;margin:0 auto;background:#fff;padding:26px 30px;border-radius:8px}
+  .head{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:3px solid #047857;padding-bottom:12px}
+  .head img{height:42px}
+  .co{text-align:right;font-size:10px;color:#6b7280;line-height:1.5}
+  .co b{color:#047857;font-size:12px;letter-spacing:.03em}
+  h1{font-size:19px;color:#065f46;margin:18px 0 2px}
+  .sub{color:#6b7280;font-size:11px;margin:0 0 14px}
+  .meta{display:flex;gap:26px;flex-wrap:wrap;background:#f6faf8;border:1px solid #e3efe9;border-radius:10px;padding:10px 16px;margin-bottom:14px}
+  .k{color:#6b7280;font-size:9px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 2px}
+  .v{font-size:13px;font-weight:600;margin:0}
+  .para{border:1px solid #e5e7eb;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:11px;color:#4b5563}
+  .linea{display:inline-block;border-bottom:1px solid #9aa2ab;min-width:200px;margin-left:6px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:#fff;background:#047857;padding:7px 8px;text-align:left}
+  td{padding:6px 8px;border-bottom:1px solid #eee}
+  .n{color:#9aa2ab;width:26px;text-align:right}
+  .sku{font-family:ui-monospace,Menlo,monospace;font-weight:600;white-space:nowrap}
+  .c{text-align:center;white-space:nowrap}
+  .llenar{background:#fffdf5;border-bottom:1px solid #e8dcc0;width:96px}
+  .nota{margin-top:16px;font-size:10px;color:#6b7280;line-height:1.7}
+  .foot{margin-top:20px;border-top:1px solid #eee;padding-top:10px;font-size:10px;color:#9aa2ab;text-align:center;line-height:1.6}
+  #status{max-width:760px;margin:10px auto 0;text-align:center;color:#6b7280;font-size:12px}
+  @media print{ #status{display:none} @page{margin:12mm} body{background:#fff;padding:0} #doc{border-radius:0} }
+</style></head><body>
+<div id="doc">
+  <div class="head"><img src="${LOGO_ISO}" alt="Innovación Solar"/><div class="co"><b>${EMP.nombre}</b><br>${EMP.dir}<br>Tel: ${EMP.tel} · ${EMP.web}</div></div>
+  <h1>Solicitud de cotización</h1>
+  <p class="sub">Agradeceremos su mejor precio y tiempo de entrega para las siguientes partidas.</p>
+  <div class="meta">
+    <div><p class="k">Folio</p><p class="v">${esc(folio)}</p></div>
+    <div><p class="k">Fecha</p><p class="v">${fechaLarga}</p></div>
+    <div><p class="k">Hora</p><p class="v">${horaCorta} h</p></div>
+    <div><p class="k">Partidas</p><p class="v">${items.length}</p></div>
+  </div>
+  <div class="para">Proveedor:<span class="linea"></span> &nbsp;&nbsp; Atención:<span class="linea"></span></div>
+  <table>
+    <thead><tr><th></th><th>Código</th><th>Concepto</th><th style="text-align:center">Cant.</th><th style="text-align:center">Unidad</th><th style="text-align:center">Precio unitario</th><th style="text-align:center">Entrega (días)</th></tr></thead>
+    <tbody>${filas}</tbody>
+  </table>
+  <p class="nota">
+    Favor de indicar precio unitario, moneda, tiempo de entrega y vigencia de la cotización.<br>
+    Precios antes de IVA. Entrega en ${EMP.dir}, salvo que se indique otra cosa.<br>
+    Cualquier duda sobre las especificaciones, con gusto la aclaramos antes de que coticen.
+  </p>
+  <div class="foot">${EMP.nombre} · ${EMP.dir} · Tel: ${EMP.tel} · ${EMP.web}</div>
+</div>
+<p id="status">Generando el PDF…</p>
+<script>
+  window.addEventListener('load', function () {
+    var s = document.getElementById('status'), el = document.getElementById('doc');
+    if (window.html2pdf) {
+      var opt = { margin: 10, filename: ${JSON.stringify(nombrePDF)}, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' } };
+      window.html2pdf().set(opt).from(el).save().then(function () { s.textContent = 'Listo — revisa tus Descargas. Ya puedes cerrar esta ventana.'; }).catch(function () { window.print(); });
+    } else { setTimeout(function () { window.print(); }, 400); }
+  });
+<\/script></body></html>`;
+    const w = window.open("", "_blank", "width=880,height=1000");
+    if (!w) { setAviso({ t: "err", m: "El navegador bloqueó la ventana. Permite las ventanas emergentes de este sitio." }); return; }
+    w.document.write(html); w.document.close();
+    setAviso({ t: "ok", m: `Solicitud ${folio} con ${items.length} partida(s). Mándasela a todos los proveedores que quieras comparar.` });
+  };
+
+  // El mismo contenido en CSV, para el proveedor que prefiere devolverlo lleno
+  // en Excel en vez de escribir sobre el PDF.
+  const exportarCotizacionCSV = () => {
+    const items = partidasCotizacion();
+    if (!items.length) { setAviso({ t: "err", m: "Ningún artículo marcado tiene cantidad. Captura QTY o marca algo que falte." }); return; }
+    const folio = folioCot();
+    bajar(`${folio}.csv`,
+      ["#", "CODIGO", "CONCEPTO", "CANTIDAD", "UNIDAD", "PRECIO UNITARIO", "MONEDA", "ENTREGA (DIAS)", "VIGENCIA"],
+      items.map((x, i) => [i + 1, x.sku, x.desc, x.cant, "PZA", "", "", "", ""]));
+    setAviso({ t: "ok", m: `${folio}.csv — ${items.length} partida(s), con las columnas de precio vacías para que el proveedor las llene.` });
   };
 
   // Formato de importación de órdenes de compra de Zoho Books: un renglón por
@@ -6435,7 +6564,14 @@ function MrpCompras({ setAviso }) {
             title="CSV con las columnas de importación de órdenes de compra de Zoho Books, una orden por proveedor">
             Orden de compra · formato Zoho
           </button>
-          <button onClick={exportarOC} className="px-3 py-1.5 border border-teal-600 text-teal-800 text-xs font-medium rounded hover:bg-teal-100">Exportar para revisar</button>
+          <button onClick={exportarCotizacion} className="px-3 py-1.5 border border-teal-600 text-teal-800 text-xs font-medium rounded hover:bg-teal-100"
+            title="Documento con membrete, folio y fecha, listo para mandarle a varios proveedores. Sin proveedor ni existencias: eso no sale de la empresa.">
+            Exportar para cotizar
+          </button>
+          <button onClick={exportarCotizacionCSV} className="text-[11px] text-teal-700 hover:underline"
+            title="Las mismas partidas en CSV, con las columnas de precio vacías">
+            · CSV para llenar
+          </button>
           <button onClick={() => setSel(new Set())} className="text-[11px] text-teal-700 hover:underline">quitar marcas</button>
         </div>
       )}
@@ -6455,6 +6591,7 @@ function MrpCompras({ setAviso }) {
               <th className="text-right px-2 py-2">STOCK AL DIA</th>
               <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
               <th className="text-right px-2 py-2">QTY</th>
+              <th className="text-right px-2 py-2 bg-amber-50 text-amber-800 whitespace-nowrap" title="Fecha de instalación de la obra más próxima que lo necesita, menos el tiempo de entrega del material">PEDIR ANTES DE</th>
               {mesesVisibles.map((m) => <th key={m} className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>)}
             </tr>
             <tr className="bg-stone-50 text-stone-700">
@@ -6465,11 +6602,12 @@ function MrpCompras({ setAviso }) {
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
               <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
               <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
+              <td className="px-2 py-1.5 text-right font-mono bg-amber-50 text-[10px] text-red-700">{nVencidos ? `${mx0(nVencidos)} vencid${nVencidos === 1 ? "o" : "os"}` : ""}</td>
               {mesesVisibles.map((m) => <td key={m} className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>)}
             </tr>
           </thead>
           <tbody>
-            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length} /></tr>}
+            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
             {enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
@@ -6509,11 +6647,19 @@ function MrpCompras({ setAviso }) {
                     placeholder={f.stockFinal < 0 ? String(-f.stockFinal) : ""}
                     className="w-16 px-1 py-0.5 border border-stone-200 rounded text-right font-mono text-[11px] placeholder:text-stone-300" />
                 </td>
+                {/* Sin obra calendarizada no hay contra qué medir: se muestra
+                    el tiempo de entrega para que igual sirva al decidir. */}
+                <td className={`px-2 text-right font-mono bg-amber-50/50 whitespace-nowrap ${f.pedirAntes && f.pedirAntes < hoy() ? "text-red-700 font-semibold" : "text-stone-600"}`}
+                  title={`${f.lead} días de entrega (${f.leadPorque})` + (f.obraProxima ? ` · la obra más próxima que lo pide es ${f.obraProxima}, instala ${f.instalaProxima}` : " · ninguna obra calendarizada lo pide todavía")}>
+                  {f.pedirAntes
+                    ? <>{f.pedirAntes.slice(5)}{f.pedirAntes < hoy() && <span className="block text-[9px] font-normal">vencido</span>}</>
+                    : <span className="text-stone-300">{f.lead}d</span>}
+                </td>
                 {mesesVisibles.map((m) => <td key={m} className="px-2 text-right font-mono bg-teal-50/40">{f.porMes[m] || ""}</td>)}
               </tr>
               {detalle === f.sku && (
                 <tr style={{ outline: "2px solid #7e22ce", outlineOffset: "-2px" }} className="bg-purple-50">
-                  <td colSpan={10 + mesesVisibles.length} className="px-3 py-2">
+                  <td colSpan={11 + mesesVisibles.length} className="px-3 py-2">
                     {f.lineas.length === 0 ? (
                       <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta ni lo pide ninguna obra en IS-PMT.</p>
                     ) : (
@@ -6555,7 +6701,7 @@ function MrpCompras({ setAviso }) {
               )}
               </Fragment>
             ))}
-            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length} /></tr>}
+            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
           </tbody>
         </table>
       </div>
