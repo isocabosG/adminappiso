@@ -1,150 +1,59 @@
 // src/hitos.js
-// Alineado con is-pmt build HITO-POR-SISTEMA (30-sep-2026). Se mantiene idéntico
-// en IS-PMT, Quote Creator y adminappISO para que las tres apps no diverjan.
-// Si algo cambia, cambia en IS-PMT y se vuelve a copiar.
+// COPIA LITERAL de is-pmt/lib/hitos.js (build HITO-OPERATIVO 17-ago-2026).
+// No editar aquí el criterio ni los leads: esto se mantiene idéntico en IS-PMT,
+// Quote Creator y adminappISO para que las tres apps no diverjan. Si algo cambia,
+// cambia en IS-PMT y se vuelve a copiar. La solución de fondo es etiquetar cf_etapa
+// a nivel catálogo en Zoho y retirar el clasificador de las tres.
 //
-// ── QUÉ CAMBIÓ Y POR QUÉ IMPORTA ───────────────────────────────────────────
-// Antes: el lead time de compra colgaba del HITO. Las baterías RENON valían
-// 150 días porque caían en el hito 3.
+// Los 5 hitos de entrega/compra de Innovación Solar.
 //
-// Con la estructura nueva las baterías y el inversor pasan al hito 4, que en la
-// tabla vieja valía 10 días. Es decir: el mismo código, sin tocarlo, habría
-// empezado a pedir baterías importadas con diez días de anticipación en vez de
-// ciento cincuenta. Son 18 partidas en 13 obras.
+// El hito de cada partida lo calcula la base de datos (trigger set_material_milestone
+// → etapa_de(), misma lógica que etapaDe() en Quote Creator) y llega en la columna
+// project_materials.milestone_id. Aquí NO se reclasifica: solo se agrupa para pintar.
 //
-// Ahora: el lead sale del MATERIAL, no del hito. Esto no es solo cambiar una
-// tabla — es quitarle al número de hito el poder de decidir una fecha de compra.
-// Si mañana IS-PMT vuelve a renumerar los hitos, las fechas de pedido no se
-// mueven. El error que nos pasó hoy ya no se puede repetir por esa vía.
+// SECCION_HITO es únicamente el hito "de casa" de cada sección ERP, para poder mostrar
+// una sección vacía en algún lado y que siga sirviendo el botón de subir. Ojo: una
+// sección puede repartirse entre varios hitos, porque la clasificación es por partida.
+
+export const HITOS = [
+  { id: 1, nombre: 'Preparación e instalación general', corto: 'Preparación',  pctRef: 53, color: 'var(--eng)' },
+  { id: 2, nombre: 'Estructura y paneles',              corto: 'Estructura',   pctRef: 25, color: 'var(--hoa)' },
+  { id: 3, nombre: 'Equipos',                           corto: 'Equipos',      pctRef: 3,  color: 'var(--brand)' },
+  { id: 4, nombre: 'Protecciones',                      corto: 'Protecciones', pctRef: 15, color: 'var(--inst)' },
+  { id: 5, nombre: 'Puesta en marcha',                  corto: 'Puesta',       pctRef: 4,  color: 'var(--fin)' },
+]
+
+// Lead time de compra por hito, en días antes de la fecha de instalación.
+// NO son supuestos: salen de 1,200 órdenes de compra de Books (jun-2025 a
+// ago-2026), midiendo `date` → `delivery_date`. Se usa el p90 y no la mediana
+// porque en obra cuesta mucho más que falte una pieza que tenerla una semana
+// en almacén.
 //
-// ── LOS HITOS AHORA SON TRES JUEGOS DE CUATRO ──────────────────────────────
-// Ya no son 1-5 universales. Cada sistema tiene su propio juego que reinicia en
-// 1, así que la llave es el PAR sistema + milestone_id. SOLAR:4, GEN:4 y
-// BOMBA:4 son tres hitos distintos que pueden convivir en la misma obra.
-
-export const SISTEMAS = ['SOLAR', 'GEN', 'BOMBA']
-
-export const HITOS_POR_SISTEMA = {
-  SOLAR: [
-    { id: 1, nombre: 'Preparaciones' },
-    { id: 2, nombre: 'Inst. de estructura' },
-    { id: 3, nombre: 'Instalación general' },
-    { id: 4, nombre: 'Inst. de equipos' },
-  ],
-  GEN: [
-    { id: 1, nombre: 'Preparaciones' },
-    { id: 2, nombre: 'Generador' },
-    { id: 3, nombre: 'Inst. general (gas)' },
-    { id: 4, nombre: 'Inst. de equipos' },
-  ],
-  BOMBA: [
-    { id: 1, nombre: 'Preparaciones' },
-    { id: 2, nombre: 'Bomba' },
-    { id: 3, nombre: 'Inst. general (hidráulica)' },
-    { id: 4, nombre: 'Inst. de equipos' },
-  ],
-}
-
-// `sistema` puede venir null en partidas que nadie ha tocado: se trata como SOLAR.
-export const sistemaDe = (m) => {
-  const s = String(m?.sistema || '').trim().toUpperCase()
-  return SISTEMAS.includes(s) ? s : 'SOLAR'
-}
-
-// El número del hito dentro de su sistema. Ya solo sirve para AGRUPAR y
-// ETIQUETAR: no interviene en ninguna fecha de compra.
-export function hitoDe(m) {
-  const id = Number(m?.milestone_id)
-  return id >= 1 && id <= 4 ? id : 1
-}
-
-// La llave de verdad. Agrupar por número solo mezclaría SOLAR:4 con GEN:4.
-export const claveHito = (m) => `${sistemaDe(m)}:${hitoDe(m)}`
-
-export const hitoById = (id, sistema = 'SOLAR') =>
-  (HITOS_POR_SISTEMA[String(sistema || 'SOLAR').toUpperCase()] || HITOS_POR_SISTEMA.SOLAR)
-    .find((h) => h.id === Number(id)) || null
-
-// ── LEAD TIME POR MATERIAL ─────────────────────────────────────────────────
-// Los números son los mismos de siempre: p90 sobre 1,200 órdenes de compra de
-// Books (jun-2025 a ago-2026), midiendo `date` → `delivery_date`. Se usa p90 y
-// no la mediana porque en obra cuesta mucho más que falte una pieza que tenerla
-// una semana en almacén. Lo que cambió es CÓMO se eligen.
+//   Hito 3  RENON (baterías)  mediana 82 · p90 148   ← camino crítico
+//           resto importado   mediana 28-54 · p90 78
+//   Hito 2  Diseño Eólico     mediana 10 · p90 18   (n=170)
+//   Hito 1  eléctricas + Procables (cable)  mediana 2-4 · p90 8
+//   Hito 5  Cyberpuerta / New Sun Road      mediana 6-12 · p90 25
 //
 // Ojo: delivery_date en Books es la fecha PROMETIDA, no la recepción
 // verificada (los `receives` vienen vacíos, eso vive en Inventory).
+export const LEAD_DIAS = { 1: 10, 2: 20, 3: 65, 4: 10, 5: 25 }
 
-// TRAMPA 1 — Se recorta la nota de contexto antes de comparar.
-// "Cable 4/0 AWG flex PORTAELECTRODOS (inversores → baterías)": sin recortar el
-// paréntesis, la palabra "baterías" le daba 150 días a un cable e "inversor" le
-// daba 65 a otros noventa. Eran 103 partidas de cable comprándose como equipo
-// importado.
-export const recortaNota = (s) => String(s || '').replace(/\s*[(·•].*$/, '')
-
-const sinAcentos = (s) =>
-  String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
-
-// Gana el PRIMERO que empata. El orden es la regla, no una preferencia de
-// estilo: "panel de yeso" tiene que caer en tablaroca (10) antes de que la
-// palabra "panel" lo mande a estructura (20).
-export const REGLAS_LEAD = [
-  { dias: 10, que: 'tablaroca y plafón',
-    re: /TABLAROCA|PANEL DE YESO|PANEL DE CEMENTO|DUROCK|PLAFON/ },
-
-  { dias: 150, que: 'RENON importado — camino crítico',
-    re: /RENON|BATERIA|BATERIAS|ECUBE|UNIDAD DE CONTROL|CEREBRO|MC050|MC300/ },
-
-  // TRAMPA 2 — El monitoreo va ANTES que el equipo importado.
-  // "Controlador Stellar Edge" trae la palabra CONTROLADOR y se iba a 65; lo
-  // hace New Sun Road, que es el proveedor con el que se midieron los 25 días.
-  { dias: 25, que: 'red y monitoreo',
-    re: /CAT6|RJ45|SFTP|DONGLE|SPLITTER|TP-?LINK|WA850|DECO|SWITCH DE RED|EXTENSOR DE RANGO|ROUTER|GATEWAY|STELLAR|NSR-|TARJETA ADAPTADORA|SMART METER/ },
-
-  { dias: 65, que: 'equipo importado',
-    re: /INVERSOR|SOL-?ARK|SYMO|FRONIUS|ENPHASE|IQ8|BMU|CONTROLADOR|GABINETE|FUENTE DE PODER|RACK BPE|TRANSFORMADOR DE CORRIENTE|GENERADOR|KOHLER|BOMBA DE CALOR|TRANSFERENCIA AUTOMATICA/ },
-
-  { dias: 20, que: 'estructura y paneles',
-    re: /PANEL|MODULO|ESTRUCTURA|RACKING|TOPX|CLAMP|LARGUERO|SOLERA|COLUMNA|HULE SELLO|GRAPA DE ORILLA|GRAPA INTERMEDIA|MC4|LP-EC/ },
-]
-
-export const LEAD_DEFAULT = 10          // cable, canalización, herraje, consumibles
-export const LEAD_ESTRUCTURA = 20
+// El Hito 3 no es uniforme: las baterías importadas mandan sobre todo lo demás.
 export const LEAD_EQUIPO_CRITICO = 150
+const CRITICO = /RENON|BATERIA|BATER|BRELV|BREHV|BREP16|BRCHV/
 
-// Red de seguridad propia de adminappISO (NO viene en la tabla de IS-PMT):
-// si la descripción viene vacía, el SKU todavía delata una batería RENON. Sin
-// esto, una partida sin descripción se iría a 10 días. Conviene que IS-PMT lo
-// incorpore a su tabla para no divergir.
-const SKU_CRITICO = /^(BRELV|BREHV|BREP16|BRCHV)/
-
-// Días de anticipación de una partida.
+// Días de anticipación reales de una partida.
 export function leadDe(m) {
-  const texto = sinAcentos(recortaNota(m?.descripcion))
-  for (const r of REGLAS_LEAD) if (r.re.test(texto)) return r.dias
-
-  // TRAMPA 3 — La tornillería de la sección ESTRUCTURA conserva 20 días.
-  // No se compra local: viene en el mismo pedido que el racking, de Diseño
-  // Eólico. La misma tuerca comprada local para montar el inversor sí se
-  // consigue en 10 — por eso la regla mira la SECCIÓN, no la palabra.
-  if (sinAcentos(m?.seccion) === 'ESTRUCTURA') return LEAD_ESTRUCTURA
-
-  if (SKU_CRITICO.test(sinAcentos(m?.sku))) return LEAD_EQUIPO_CRITICO
-  return LEAD_DEFAULT
+  const h = hitoDe(m)
+  if (h === 3 && CRITICO.test(String(m?.descripcion || '').toUpperCase())) return LEAD_EQUIPO_CRITICO
+  return LEAD_DIAS[h] || 10
 }
 
-// Qué regla ganó — para poder explicar un número en pantalla o en una revisión.
-export function porqueLead(m) {
-  const texto = sinAcentos(recortaNota(m?.descripcion))
-  for (const r of REGLAS_LEAD) if (r.re.test(texto)) return r.que
-  if (sinAcentos(m?.seccion) === 'ESTRUCTURA') return 'sección ESTRUCTURA'
-  if (SKU_CRITICO.test(sinAcentos(m?.sku))) return 'SKU RENON (sin descripción)'
-  return 'material local'
-}
-
-// Lead de un grupo: manda la partida más lenta.
-export function leadHito(clave, mats) {
-  return (mats || []).filter((m) => claveHito(m) === clave)
-    .reduce((n, m) => Math.max(n, leadDe(m)), LEAD_DEFAULT)
+// Lead del hito completo: manda la partida más lenta.
+export function leadHito(hitoId, mats) {
+  const items = mats.filter(m => hitoDe(m) === hitoId)
+  return items.reduce((n, m) => Math.max(n, leadDe(m)), LEAD_DIAS[hitoId] || 10)
 }
 
 // Fecha límite para levantar la requisición: instalación − lead.
@@ -157,48 +66,55 @@ export function fechaPedido(fechaInstalacion, dias) {
   return f.toISOString().slice(0, 10)
 }
 
-// ── Los nombres vienen del feed; esta tabla es el respaldo ─────────────────
-// IS-PMT expone `hitos` en GET /api/mrp (doce claves, una sola vez por
-// respuesta). Esa es la fuente de verdad de los NOMBRES, para que ninguna de
-// las tres apps los tenga escritos a mano y se desincronicen.
-//
-// Los nombres sí se comparten y los días NO, a propósito: un nombre viejo se ve
-// feo y alguien lo reporta; un lead viejo compra equipo tarde y no avisa a
-// nadie. Por eso la tabla de días se queda aquí, medida y revisada, y no viaja
-// por el feed.
-//
-// Lo que llega del feed es dato de otro sistema, no se cree a ciegas: se
-// aceptan solo los renglones con sistema, número y nombre utilizables, y
-// cualquier hueco lo cubre HITOS_POR_SISTEMA. Si el feed no contesta, las
-// etiquetas siguen saliendo — viejas, pero salen.
-export function mapaHitos(hitosDelFeed) {
-  const mapa = {}
-  for (const s of SISTEMAS) {
-    for (const h of HITOS_POR_SISTEMA[s]) {
-      mapa[`${s}:${h.id}`] = { sistema: s, num: h.id, nombre: h.nombre, encabezado: `${s} — ${h.nombre}`, ordenSistema: SISTEMAS.indexOf(s), origen: 'local' }
-    }
-  }
-  for (const h of (Array.isArray(hitosDelFeed) ? hitosDelFeed : [])) {
-    const sis = String(h?.sistema || '').trim().toUpperCase()
-    const num = Number(h?.num)
-    const nombre = String(h?.nombre || '').trim()
-    if (!SISTEMAS.includes(sis) || !(num >= 1 && num <= 4) || !nombre) continue
-    mapa[`${sis}:${num}`] = {
-      sistema: sis, num, nombre,
-      // IS-PMT: `nombre` cuando el sistema ya se dijo; `encabezado` cuando la
-      // lista mezcla sistemas. Si no llega, se arma, para que la pantalla
-      // siempre tenga una etiqueta que distinga el sistema.
-      encabezado: String(h?.encabezado || '').trim() || `${sis} — ${nombre}`,
-      ordenSistema: Number.isFinite(Number(h?.orden_sistema)) ? Number(h.orden_sistema) : SISTEMAS.indexOf(sis),
-      origen: 'feed',
-    }
-  }
-  return mapa
+export const SECCION_HITO = {
+  'PREPARACIONES':          1,
+  'INSTALACIÓN GENERAL':    1,
+  'TABLAROCA':              1,
+  'ESTRUCTURA':             2,
+  'EQUIPOS':                3,
+  'CABLEADO':               4,
+  'PROTECCIONES Y BUSES':   4,
+  'INSTALACIÓN DE EQUIPOS': 4,
+  'MONITOREO':              5,
 }
 
-// ── Compatibilidad ─────────────────────────────────────────────────────────
-// Ya no queda ninguna tabla que traduzca un hito a dias. Ese piso existia
-// mientras sobrevivia el motor viejo; se borro junto con el, para que no
-// quede en el archivo un mapeo hito->dias esperando a que alguien lo
-// llame por error.
-export const HITOS = HITOS_POR_SISTEMA.SOLAR
+export const hitoById = id => HITOS.find(h => h.id === Number(id)) || null
+
+// Hito de una partida: lo que dijo la base. Si por alguna razón viene vacío,
+// cae al hito de casa de su sección, y si tampoco, al 1 (igual que el clasificador).
+export function hitoDe(m) {
+  const id = Number(m?.milestone_id)
+  if (id >= 1 && id <= 5) return id
+  return SECCION_HITO[m?.seccion] || 1
+}
+
+// Secciones que se muestran dentro de un hito:
+//   · las que tienen partidas clasificadas en ese hito, y
+//   · las que son "de casa" del hito y no tienen partidas en ningún lado
+//     (para que siga apareciendo su botón de subir).
+export function seccionesDelHito(hitoId, mats, todasLasSecciones) {
+  const conPartidas = new Set(
+    mats.filter(m => hitoDe(m) === hitoId).map(m => m.seccion)
+  )
+  const vacias = (todasLasSecciones || []).filter(sec =>
+    SECCION_HITO[sec] === hitoId && !mats.some(m => m.seccion === sec)
+  )
+  return [...new Set([...conPartidas, ...vacias])]
+}
+
+// Resumen de un hito para la barra de avance.
+export function resumenHito(hitoId, mats) {
+  const items = mats.filter(m => hitoDe(m) === hitoId)
+  const dis = items.reduce((n, m) => n + Number(m.cant_disenada || 0), 0)
+  const ped = items.reduce((n, m) => n + Number(m.cant_pedida || 0), 0)
+  const ent = items.reduce((n, m) => n + Number(m.cant_entregada || 0), 0)
+  const pendientes = items.filter(m =>
+    Math.max(0, Number(m.cant_disenada || 0) - Number(m.cant_entregada || 0)) > 0
+  ).length
+  return {
+    lineas: items.length,
+    dis, ped, ent, pendientes,
+    pctPedido:    dis > 0 ? Math.round((ped / dis) * 100) : 0,
+    pctEntregado: dis > 0 ? Math.round((ent / dis) * 100) : 0,
+  }
+}

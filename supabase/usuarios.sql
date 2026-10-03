@@ -61,8 +61,16 @@ create policy "cada quien lee su perfil" on public.profiles
   for select using (auth.uid() = id);
 
 -- ── 5. VERIFICACIÓN — mira los RENGLONES, no el "Success" ──────────────────
--- Deben salir exactamente dos: Constanza y Francisco.
--- Francisco con es_super = true; Constanza con es_super = false.
+-- Salen TODAS las cuentas (una por cada auth.users), ordenadas para que las
+-- que administran accesos queden arriba. Que salgan 8 o 15 renglones no es
+-- un error: es cuanta gente tiene cuenta.
+--
+-- Lo que hay que comprobar son los DOS PRIMEROS renglones:
+--   Constanza  -> admin_accesos t, protegido t, es_super f
+--   Francisco  -> admin_accesos t, protegido t, es_super t
+-- y que a partir del tercero NADIE traiga admin_accesos en true.
+-- Si Constanza o Francisco no aparecen arriba, su correo en auth.users no es
+-- el que el paso 3 busca: corrigelo ahi y vuelve a correr el paso 3.
 select u.email, p.full_name, p.role, p.admin_accesos, p.protegido, p.es_super, p.activo
   from public.profiles p
   join auth.users u on u.id = p.id
