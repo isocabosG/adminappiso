@@ -2137,6 +2137,9 @@ function App({ perfil }) {
             <div>
               <h1 className="text-base font-semibold tracking-tight">AdminAppISO</h1>
               <p className="text-[10px] font-mono tracking-[0.2em] text-emerald-200">INNOVACIÓN SOLAR</p>
+              {/* Que version esta viva. Sin esto, "ya se desplego?" solo se
+                  puede contestar adivinando. */}
+              <p className="text-[9px] font-mono text-emerald-300/70" title="Fecha del build desplegado">v {__BUILD__}</p>
               <div className="camaro-track"><img src={CAMARO_IMG} alt="Camaro" className="camaro-run" /></div>
               <style>{`
                 .camaro-track{position:relative;height:24px;width:200px;overflow:hidden;margin-top:2px}

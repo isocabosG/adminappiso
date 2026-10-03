@@ -12,7 +12,15 @@ import react from '@vitejs/plugin-react'
 // Las rutas van relativas a la raiz del proyecto. Nada de __dirname: este
 // archivo es ESM (package.json tiene "type": "module") y ahi __dirname no
 // existe — tronaria el build en Vercel.
+// __BUILD__ se reemplaza en tiempo de build por la fecha y hora reales del
+// despliegue. Sirve para una sola cosa, pero importante: mirar el encabezado
+// de la app y saber QUE version esta viva, sin terminal y sin dashboard.
 export default defineConfig({
+  define: {
+    __BUILD__: JSON.stringify(
+      new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+    ),
+  },
   plugins: [react()],
   build: {
     rollupOptions: {
