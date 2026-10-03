@@ -54,7 +54,7 @@ export default function Root() {
           No se pudo leer tu perfil: {falla} — entras sin permisos extra.
         </div>
       )}
-      <App perfil={perfil} />
+      <App perfil={perfil} correo={session.user?.email || null} />
     </>
   )
 }
