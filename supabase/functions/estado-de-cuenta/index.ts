@@ -20,8 +20,28 @@
 //   COBRANZA_SECRET   cadena larga y aleatoria; firma los tokens de sesión.
 //
 // Usuarios: en adm_kv, llave `iso3-cobranza-acceso`
-//   { "usuarios": [ { "email": "...", "nombre": "...", "salt": "<hex>", "hash": "<hex>" } ] }
-//   El hash es PBKDF2-SHA256(clave, salt, 120000 iteraciones, 32 bytes).
+//   { "usuarios": [ { "email": "...", "nombre": "...", "hash": "<sha256 hex>" } ] }
+//
+//   El alta es UN SOLO SQL, sin scripts ni hashes que copiar a mano:
+//     insert into adm_kv (key, value, updated_at) values ('iso3-cobranza-acceso',
+//       jsonb_build_object('usuarios', jsonb_build_array(jsonb_build_object(
+//         'email','...', 'nombre','...',
+//         'hash', encode(sha256('LA-CLAVE'::bytea),'hex'))))::text, now())
+//     on conflict (key) do update set value = excluded.value, updated_at = now();
+//
+//   POR QUE SHA-256 PELADO Y NO PBKDF2. La version anterior usaba PBKDF2 con
+//   salt y 120 mil iteraciones, y obligaba a generar el hash con un script de
+//   Node y pegarlo. Era mas fuerte en el papel y en la practica no entraba
+//   nadie: tres intentos fallidos antes de que funcionara una vez.
+//
+//   El trabajo que hace PBKDF2 es encarecer la fuerza bruta cuando la clave es
+//   corta o adivinable. Con una clave LARGA Y ALEATORIA ese trabajo sobra: no
+//   hay diccionario que la encuentre, con o sin iteraciones. Asi que se cambia
+//   el costo de computo por un requisito de la clave.
+//
+//   >>> LA CLAVE DEBE SER LARGA Y ALEATORIA (minimo 20 caracteres). <<<
+//   Generala con `openssl rand -base64 18`. Una clave corta o humana aqui SI
+//   seria debil: el hash vive en adm_kv, que hoy lee cualquier sesion de la app.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const CORS = {
@@ -34,7 +54,6 @@ const SB = Deno.env.get("SUPABASE_URL")!;
 const SRV = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SECRETO = Deno.env.get("COBRANZA_SECRET") || "";
 const HORAS_SESION = 12;
-const ITERACIONES = 120000;
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -53,11 +72,10 @@ function igualSeguro(a: string, b: string) {
   return d === 0;
 }
 
-async function pbkdf2(clave: string, saltHex: string) {
-  const salt = new Uint8Array((saltHex.match(/.{2}/g) || []).map((h) => parseInt(h, 16)));
-  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(clave), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: ITERACIONES }, base, 256);
-  return hex(bits);
+// Mismo calculo que `encode(sha256('clave'::bytea),'hex')` en Postgres, para
+// que el alta se pueda hacer con un solo SQL y nada tenga que viajar a mano.
+async function sha256(texto: string) {
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(texto)));
 }
 
 async function firmar(texto: string) {
@@ -166,7 +184,7 @@ Deno.serve(async (req) => {
       // Un fallo tarda lo mismo exista o no el usuario, y lleva freno para que
       // no se pueda probar contraseña tras contraseña a toda velocidad.
       if (!u) { await dormir(600); return json({ ok: false, error: "Correo o contraseña incorrectos." }, 401); }
-      const calc = await pbkdf2(clave, String(u.salt || ""));
+      const calc = await sha256(clave);
       if (!igualSeguro(calc, String(u.hash || ""))) { await dormir(600); return json({ ok: false, error: "Correo o contraseña incorrectos." }, 401); }
       return json({ ok: true, token: await nuevoToken(email), nombre: u.nombre || email, horas: HORAS_SESION });
     }

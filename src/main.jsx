@@ -67,6 +67,16 @@ window.preguntar = async (payload) => {
   return data
 }
 
+// Pantalla de Usuarios. Toda la logica y el candado viven en la Edge Function
+// `acceso`: aqui solo se manda la peticion. Como en mrpEditar, el error NO se
+// traga — un cambio de acceso que no se aplico tiene que verse.
+window.acceso = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('acceso', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false && data.error) throw new Error(data.error)
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))

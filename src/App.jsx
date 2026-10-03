@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, Fragment, Com
 import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
 import Preguntar from "./Preguntar.jsx";
+import Usuarios from "./Usuarios.jsx";
 import { bomPorHito } from "./mrp.js";
 import { leadDe, porqueLead, fechaPedido } from "./hitos.js";
 import { CAMARO_IMG } from "./camaroImg.js";
@@ -2051,7 +2052,7 @@ export default function AdminImportaciones() {
   );
 }
 
-function App() {
+function App({ perfil }) {
   const [vista, setVista] = useState("proyectos");
   // Puente MRP → Proyectos: el MRP conoce el NÚMERO de la OV (SO-01088), no su
   // id interno. Se guarda aquí, se cambia de pestaña, y Proyectos lo resuelve
@@ -2149,7 +2150,10 @@ function App() {
           <Preguntar />
 
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
-            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0]].map(([k, t, badge]) => (
+            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0],
+              // La pestana solo aparece para quien administra accesos. Esconderla
+              // es comodidad, no permiso: quien impide es la Edge Function.
+              ...(perfil?.admin_accesos ? [["usuarios", "Usuarios", 0]] : [])].map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
                 className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
@@ -2182,6 +2186,7 @@ function App() {
         {vista === "mrp" && <MrpCompras setAviso={setAviso} />}
         {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vista === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
+        {vista === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
         {vista === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
       </main>
     </div>
