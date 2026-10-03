@@ -2044,10 +2044,16 @@ class ErrorBoundary extends Component {
   }
 }
 
-export default function AdminImportaciones() {
+// El export por defecto NO es App: es esta envoltura con el ErrorBoundary.
+// Lo que Root.jsx manda entra por AQUI, y si no se reenvia, App lo recibe
+// vacio. Asi estuvo: `perfil` llegaba undefined siempre, la pestana de
+// Usuarios nunca aparecia, y como no era un error sino un prop faltante, no
+// se quejaba nada. Cualquier prop nuevo que mande Root tiene que pasar por
+// estas dos lineas.
+export default function AdminImportaciones({ perfil, correo }) {
   return (
     <ErrorBoundary>
-      <App />
+      <App perfil={perfil} correo={correo} />
     </ErrorBoundary>
   );
 }
