@@ -2069,6 +2069,14 @@ const PESTANAS_POR_ROL = {
   cobranza: ["proyectos"],
 };
 
+// Roles que NO escriben. No es un capricho: a un rol restringido el RLS le
+// niega blobs, y un blob negado llega indistinguible de uno vacio. Si la app
+// despues guarda lo que tiene en memoria, escribe la semilla encima del dato
+// bueno. Pasa de verdad con el analisis de cada obra: sin catalogo de costos,
+// el costo cae al precio de venta, el margen sale ~0, y se guarda.
+// Leer de menos es una molestia; escribir de menos borra trabajo de otros.
+const SOLO_LECTURA = new Set(["cobranza"]);
+
 function App({ perfil, correo }) {
   const [vista, setVista] = useState("proyectos");
   const pestanasDelRol = PESTANAS_POR_ROL[perfil?.role] || null;
@@ -2134,13 +2142,16 @@ function App({ perfil, correo }) {
     })();
   }, []);
 
+  const soloLectura = SOLO_LECTURA.has(perfil?.role);
   const persist = useCallback(async (k, v) => {
+    // Ver arriba: un rol de solo lectura no escribe, ni siquiera "sin querer".
+    if (SOLO_LECTURA.has(perfil?.role)) return;
     try {
       await window.storage?.set(k, JSON.stringify(v));
     } catch {
       setAviso({ t: "err", m: "No se pudo guardar. Revisa tu conexión e intenta de nuevo." });
     }
-  }, []);
+  }, [perfil?.role]);
 
   const saveCatalogo = (c) => { setCatalogo(c); persist("iso3-catalogo", c); };
   const saveFletes = (f) => { setFletes(f); persist("iso3-fletes", f); };
@@ -2209,6 +2220,12 @@ function App({ perfil, correo }) {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5">
+        {/* Que el modo se vea. Un boton que no guarda y no avisa parece una falla. */}
+        {soloLectura && (
+          <div className="mb-4 px-3 py-2 rounded text-xs border bg-stone-100 border-stone-300 text-stone-600">
+            Solo lectura: tu cuenta puede consultar, no modificar. Cualquier cambio que escribas aquí no se guarda.
+          </div>
+        )}
         {aviso && (
           <div className={`mb-4 px-3 py-2 rounded text-sm border ${aviso.t === "ok" ? "bg-teal-50 border-teal-300 text-teal-900" : "bg-red-50 border-red-300 text-red-900"}`}>
             {aviso.m}<button onClick={() => setAviso(null)} className="float-right text-xs underline">cerrar</button>
@@ -3324,6 +3341,9 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   // para que el resumen de arriba pueda sumar/promediar sin volver a leer cada proyecto.
   useEffect(() => {
     if (!so) return;
+    // Sin acceso al catalogo de costos este calculo da basura (el costo cae al
+    // precio de venta y el margen sale ~0) y ademas se guardaria. No se corre.
+    if (!verCostos) return;
     const d = proyData[soId] || {};
     const esI = (l) => (l.line_item_type === "service" || l.product_type === "service") || (l.sku || "").toUpperCase().startsWith("INST") || /suministro\s*e?\s*instalaci/i.test((l.name || "") + " " + (l.description || ""));
     const tc = +so.exchange_rate || 1; // MXN por unidad de la moneda de la OV
