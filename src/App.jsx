@@ -2058,8 +2058,24 @@ export default function AdminImportaciones({ perfil, correo }) {
   );
 }
 
+// Que pestanas ve cada rol. Un rol que NO este en esta tabla ve todas, que es
+// como se comporto la app hasta hoy: agregar un rol aqui es quitar, nunca dar.
+//
+// OJO: esconder una pestana es comodidad, no permiso. Mientras adm_kv siga sin
+// RLS, cualquier cuenta con sesion puede leer los mismos datos desde la consola
+// del navegador. El permiso de verdad es el RLS; esto es la puerta, no la
+// cerradura.
+const PESTANAS_POR_ROL = {
+  cobranza: ["proyectos"],
+};
+
 function App({ perfil, correo }) {
   const [vista, setVista] = useState("proyectos");
+  const pestanasDelRol = PESTANAS_POR_ROL[perfil?.role] || null;
+  const puedeVer = (k) => !pestanasDelRol || pestanasDelRol.includes(k);
+  // Si `vista` quedara en una pantalla no permitida (un estado viejo, un
+  // cambio de rol en caliente), cae a proyectos en vez de pintarla.
+  const vistaSegura = puedeVer(vista) ? vista : "proyectos";
   // Puente MRP → Proyectos: el MRP conoce el NÚMERO de la OV (SO-01088), no su
   // id interno. Se guarda aquí, se cambia de pestaña, y Proyectos lo resuelve
   // contra su lista y abre la ficha.
@@ -2167,9 +2183,9 @@ function App({ perfil, correo }) {
             {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0],
               // La pestana solo aparece para quien administra accesos. Esconderla
               // es comodidad, no permiso: quien impide es la Edge Function.
-              ...(perfil?.admin_accesos ? [["usuarios", "Usuarios", 0]] : [])].map(([k, t, badge]) => (
+              ...(perfil?.admin_accesos ? [["usuarios", "Usuarios", 0]] : [])].filter(([k]) => puedeVer(k)).map(([k, t, badge]) => (
               <button key={k} onClick={() => setVista(k)}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vista === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors relative inline-flex items-center ${vistaSegura === k ? "bg-white text-emerald-800 shadow" : "text-emerald-50 hover:bg-white/15"}`}>
                 {t}
                 {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
@@ -2193,15 +2209,15 @@ function App({ perfil, correo }) {
             {aviso.m}<button onClick={() => setAviso(null)} className="float-right text-xs underline">cerrar</button>
           </div>
         )}
-        {vista === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vista === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV }} />}
-        {vista === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
-        {vista === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vista === "mrp" && <MrpCompras setAviso={setAviso} />}
-        {vista === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
-        {vista === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
-        {vista === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
-        {vista === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
+        {vistaSegura === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
+        {vistaSegura === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol: perfil?.role || null }} />}
+        {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
+        {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
+        {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} />}
+        {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
+        {vistaSegura === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
+        {vistaSegura === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
+        {vistaSegura === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
       </main>
     </div>
   );
@@ -2514,7 +2530,7 @@ function PagoBadge({ status }) {
   return <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${c}`}>{t}</span>;
 }
 
-function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV }) {
+function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol }) {
   // Arranca en el año en curso. Con "todos" el resumen sumaba los 1,068
   // proyectos desde 2023 y el número no respondía a ninguna pregunta útil.
   const [anio, setAnio] = useState(String(new Date().getFullYear()));
@@ -2735,7 +2751,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   };
   if (modo.startsWith("so:")) {
     const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
-    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos }} />;
+    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos, rol }} />;
   }
 
   const q = busca.trim().toLowerCase();
@@ -2987,11 +3003,15 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
             <p className="text-sm font-bold font-mono">{combUSD(Tpv, "contr") == null ? "—" : `$${mx0(combUSD(Tpv, "contr"))}`}<span className="text-[10px] font-normal text-emerald-100"> USD</span></p>
             <p className="text-[10px] font-mono text-emerald-100/80">{rowsPV.length} proyecto{rowsPV.length === 1 ? "" : "s"} · por cobrar {combUSD(Tpv, "pend") == null ? "—" : `$${mx0(combUSD(Tpv, "pend"))}`}</p>
           </div>
-          <div className="bg-white/10 rounded-lg px-3 py-2">
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom.</p>
-            <p className="text-sm font-bold font-mono">{margenProm == null ? "—" : margenProm.toFixed(1) + "%"}</p>
-            <p className="text-[10px] font-mono text-emerald-100/80">Compras/mat.: ${mx0(gastoMatMXN)} · {anal.length} proy. abierto{anal.length === 1 ? "" : "s"}</p>
-          </div>
+          {/* Utilidad y compras de material SON costo. Cobranza ve lo que se
+              contrato y lo que falta por cobrar, no el margen. */}
+          {rol !== "cobranza" && (
+            <div className="bg-white/10 rounded-lg px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom.</p>
+              <p className="text-sm font-bold font-mono">{margenProm == null ? "—" : margenProm.toFixed(1) + "%"}</p>
+              <p className="text-[10px] font-mono text-emerald-100/80">Compras/mat.: ${mx0(gastoMatMXN)} · {anal.length} proy. abierto{anal.length === 1 ? "" : "s"}</p>
+            </div>
+          )}
         </div>
 
         <p className="text-[10px] text-emerald-100/80 mt-2">
@@ -3254,7 +3274,11 @@ function FilaMaterial({ m, projectId, onGuardado }) {
   );
 }
 
-function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr, feedHitos }) {
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr, feedHitos, rol }) {
+  // Cobranza ve las secciones 1 a 3 — contratado, pagos y el reporte de estado
+  // de cuenta. La 4 (materiales por hito) y la 5 (control presupuestal) traen
+  // costo, utilidad y margen: no se pintan.
+  const verCostos = rol !== "cobranza";
   // materialId -> valores ya guardados en IS-PMT en esta sesión
   const [matEdit, setMatEdit] = useState({});
   const [so, setSo] = useState(null);
@@ -3597,7 +3621,7 @@ ${porPagar >= 0
       {/* Materiales de la obra, agrupados por hito. Sale del feed de IS-PMT
           (project_materials con milestone_id). La fecha de pedido es
           fecha de obra − lead del hito. */}
-      {!feedProy ? (
+      {verCostos && (!feedProy ? (
         <Section n="4" t="Materiales por hito">
           <div className="px-3 py-4">
             {feedErr ? (
@@ -3670,8 +3694,9 @@ ${porPagar >= 0
             );
           })()}
         </Section>
-      )}
+      ))}
 
+      {verCostos && (
       <Section n="5" t="Control Presupuestal" r={<span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${utilidad >= 0 ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-700"}`}>Utilidad ${mx0(utilidad)} · {margen.toFixed(1)}%</span>}>
         <div className="p-4 space-y-4">
           {/* Ingreso vs costo vs utilidad */}
@@ -3757,6 +3782,7 @@ ${porPagar >= 0
           <p className="text-[11px] text-stone-400"><b>Utilidad estimada = Contratado (sin IVA) − equipo/materiales (ordenado, de Zoho) − otros costos − mano de obra.</b> El equipo/material se jala automático de la OV; tú capturas los otros costos y la mano de obra. Próximamente: días de obra automáticos desde IS-PMT (días en sitio × costo operativo de personal/supervisión).</p>
         </div>
       </Section>
+      )}
     </div>
   );
 }

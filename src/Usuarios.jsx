@@ -18,6 +18,16 @@ const ROLES = [
 ];
 const nombreRol = (r) => (ROLES.find(([k]) => k === r) || [null, r])[1];
 
+// Lo que ve cada rol HOY. Si cambias PESTANAS_POR_ROL en App.jsx, cambia esto:
+// una leyenda que miente es peor que no tenerla.
+const QUE_VE = [
+  ["direccion", "Todas las pantallas."],
+  ["administracion", "Todas las pantallas."],
+  ["compras", "Todas las pantallas."],
+  ["cobranza", "Solo Proyectos, y sin el recuadro de utilidad ni compras de material."],
+  ["operacion", "Todas las pantallas."],
+];
+
 export default function Usuarios({ setAviso }) {
   const [datos, setDatos] = useState(null);
   const [err, setErr] = useState(null);
@@ -163,6 +173,25 @@ export default function Usuarios({ setAviso }) {
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="border border-stone-200 rounded-lg p-3 bg-stone-50">
+        <p className="text-xs font-semibold text-stone-700">Qué ve cada rol</p>
+        <table className="mt-2 w-full text-[11px]">
+          <tbody>
+            {QUE_VE.map(([k, texto]) => (
+              <tr key={k} className="align-top">
+                <td className="py-0.5 pr-3 font-medium text-stone-700 whitespace-nowrap">{nombreRol(k)}</td>
+                <td className="py-0.5 text-stone-500">{texto}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="mt-2 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 leading-relaxed">
+          Esconder una pestaña es comodidad, no permiso. Mientras la tabla de datos siga sin RLS, cualquier cuenta con
+          sesión puede leer los mismos datos desde la consola del navegador. No le des acceso a alguien de fuera del
+          equipo confiando en esta tabla.
+        </p>
       </div>
 
       <p className="text-[10px] text-stone-400 leading-relaxed">
