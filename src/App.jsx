@@ -2072,7 +2072,12 @@ const PESTANAS_POR_ROL = {
 function App({ perfil, correo }) {
   const [vista, setVista] = useState("proyectos");
   const pestanasDelRol = PESTANAS_POR_ROL[perfil?.role] || null;
-  const puedeVer = (k) => !pestanasDelRol || pestanasDelRol.includes(k);
+  // La pestana de Usuarios NO la gobierna el rol, la gobierna admin_accesos.
+  // Si la gobernara el rol, ponerse un rol restringido borraria la pantalla
+  // desde donde se cambian los roles — y el unico super se quedaria encerrado,
+  // sin nadie que pudiera devolverselo desde la app.
+  const puedeVer = (k) =>
+    k === "usuarios" ? !!perfil?.admin_accesos : !pestanasDelRol || pestanasDelRol.includes(k);
   // Si `vista` quedara en una pantalla no permitida (un estado viejo, un
   // cambio de rol en caliente), cae a proyectos en vez de pintarla.
   const vistaSegura = puedeVer(vista) ? vista : "proyectos";
