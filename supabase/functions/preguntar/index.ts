@@ -370,11 +370,41 @@ const HERRAMIENTAS: Record<string, { esquema: any; corre: (c: Ctx, a: any) => an
       }
       const lista = Object.values(porOc)
         .sort((x: any, y: any) => String(x.llegadaEstimada).localeCompare(String(y.llegadaEstimada))).slice(0, 25);
+
+      // QUE OC ALCANZA ESTA FUENTE, no solo de que fecha es.
+      //
+      // El 5-oct Jesus pregunto por la PO-02015 y la PO-02055 y la barra
+      // contesto que no existian, con tres hipotesis inventadas: que estarian
+      // cerradas, que el numero seria de otro sistema, o que habria un error de
+      // captura. Ninguna era cierta. La verdad era que el cache iba de la
+      // PO-02711 a la PO-02933 y esos numeros quedaban ~700 ordenes atras.
+      //
+      // "No lo encuentro" y "no existe" no son lo mismo, y confundirlos le
+      // quita a compras la razon para creerle a la app. Si el numero que
+      // preguntan cae fuera del rango, se dice el rango.
+      const todosLosNumeros: string[] = [];
+      for (const ls of Object.values(c.lotes)) {
+        for (const l of (ls || [])) if (l.oc) todosLosNumeros.push(String(l.oc));
+      }
+      const alcance = todosLosNumeros.length
+        ? { deLaOrden: todosLosNumeros.reduce((a2, b) => (b < a2 ? b : a2)),
+            aLaOrden: todosLosNumeros.reduce((a2, b) => (b > a2 ? b : a2)),
+            ordenesAbiertas: new Set(todosLosNumeros).size }
+        : null;
+
+      // Preguntaron por un numero de OC concreto y no salio en el rango.
+      const pidioOc = /^\s*(po[- ]?)?\d{3,6}\s*$/i.test(a.texto || "");
+      const fuera = pidioOc && !lista.length && alcance;
+
       return {
         fuente: "órdenes de compra abiertas de Zoho",
         corte: c.cortes,
+        alcanceDeEstaFuente: alcance,
         advertencia: c.cortes.transitoAlDia && c.cortes.transitoAlDia !== c.cortes.ordenesCompra
           ? `El tránsito es del ${c.cortes.transitoAlDia}: la última sincronía no pudo leer todas las OC y se conservó el dato anterior.` : undefined,
+        sinResultado: fuera
+          ? `No la tengo: esta fuente solo cubre de la ${alcance!.deLaOrden} a la ${alcance!.aLaOrden}. Que no aparezca aquí NO significa que no exista en Zoho — significa que está fuera de lo que esta fuente alcanza. No inventes explicaciones: dilo así.`
+          : undefined,
         ordenes: lista,
       };
     },
@@ -527,6 +557,7 @@ const SISTEMA = `Eres el buscador interno de AdminAppISO, la app de operaciones 
 REGLAS QUE NO SE NEGOCIAN:
 1. Todo número, fecha, SKU, monto o nombre que escribas tiene que venir de una herramienta que acabas de llamar en esta conversación. Si no lo tienes, di que no lo tienes. Nunca estimes, nunca redondees "más o menos", nunca completes con lo que parezca razonable.
 2. Si una herramienta no encuentra algo, dilo y pide el dato exacto. No propongas una clave parecida como si fuera la buena.
+2b. "No lo encuentro" NO es "no existe", y nunca los confundas. Cuando algo no aparece, la respuesta es que TU fuente no lo tiene, no que el dato no exista. Prohibido ofrecer hipótesis de por qué falta — que si ya se cerró, que si el número es de otro sistema, que si fue un error de captura. Eso es inventar con otra cara. Si la herramienta te dio "alcanceDeEstaFuente" o "sinResultado", di exactamente qué alcanza tu fuente y para ahí. Quien pregunta conoce su operación mejor que tú: si te asegura que existe, lo más probable es que tengas razón los dos y el dato esté fuera de tu alcance.
 3. Cierra SIEMPRE con la fuente y la fecha de corte del dato, en una línea corta. Ejemplo: "Fuente: órdenes de compra de Zoho, corte del 27-sep."
 4. Si el corte de la fuente que usaste es de hace más de dos días, o si la respuesta trae una advertencia, dilo antes de la respuesta.
 5. Una fecha de llegada estimada es estimada: escríbela como "llegada estimada", nunca como una promesa. Si el usuario parece ir a comprometerla con un cliente, señálalo.

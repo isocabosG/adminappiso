@@ -41,7 +41,8 @@ const CORS = {
 };
 
 const KEY = "iso3-mrp-oc-cache-v2";
-const MAX_OC = 250;          // ventana de historial: las 250 OC más recientes
+const MAX_OC = 250;          // ventana de HISTORIAL: las 250 OC más recientes
+const MAX_PAGINAS = 80;      // tope del barrido completo (80 x 100 = 8,000 OC)
 const BACKFILL = 40;         // OC viejas nuevas que se muerden por corrida
 const GAP_MS = 400;          // respiro entre llamadas
 const ESPERA_MAX_MS = 30000; // lo más que aceptamos esperar cuando Zoho frena
@@ -100,10 +101,24 @@ Deno.serve(async (req) => {
     const hist: Hist = previo.hist || {};
     const vistas = new Set<string>(previo.vistas || []);
 
-    // ── 1. Encabezados de las OC (barato: 3 llamadas para 250) ──────────────
+    // ── 1. Encabezados de TODAS las OC ──────────────────────────────────────
+    //
+    // El barrido recorre todas las paginas, no las primeras 250 ordenes.
+    //
+    // Antes paraba en MAX_OC y de esa misma ventana salian DOS cosas distintas:
+    // el historial de proveedores y el transito. Para el historial 250 esta
+    // bien. Para el transito no: hay OC abiertas de mayo de 2024 — PO-00038,
+    // PO-00093, PO-00128, PO-00160 — que caen fuera de esa ventana, y por eso
+    // el BACK ORDER de la app salia POR DEBAJO del que reporta Zoho. Una orden
+    // vieja sin recibir no es menos pendiente por vieja, y a quien compra le
+    // quita la razon para confiar en el numero.
+    //
+    // El barrido solo pide encabezados, 100 por llamada: es la parte barata.
+    // Lo caro es leer los renglones de cada OC abierta, y eso no cambia.
     const pos: Array<{ id: string; vendor: string; abierta: boolean; eta: string | null; numero: string; fecha: string }> = [];
-    let page = 1, more = true;
-    while (more && page <= 25 && pos.length < MAX_OC) {
+    let page = 1, more = true, truncado = false;
+    while (more) {
+      if (page > MAX_PAGINAS) { truncado = true; break; }
       const d = await zoho("list_purchase_orders", {
         filter_by: "Status.All", per_page: "100", page: String(page), sort_column: "date", sort_order: "D",
       });
@@ -126,8 +141,13 @@ Deno.serve(async (req) => {
     }
     if (!pos.length) throw new Error("Zoho no devolvió órdenes de compra; no se toca el caché.");
 
+    // Historial: la ventana de siempre. Transito: TODAS las abiertas.
     const lote = pos.slice(0, MAX_OC);
-    const abiertas = lote.filter((p) => p.abierta);
+    const abiertas = pos.filter((p) => p.abierta);
+    // Cuantas abiertas vivian fuera de la ventana vieja: es, exactamente, lo
+    // que el BACK ORDER no estaba contando.
+    const idsVentana = new Set(lote.map((p) => p.id));
+    const abiertasFuera = abiertas.filter((p) => !idsVentana.has(p.id)).length;
     // Las viejas que todavía no hemos mirado nunca, de la más reciente hacia atrás.
     const pendientes = lote.filter((p) => !p.abierta && !vistas.has(p.id)).slice(0, BACKFILL);
 
@@ -169,7 +189,10 @@ Deno.serve(async (req) => {
     };
 
     // ── 2. Las OC abiertas, completas. Son las que mueven el tránsito ───────
-    let transitoOK = true;
+    // Un barrido truncado subestima el transito, que es justo el bug que esto
+    // viene a arreglar. Si se trunca, no se escribe: se conserva el de ayer.
+    let transitoOK = !truncado;
+    if (truncado) motivos[`barrido truncado en ${MAX_PAGINAS} paginas`] = 1;
     for (const po of abiertas) {
       try {
         const d = await zoho("get_purchase_order", { purchaseorder_id: po.id });
@@ -260,8 +283,12 @@ Deno.serve(async (req) => {
     return json({
       ok: true,
       fecha: valor.fecha,
+      ocTotales: pos.length,
+      paginasLeidas: page - 1,
+      barridoTruncado: truncado,
       ocEnVentana: lote.length,
       abiertas: abiertas.length,
+      abiertasFueraDeLaVentanaVieja: abiertasFuera,
       transitoOK,
       transitoFecha: valor.transitoFecha,
       historialNuevas: backfilled,
