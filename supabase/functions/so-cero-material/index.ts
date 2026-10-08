@@ -17,6 +17,13 @@
 //                     material en cero sin restituir dejaria la orden por
 //                     debajo de una factura ya emitida.
 //
+//   modo "contrato"   El contrato lo dice Fran, orden por orden, en la llamada:
+//                     ov: [{ ov, total }]. Se mueve el INST lo necesario para
+//                     que el TOTAL DE LA ORDEN QUEDE EXACTO en ese importe, y
+//                     el material se deja en cero. Es para las ordenes que
+//                     quedaron por debajo del contrato porque Innobyte le
+//                     siguio restando al INST de mas.
+//
 // El modo NO se adivina aqui. Viene en la llamada, decidido con la prueba de
 // cuanto se facturo por orden. Una funcion que clasifica sola es una funcion
 // que un dia clasifica mal y escribe en Zoho.
@@ -102,12 +109,24 @@ Deno.serve(async (req) => {
   try { cuerpo = await req.json(); } catch { /* sin cuerpo */ }
   const dryRun = cuerpo?.dryRun !== false;              // escribir es explicito
   const modo = String(cuerpo?.modo || "");
-  const ovs: string[] = Array.isArray(cuerpo?.ov) ? cuerpo.ov.map(String) : [];
+  const crudo: any[] = Array.isArray(cuerpo?.ov) ? cuerpo.ov : [];
+  const ovs: string[] = crudo.map((x) => String(typeof x === "object" ? x?.ov : x));
+  // modo "contrato": el total objetivo de cada orden, dado por Fran.
+  const meta: Record<string, number> = {};
+  for (const x of crudo) {
+    if (x && typeof x === "object" && x.ov != null) meta[String(x.ov)] = n0(x.total);
+  }
 
-  if (modo !== "cero" && modo !== "restituir") {
-    return json({ ok: false, error: 'modo debe ser "cero" o "restituir".' }, 400);
+  if (modo !== "cero" && modo !== "restituir" && modo !== "contrato") {
+    return json({ ok: false, error: 'modo debe ser "cero", "restituir" o "contrato".' }, 400);
   }
   if (!ovs.length) return json({ ok: false, error: "Falta la lista ov[]." }, 400);
+  if (modo === "contrato") {
+    const sinTotal = ovs.filter((ov) => !(meta[ov] > 0));
+    if (sinTotal.length) {
+      return json({ ok: false, error: `modo "contrato" necesita ov: [{ov, total}]. Sin total: ${sinTotal.join(", ")}` }, 400);
+    }
+  }
 
   // El id de cada orden sale del barrido de so-contratado, no de una busqueda
   // por numero: ese blob ya se verifico y evita una llamada por orden.
@@ -150,7 +169,9 @@ Deno.serve(async (req) => {
       if (!inst) { saltadas.push({ ov, por: "sin concepto INST: el material es la venta" }); await dormir(GAP_MS); continue; }
 
       const conPrecio = lineas.filter((li: any) => !esInst(li) && esBien(li) && n0(li.rate) > 0);
-      if (!conPrecio.length) { saltadas.push({ ov, por: "ya esta en cero" }); await dormir(GAP_MS); continue; }
+      if (!conPrecio.length && modo !== "contrato") {
+        saltadas.push({ ov, por: "ya esta en cero" }); await dormir(GAP_MS); continue;
+      }
 
       const facturado = conPrecio.find((li: any) => n0(li.quantity_invoiced) > 0);
       if (facturado) {
@@ -168,15 +189,35 @@ Deno.serve(async (req) => {
 
       // El INST nuevo y el total que DEBE quedar, calculados antes de escribir.
       const instAntes = r2(n0(inst.item_total));
-      const instDespues = modo === "restituir" ? r2(instAntes + absorber) : instAntes;
-      const esperado = modo === "restituir"
-        ? totalAntes                                   // el total no se mueve
-        : r2(totalAntes - absorber - ivaMaterial);     // baja al contrato
+
+      // Cuanto sube el total por cada peso que se le agrega al INST. Sale de los
+      // impuestos del PROPIO renglon: hay ordenes con el INST exento y material
+      // gravado, y dar por hecho el 16% ahi deja la orden descuadrada.
+      const factorInst = instAntes > 0 ? 1 + ivaDe(inst) / instAntes : 1;
+
+      let instDespues = instAntes;
+      let esperado = totalAntes;
+      if (modo === "restituir") {
+        instDespues = r2(instAntes + absorber);
+        esperado = totalAntes;                              // el total no se mueve
+      } else if (modo === "cero") {
+        esperado = r2(totalAntes - absorber - ivaMaterial); // baja al contrato
+      } else {                                             // "contrato"
+        esperado = r2(meta[ov]);
+        // El material que siga con precio se va a cero, y lo que falte para
+        // llegar al contrato se le pone al INST.
+        const sinMaterial = r2(totalAntes - absorber - ivaMaterial);
+        instDespues = r2(instAntes + (esperado - sinMaterial) / factorInst);
+        if (!(instDespues > 0)) {
+          saltadas.push({ ov, por: `el contrato ${esperado} deja el INST en ${instDespues}: se revisa a mano` });
+          await dormir(GAP_MS); continue;
+        }
+      }
 
       const plan = {
         ov, id, cliente: so?.customer_name, moneda: so?.currency_code,
         renglones: lineas.length, materialRenglones: conPrecio.length,
-        absorber, ivaMaterial,
+        absorber, ivaMaterial, factorInst: r2(factorInst),
         instAntes, instDespues,
         totalAntes, totalEsperado: esperado,
       };
@@ -186,7 +227,7 @@ Deno.serve(async (req) => {
       const aCero = new Set(conPrecio.map((li: any) => li.line_item_id));
       const payload = lineas.map((li: any) => {
         if (aCero.has(li.line_item_id)) return aPayload(li, 0);
-        if (li.line_item_id === inst.line_item_id && modo === "restituir") {
+        if (li.line_item_id === inst.line_item_id && modo !== "cero") {
           return aPayload(li, r2(instDespues / qInst));
         }
         return aPayload(li, n0(li.rate));
