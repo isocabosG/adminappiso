@@ -2564,6 +2564,9 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   const [fact, setFact] = useState({}); // saldo real por OV: { "SO-00279": {total, balance, n} } — viene de las facturas
   const [pagos, setPagos] = useState({});         // OV -> pagos recibidos, de Zoho
   const [pagosSinOV, setPagosSinOV] = useState([]); // pagos que tocan varias obras o ninguna
+  const [pctSel, setPctSel] = useState("todos");    // filtro por % pagado
+  const [soloShip, setSoloShip] = useState(false);  // solo a quienes toca cobrarles el embarque
+  const [envio, setEnvio] = useState(null);         // OV -> material suyo que viene en camino
   const [pagosErr, setPagosErr] = useState("");     // por qué no se pudieron leer los pagos
   const [filtros, setFiltros] = useState([]); // chips activos, combinables: abierto/cerrado (estado) + porcobrar/pagado (pago)
   const toggleFiltro = (k) => setFiltros((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
@@ -2782,6 +2785,43 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   // Las órdenes anuladas o canceladas no son negocio: no se contratan, no se
   // cobran y no se deben. Las facturas canceladas ya se excluían; las OV no.
   const CANCELADAS = new Set(["void", "cancelled", "canceled"]);
+  // Qué material apartado para cada obra viene en camino.
+  //
+  // LA LIGA ES POR SKU, NO POR ORDEN DE COMPRA. Una OC de Zoho no dice para qué
+  // proyecto es: lo que sí sabemos es qué SKU están apartados para cada OV
+  // (comprometido-ov) y qué SKU traen piezas pendientes de recibir con su fecha
+  // (oc-cache). Cruzarlos da una SEÑAL, no un hecho — si dos obras apartaron el
+  // mismo SKU, las dos se marcan aunque el embarque sea para una. Por eso esto
+  // no afirma que haya que cobrar: señala a quién revisarle el contrato.
+  useEffect(() => {
+    (async () => {
+      try {
+        const leer = async (k) => { const r = await window.storage?.get(k); return r?.value ? JSON.parse(r.value) : null; };
+        const [comp, oc] = await Promise.all([leer("iso3-comprometido-ov"), leer("iso3-mrp-oc-cache-v2")]);
+        const porSku = comp?.porSku || {};
+        const lotes = oc?.lotes || {};
+        const porOv = {};
+        for (const [sku, info] of Object.entries(porSku)) {
+          const ls = lotes[sku];
+          if (!ls || !ls.length) continue;
+          for (const o of (info?.ovs || [])) {
+            const ov = String(o.ov || "").trim();
+            if (!ov) continue;
+            const e = (porOv[ov] = porOv[ov] || { skus: [], ocs: [], eta: null });
+            if (!e.skus.includes(sku)) e.skus.push(sku);
+            for (const l of ls) {
+              if (l.oc && !e.ocs.includes(l.oc)) e.ocs.push(l.oc);
+              if (l.eta && (!e.eta || l.eta < e.eta)) e.eta = l.eta;   // la más próxima
+            }
+          }
+        }
+        setEnvio({ porOv, corte: oc?.transitoFecha || null });
+      } catch {
+        setEnvio({ porOv: {}, corte: null });   // sin señales, pero la pantalla sigue
+      }
+    })();
+  }, []);
+
   const rows = (sos || []).filter((s) => {
     if (CANCELADAS.has(String(s.status || "").toLowerCase()) || CANCELADAS.has(String(s.order_status || "").toLowerCase())) return false;
     if (anio !== "todos" && (s.date || "").slice(0, 4) !== anio) return false;                 // filtro por año
@@ -2833,7 +2873,48 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   const pagosDe = (s) => pagos[s.salesorder_number] || null;
   // Resumen: MXN base (con IVA) y USD al TC de hoy
   const tc = +tcFix || 0;
+  // % pagado. Sale de totDoc y balNeto, las MISMAS funciones que pintan el
+  // renglón: una fórmula propia acabaría diciendo un número distinto al "por
+  // cobrar" de al lado, y nadie sabría a cuál creerle.
+  //
+  // El 100% se ata al SALDO, no al redondeo. Con 500 de saldo sobre 100,000 el
+  // redondeo decía 100% y ese proyecto caía en el filtro "Liquidado": quien
+  // busca liquidados estaría viendo deudores. Ahora 100 significa que no debe
+  // nada (mismo umbral de 0.50 que ya usa el contador de los que deben), y
+  // mientras deba algo el techo es 99.
+  const pctPagado = (s) => {
+    const t = totDoc(s);
+    if (!(t > 0)) return null;
+    if (balNeto(s) <= 0.5) return 100;
+    return Math.max(0, Math.min(99, Math.floor(((t - balNeto(s)) / t) * 100)));
+  };
+  const RANGOS = {
+    sinpago: (p) => p !== null && p <= 0,
+    medio:   (p) => p !== null && p > 0 && p <= 50,
+    avance:  (p) => p !== null && p > 50 && p < 90,
+    casi:    (p) => p !== null && p >= 90 && p < 100,
+    liquidado: (p) => p !== null && p >= 100,
+  };
+  const pasaPct = (s) => pctSel === "todos" || (RANGOS[pctSel] || (() => true))(pctPagado(s));
+
+  // Las tres señales que Fran definió. Cualquiera cuenta; se muestran todas
+  // para que quien cobra vea en qué se apoya, no un sí/no sin sustento.
+  const senales = (s) => {
+    const e = envio?.porOv?.[s.salesorder_number] || null;
+    const c = calDe(s);
+    const out = [];
+    if (e?.ocs?.length) out.push(`material en OC (${e.ocs.slice(0, 3).join(", ")}${e.ocs.length > 3 ? "…" : ""})`);
+    if (e?.eta) out.push(`llegada estimada ${e.eta}`);
+    if (c) out.push(`obra calendarizada ${c.fecha_instalacion}`);
+    return out;
+  };
+  // Toca revisarle el embarque: pagó la mitad o menos y YA hay algo en marcha.
+  // El monto no se calcula a propósito — varía por contrato.
+  const tocaShip = (s) => { const p = pctPagado(s); return p !== null && p <= 50 && senales(s).length > 0; };
+
   const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
+  const nShip = rows.reduce((a, s) => a + (tocaShip(s) ? 1 : 0), 0);
+  const visibles = [...rows].filter((s) => (!soloCal || calDe(s)) && (!soloShip || tocaShip(s)) && pasaPct(s)).sort(ordenCal);
   const nDeben = rows.reduce((a, s) => a + (balNeto(s) > 0.5 ? 1 : 0), 0);  // proyectos con saldo
 
 
@@ -3068,7 +3149,26 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${soloCal ? "bg-violet-600 text-white border-violet-600" : "bg-white text-violet-700 border-violet-300 hover:border-violet-500"} ${feedErr ? "opacity-40 cursor-not-allowed" : ""}`}>
           Calendarizados{!feedErr && nCal > 0 ? ` (${nCal})` : ""}
         </button>
-        {(filtros.length > 0 || soloCal) && <button onClick={() => { setFiltros([]); setSoloCal(false); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
+        {/* % pagado: va de selector y no de pildoras porque son cinco rangos
+            excluyentes, no banderas que se combinen. */}
+        <select value={pctSel} onChange={(e) => setPctSel(e.target.value)}
+          title="Filtrar por cuánto ha pagado el cliente"
+          className="px-2 py-1 text-xs rounded-full border bg-white text-stone-600 border-stone-300 hover:border-emerald-400">
+          <option value="todos">Pago: cualquiera</option>
+          <option value="sinpago">Sin pago (0%)</option>
+          <option value="medio">Hasta 50%</option>
+          <option value="avance">51–89%</option>
+          <option value="casi">90–99%</option>
+          <option value="liquidado">Liquidado (100%)</option>
+        </select>
+        {/* Embarque: pagó la mitad o menos y ya hay material en camino o fecha
+            de obra. Es una señal para revisar el contrato, no un monto. */}
+        <button onClick={() => setSoloShip((v) => !v)} disabled={!envio}
+          title={!envio ? "Cargando material en camino…" : "Pagaron 50% o menos y ya tienen material en camino u obra calendarizada: revisar si toca cobrar el embarque"}
+          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${soloShip ? "bg-amber-600 text-white border-amber-600" : "bg-white text-amber-700 border-amber-300 hover:border-amber-500"} ${!envio ? "opacity-40 cursor-not-allowed" : ""}`}>
+          Cobrar embarque{envio && nShip > 0 ? ` (${nShip})` : ""}
+        </button>
+        {(filtros.length > 0 || soloCal || soloShip || pctSel !== "todos") && <button onClick={() => { setFiltros([]); setSoloCal(false); setSoloShip(false); setPctSel("todos"); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
       </div>
       {pagosErr && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
@@ -3122,17 +3222,22 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[11px] text-stone-400">
-              {soloCal ? `${nCal} calendarizado${nCal === 1 ? "" : "s"} de ${rows.length}` : `${rows.length} proyecto${rows.length === 1 ? "" : "s"}`}
+              {visibles.length === rows.length
+                ? `${rows.length} proyecto${rows.length === 1 ? "" : "s"}`
+                : `${visibles.length} de ${rows.length} proyecto${rows.length === 1 ? "" : "s"}`}
             </p>
             <p className="text-[11px] text-stone-500 flex items-center gap-1.5">
               <span className="inline-block w-4 h-3 rounded-sm border border-violet-500 ring-1 ring-violet-300" />
               morado = <b className="font-semibold text-violet-700">calendarizado</b> en App Instalaciones
             </p>
           </div>
-          {[...rows].filter((s) => !soloCal || calDe(s)).sort(ordenCal).map((s) => {
+          {visibles.map((s) => {
             const pagadoManual = manualOf(s);
             const conFactura = !!facOf(s);
             const cal = calDe(s);   // calendarizado en IS-PMT
+            const pct = pctPagado(s);
+            const ship = tocaShip(s);
+            const porQue = ship ? senales(s) : [];
             return (
               <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)}
                 className={`relative w-full bg-white rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left border ${cal ? "border-violet-500 ring-1 ring-violet-300 hover:border-violet-700" : "border-stone-200 hover:border-stone-400"}`}>
@@ -3146,12 +3251,23 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
                     <span className="font-mono text-xs font-semibold">{s.salesorder_number}</span>
                     <PagoBadge status={s.paid_status} />
                     {cal && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800 font-medium">obra {cal.fecha_instalacion}</span>}
+                    {/* El motivo viaja en el title: una marca sin su razón
+                        obliga a abrir el proyecto para saber por qué está ahí. */}
+                    {ship && (
+                      <span title={"Revisar si toca cobrar el embarque — " + porQue.join(" · ")}
+                        className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-900 font-medium border border-amber-300">
+                        ⚑ embarque
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-stone-700 truncate max-w-[380px]">{s.reference_number || s.customer_name}</p>
                   <p className="text-[11px] text-stone-400">{s.customer_name} · {s.date}</p>
                 </div>
                 <div className="text-right font-mono text-xs">
                   <p className="text-stone-500">Total <span className="text-stone-800 font-semibold">${mx0(totDoc(s))}</span> <span className="text-[9px] text-stone-400">{curOf(s)}</span></p>
+                  <p className="text-stone-500">
+                    Pagado <span className={`font-semibold ${pct === null ? "text-stone-400" : pct >= 100 ? "text-teal-700" : pct <= 50 ? "text-amber-700" : "text-stone-800"}`}>{pct === null ? "—" : pct + "%"}</span>
+                  </p>
                   <p className="text-stone-400">Por cobrar <span className="text-stone-600 font-semibold">${mx0(balNeto(s))}</span>{conFactura ? <span className="text-[9px] text-emerald-600"> · factura</span> : null}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
                 </div>
               </button>
