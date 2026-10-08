@@ -2566,6 +2566,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   const [pagosSinOV, setPagosSinOV] = useState([]); // pagos que tocan varias obras o ninguna
   const [pctSel, setPctSel] = useState("todos");    // filtro por % pagado
   const [soloShip, setSoloShip] = useState(false);  // solo a quienes toca cobrarles el embarque
+  const [orden, setOrden] = useState("cal");         // como se ordena la lista
   const [envio, setEnvio] = useState(null);         // OV -> material suyo que viene en camino
   const [pagosErr, setPagosErr] = useState("");     // por qué no se pudieron leer los pagos
   const [filtros, setFiltros] = useState([]); // chips activos, combinables: abierto/cerrado (estado) + porcobrar/pagado (pago)
@@ -2920,7 +2921,53 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
 
   const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
   const nShip = rows.reduce((a, s) => a + (tocaShip(s) ? 1 : 0), 0);
-  const visibles = [...rows].filter((s) => (!soloCal || calDe(s)) && (!soloShip || tocaShip(s)) && pasaPct(s)).sort(ordenCal);
+  // Como se ordena la lista. "cal" es el orden de siempre — calendarizados
+  // primero por fecha de obra — y sigue siendo el default: es con el que la
+  // gente ya lee esta pantalla. Los demas son para buscar algo concreto.
+  const ORDENES = {
+    cal:      { txt: "Calendarizados primero", cmp: ordenCal },
+    fechaDes: { txt: "Fecha ↓ (recientes)",    cmp: (a, b) => String(b.date || "").localeCompare(String(a.date || "")) },
+    fechaAsc: { txt: "Fecha ↑ (antiguas)",     cmp: (a, b) => String(a.date || "").localeCompare(String(b.date || "")) },
+    ovDes:    { txt: "OV ↓ (mayor a menor)",   cmp: (a, b) => String(b.salesorder_number || "").localeCompare(String(a.salesorder_number || ""), undefined, { numeric: true }) },
+    ovAsc:    { txt: "OV ↑ (menor a mayor)",   cmp: (a, b) => String(a.salesorder_number || "").localeCompare(String(b.salesorder_number || ""), undefined, { numeric: true }) },
+  };
+  const visibles = [...rows].filter((s) => (!soloCal || calDe(s)) && (!soloShip || tocaShip(s)) && pasaPct(s))
+    .sort((ORDENES[orden] || ORDENES.cal).cmp);
+
+  // Exportar LO QUE SE VE: los mismos renglones, en el mismo orden, con las
+  // mismas cifras que pinta la pantalla. Se arma con las mismas funciones
+  // (totDoc, pctPagado, balNeto) a proposito: un export con formula propia
+  // acabaria diciendo un numero distinto al de la pantalla y nadie sabria a
+  // cual creerle. La moneda va en su columna porque la lista mezcla USD y MXN
+  // y sumar las dos juntas no significa nada.
+  const exportar = () => {
+    const col = [
+      "OV", "Proyecto", "Cliente", "Fecha OV", "Moneda", "Contratado", "Pagado %",
+      "Por cobrar", "Pago manual", "Tiene factura", "Estado OV", "Estado de pago",
+      "Calendarizado", "Cobrar embarque", "Por que",
+    ];
+    // Se reusa csvCell, el mismo escapador que ya usan los otros exports de la
+    // app, en vez de escribir otro aqui.
+    const num = (n) => (isFinite(n) ? (+n).toFixed(2) : "");
+    const filas = visibles.map((s) => {
+      const c = calDe(s), p = pctPagado(s), ship = tocaShip(s);
+      return [
+        s.salesorder_number || "", s.reference_number || "", s.customer_name || "", s.date || "",
+        curOf(s), num(totDoc(s)), p === null ? "" : p, num(balNeto(s)), num(manualOf(s)),
+        facOf(s) ? "si" : "no", s.order_status === "closed" ? "cerrado" : "abierto",
+        s.paid_status || "", c ? c.fecha_instalacion : "", ship ? "si" : "no",
+        ship ? senales(s).join(" · ") : "",
+      ].map(csvCell).join(",");
+    });
+    // El BOM es lo que hace que Excel respete los acentos.
+    const csv = "\uFEFF" + [col.map(csvCell).join(","), ...filas].join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    a.download = `proyectos-${new Date().toISOString().slice(0, 10)}.csv`;
+    // Sin revokeObjectURL: en Safari revocar justo despues del click cancela la
+    // descarga. Es lo mismo que hace el export del MRP, que ya funciona.
+    a.click();
+  };
   const nDeben = rows.reduce((a, s) => a + (balNeto(s) > 0.5 ? 1 : 0), 0);  // proyectos con saldo
 
 
@@ -3174,7 +3221,18 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${soloShip ? "bg-amber-600 text-white border-amber-600" : "bg-white text-amber-700 border-amber-300 hover:border-amber-500"} ${!envio ? "opacity-40 cursor-not-allowed" : ""}`}>
           Cobrar embarque{envio && nShip > 0 ? ` (${nShip})` : ""}
         </button>
-        {(filtros.length > 0 || soloCal || soloShip || pctSel !== "todos") && <button onClick={() => { setFiltros([]); setSoloCal(false); setSoloShip(false); setPctSel("todos"); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
+        <select value={orden} onChange={(e) => setOrden(e.target.value)}
+          title="Cómo se ordena la lista"
+          className="px-2 py-1 text-xs rounded-full border bg-white text-stone-600 border-stone-300 hover:border-emerald-400">
+          {Object.entries(ORDENES).map(([k, v]) => <option key={k} value={k}>{v.txt}</option>)}
+        </select>
+        {/* Baja lo que se ve, no todo: si filtraste, el archivo trae lo filtrado. */}
+        <button onClick={exportar} disabled={!visibles.length}
+          title={`Bajar a Excel los ${visibles.length} proyectos de esta vista, en este orden`}
+          className={`px-2.5 py-1 text-xs rounded-full border transition-colors bg-white text-emerald-700 border-emerald-300 hover:border-emerald-500 ${!visibles.length ? "opacity-40 cursor-not-allowed" : ""}`}>
+          ⬇ Exportar ({visibles.length})
+        </button>
+        {(filtros.length > 0 || soloCal || soloShip || pctSel !== "todos" || orden !== "cal") && <button onClick={() => { setFiltros([]); setSoloCal(false); setSoloShip(false); setPctSel("todos"); setOrden("cal"); }} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>}
       </div>
       {pagosErr && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
