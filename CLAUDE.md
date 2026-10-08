@@ -1,6 +1,6 @@
 # AdminAppISO (compras, costeo, tesorería) — reglas de trabajo para Claude
 
-**App:** AdminAppISO (compras, costeo, tesorería) · **Repo:** `isocabosG/adminappiso` · **Supabase:** `gkoibrjhlqmuiuedrtaz` (AdminAppISO) · **Deploy:** Vercel automático al mergear a `main`.
+**App:** AdminAppISO (compras, costeo, tesorería) · **Repo:** `isocabosG/adminappiso` · **Supabase:** `gkoibrjhlqmuiuedrtaz` (AdminAppISO) · **Deploy:** Vercel automático al empujar a `main`.
 
 Este archivo es la memoria compartida entre chats. La fuente de verdad es el repo y la base, no lo que recuerde un chat.
 
@@ -10,9 +10,11 @@ Este archivo es la memoria compartida entre chats. La fuente de verdad es el rep
 - Un solo chat trabaja esta app a la vez. Si hay otro chat activo en el mismo repo, detente y avisa.
 
 ## Código
-- Todo cambio va en una rama + PR. Nunca push directo a `main`.
-- Se mergea solo con el "Ok" de Fran. Mergear publica a producción para todo el equipo.
-- Corre el build antes de abrir el PR.
+- Push directo a `main`. No usamos ramas ni PR.
+- Excepción: rama + PR solo cuando Fran no tenga la terminal a la mano (celular, conexión remota) y necesite mergear desde la app de GitHub.
+- Se empuja solo con el "Ok" de Fran. Empujar a `main` publica a producción para todo el equipo (Vercel despliega solo).
+- Corre el build antes de empujar.
+- Antes de cada commit: `git diff --cached --name-status HEAD`. Si aparece un borrado que no pediste, no commitees.
 
 ## Supabase
 - Lecturas: libres.
@@ -39,3 +41,4 @@ Si un cambio toca otra app, dilo y no la modifiques desde este repo.
 Al terminar un cambio, agrega una línea: fecha · qué cambió · por qué.
 
 - 2026-10-05 · Se crea este archivo con las reglas comunes de trabajo.
+- 2026-10-08 · Se quita el flujo de rama + PR; ahora push directo a `main`. Confundía y solo hacía falta cuando Fran no tenía su computadora.
