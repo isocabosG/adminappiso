@@ -2774,17 +2774,12 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     if (A && B) return String(A.fecha_instalacion || "9999").localeCompare(String(B.fecha_instalacion || "9999"));
     return 0;
   };
-  if (modo.startsWith("so:")) {
-    const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
-    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos, rol }} />;
-  }
-
-  const q = busca.trim().toLowerCase();
-  const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
-  const pagoSel = filtros.filter((x) => x === "porcobrar" || x === "pagado");
-  // Las órdenes anuladas o canceladas no son negocio: no se contratan, no se
-  // cobran y no se deben. Las facturas canceladas ya se excluían; las OV no.
-  const CANCELADAS = new Set(["void", "cancelled", "canceled"]);
+  // ESTE useEffect VA ARRIBA DEL RETURN AL DETALLE, no abajo.
+  // Estaba despues de `if (modo.startsWith("so:")) return <ProyectoDetalle/>` y
+  // tiraba la app con React #300 ("rendered fewer hooks than expected"): al
+  // entrar a un proyecto el componente salia antes y este hook no corria, asi
+  // que React veia menos hooks que en el render anterior. Los hooks no pueden
+  // quedar atras de ningun return condicional.
   // Qué material apartado para cada obra viene en camino.
   //
   // LA LIGA ES POR SKU, NO POR ORDEN DE COMPRA. Una OC de Zoho no dice para qué
@@ -2822,6 +2817,17 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     })();
   }, []);
 
+  if (modo.startsWith("so:")) {
+    const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
+    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos, rol }} />;
+  }
+
+  const q = busca.trim().toLowerCase();
+  const estadoSel = filtros.filter((x) => x === "abierto" || x === "cerrado");
+  const pagoSel = filtros.filter((x) => x === "porcobrar" || x === "pagado");
+  // Las órdenes anuladas o canceladas no son negocio: no se contratan, no se
+  // cobran y no se deben. Las facturas canceladas ya se excluían; las OV no.
+  const CANCELADAS = new Set(["void", "cancelled", "canceled"]);
   const rows = (sos || []).filter((s) => {
     if (CANCELADAS.has(String(s.status || "").toLowerCase()) || CANCELADAS.has(String(s.order_status || "").toLowerCase())) return false;
     if (anio !== "todos" && (s.date || "").slice(0, 4) !== anio) return false;                 // filtro por año
