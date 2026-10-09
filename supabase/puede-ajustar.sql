@@ -64,10 +64,12 @@ order by p.puede_ajustar desc, p.nombre;
 -- ---------------------------------------------------------------------------
 -- CORRECCION. profiles YA tenia full_name, que es la que lee Root.jsx. La
 -- columna 'nombre' de arriba sobra: se agrego sin revisar el esquema primero.
--- Los valores buenos ya se pasaron a full_name (hecho el 09-oct). Falta tirar
--- la columna: el camino de DDL del MCP se colgaba y quedo pendiente.
+-- Los valores buenos ya se pasaron a full_name (hecho el 09-oct).
 --
--- Correr esto en el editor SQL de Supabase:
+-- APLICADO el 09-oct-2026 en el editor SQL de Supabase (por MCP el DDL se
+-- colgaba, y no era un lock: pg_locks sobre public.profiles salia vacio).
+-- profiles quedo en: id, full_name, role, created_at, admin_accesos,
+-- protegido, es_super, activo, puede_ajustar.
 alter table public.profiles drop column if exists nombre;
 
 comment on column public.profiles.full_name is
