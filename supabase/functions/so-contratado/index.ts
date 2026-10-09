@@ -144,6 +144,15 @@ Deno.serve(async (req) => {
 
         porOv[o.num] = {
           id: o.id, cliente: o.cliente, moneda: o.mon, estado: o.estado, facturacion: o.fact,
+          // Quien la creo y quien la toco al ultimo. Es lo que contesta "de donde
+          // sale el material con precio": del catalogo, via quien agrego el
+          // renglon. OJO: una orden corregida por la API queda con el usuario
+          // del Self Client como ultimo modificador, no con quien la ensucio.
+          creadoPor: d.salesorder?.created_by_name || "",
+          creadoCorreo: d.salesorder?.created_by_email || "",
+          modificadoPorId: String(d.salesorder?.last_modified_by_id || ""),
+          modificado: d.salesorder?.last_modified_time || "",
+          creado: d.salesorder?.created_time || "",
           contratado,                                  // INST con su IVA — el contrato
           instSinIva,
           sinInst: !inst,                              // orden sin concepto de suministro: se revisa a mano
