@@ -2232,7 +2232,7 @@ function App({ perfil, correo }) {
           </div>
         )}
         {vistaSegura === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
-        {vistaSegura === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol: perfil?.role || null }} />}
+        {vistaSegura === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol: perfil?.role || null, puedeAjustar: !!perfil?.puede_ajustar }} />}
         {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} />}
@@ -2552,7 +2552,7 @@ function PagoBadge({ status }) {
   return <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${c}`}>{t}</span>;
 }
 
-function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol }) {
+function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol, puedeAjustar }) {
   // Arranca en el año en curso. Con "todos" el resumen sumaba los 1,068
   // proyectos desde 2023 y el número no respondía a ninguna pregunta útil.
   const [anio, setAnio] = useState(String(new Date().getFullYear()));
@@ -2820,7 +2820,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
 
   if (modo.startsWith("so:")) {
     const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
-    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos, rol }} />;
+    return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos, rol, puedeAjustar }} />;
   }
 
   const q = busca.trim().toLowerCase();
@@ -3476,7 +3476,7 @@ function FilaMaterial({ m, projectId, onGuardado }) {
   );
 }
 
-function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr, feedHitos, rol }) {
+function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catalogo, feedProy, feedErr, feedHitos, rol, puedeAjustar }) {
   // Cobranza ve las secciones 1 a 3 — contratado, pagos y el reporte de estado
   // de cuenta. La 4 (materiales por hito) y la 5 (control presupuestal) traen
   // costo, utilidad y margen: no se pintan.
@@ -3489,6 +3489,13 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const [nuevoPago, setNuevoPago] = useState({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
   const [nuevoCosto, setNuevoCosto] = useState({ fecha: hoy(), tipo: "Flete", concepto: "", monto: "" });
   const [verEntrega, setVerEntrega] = useState(false);
+  // Ajuste por cierre de proyecto. `recarga` vuelve a leer la OV de Zoho
+  // despues de escribir: la pantalla tiene que mostrar lo que quedo en Zoho,
+  // no lo que creemos que escribimos.
+  const [ajuste, setAjuste] = useState({ importe: "", motivo: "", tambienFactura: true });
+  const [ajPrevio, setAjPrevio] = useState(null);
+  const [ajBusy, setAjBusy] = useState("");
+  const [recarga, setRecarga] = useState(0);
   const [docCargando, setDocCargando] = useState("");
   // Abre (o descarga) un archivo de Zoho (contrato/adjunto o PDF de factura/OV) vía la Edge Function.
   const abrirDoc = async (payload, nombre, descargar) => {
@@ -3515,7 +3522,7 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
       } catch (e) { setAviso({ t: "err", m: "No se pudo leer el proyecto: " + (e.message || e) }); }
       setCargando(false);
     })();
-  }, [soId]);
+  }, [soId, recarga]);
 
   // Guarda un mini-análisis (gasto en materiales + utilidad + margen, en MXN) cuando el proyecto carga,
   // para que el resumen de arriba pueda sumar/promediar sin volver a leer cada proyecto.
@@ -3584,6 +3591,34 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const montoConIva = hayFactura ? facturado : conIva;              // lo efectivamente facturado (o la OV si no hay factura)
   const porPagar = hayFactura ? saldoFact : (conIva - totalPagado); // saldo real de facturas
   const difFacturaContrato = hayFactura ? facturado - conIva : 0;   // diferencia factura vs OV (informativa)
+
+  // Ajuste por cierre de proyecto ────────────────────────────────────────
+  // El importe va NETO. Zoho le suma el impuesto del renglon igual que a los
+  // demas conceptos, y hereda el del INST de ESTA orden: hay ordenes con el
+  // INST exento y material gravado, asi que suponer 16% aqui la descuadra.
+  // Negativo baja lo contratado, positivo lo sube.
+  const ajImporte = +String(ajuste.importe).replace(/,/g, "") || 0;
+  const ajustesPrevios = (so.line_items || []).filter((l) => String(l.sku || "").toUpperCase() === "AJUSTE");
+  const pedirAjuste = async (aplicar) => {
+    if (!ajImporte) { setAviso({ t: "err", m: "El importe del ajuste no puede ser cero." }); return; }
+    if (ajuste.motivo.trim().length < 5) { setAviso({ t: "err", m: "Escribe el motivo: queda pegado al renglon en Zoho para siempre." }); return; }
+    if (typeof window.soAjuste !== "function") { setAviso({ t: "err", m: "Esta version de la app no trae el modulo de ajustes." }); return; }
+    setAjBusy(aplicar ? "aplicar" : "calcular");
+    try {
+      const d = await window.soAjuste({ soId, importe: ajImporte, motivo: ajuste.motivo.trim(), tambienFactura: ajuste.tambienFactura, dryRun: !aplicar });
+      if (!aplicar) setAjPrevio(d);
+      else {
+        const f = d.factura || {};
+        setAjPrevio(null);
+        setAjuste({ importe: "", motivo: "", tambienFactura: true });
+        setAviso(d.ok
+          ? { t: "ok", m: `Ajuste aplicado. OV ${d.orden?.numero}: $${mx0(d.orden?.totalAntes)} → $${mx0(d.orden?.totalQuedo)}` + (f.hecho ? ` · factura ${f.numero} actualizada` : f.por ? ` · la factura no se toco (${f.por})` : "") }
+          : { t: "err", m: `El ajuste quedo a medias: ${(f.mal || []).join(" · ") || "revisa la orden en Zoho"}` });
+        setRecarga((n) => n + 1);
+      }
+    } catch (e) { setAviso({ t: "err", m: `No se pudo ${aplicar ? "aplicar" : "calcular"} el ajuste: ` + (e.message || e) }); }
+    setAjBusy("");
+  };
 
   const setDatos = (patch) => saveProyData({ ...proyData, [soId]: { ...datos, ...patch } });
   const agregarPago = () => {
@@ -3787,6 +3822,69 @@ ${porPagar >= 0
         </div>
         <p className="px-4 pb-3 text-[11px] text-stone-400">{cerrado ? "Proyecto cerrado: se usa el total de la orden de venta (Innobyte lo ajusta al cerrar para que la OV = lo contratado)." : "Proyecto abierto: se usa el renglón \"Suministro e instalación\". Ajústalo si tu contrato dice otra cosa."} Puedes sobrescribir el monto sin IVA cuando lo necesites.</p>
       </Section>
+
+      {/* Ajuste por cierre de proyecto. Entra como RENGLON nuevo, no como
+          edicion de los renglones que ya estan: bajarle la cantidad a un
+          renglon ya surtido arregla el importe y rompe el almacen, porque Zoho
+          ya descontó esas piezas. El campo nativo de ajuste de Zoho no sirve
+          en Mexico ("Agregue los cargos como articulo").
+          Solo lo ve quien tiene profiles.puede_ajustar, y el permiso lo vuelve
+          a revisar la Edge Function: esconder el boton no es seguridad. */}
+      {puedeAjustar && (
+        <Section n="1b" t="Ajuste por cierre de proyecto" r={ajustesPrevios.length ? `${ajustesPrevios.length} ajuste${ajustesPrevios.length > 1 ? "s" : ""} · $${mx0(ajustesPrevios.reduce((a, l) => a + (+l.item_total || 0), 0))}` : null}>
+          <div className="p-4 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Total OV en Zoho</p><p className="text-sm font-semibold font-mono">${mx0(+so.total || 0)}</p></div>
+              <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Facturado</p><p className="text-sm font-semibold font-mono">${mx0(facturado)}</p>{facturas.length !== 1 ? <p className="text-[10px] text-stone-400">{facturas.length ? facturas.length + " facturas" : "sin factura"}</p> : null}</div>
+              <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Cobrado</p><p className="text-sm font-semibold font-mono">${mx0(totalPagado)}</p></div>
+              <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Por cobrar</p><p className="text-sm font-semibold font-mono">${mx0(porPagar)}</p></div>
+            </div>
+
+            {ajustesPrevios.length ? (
+              <div className="border border-stone-200 rounded-lg divide-y divide-stone-100">
+                {ajustesPrevios.map((l, i) => (
+                  <div key={i} className="flex items-start justify-between gap-3 px-3 py-2">
+                    <p className="text-[11px] text-stone-500 min-w-0 break-words">{l.description || "(sin motivo)"}</p>
+                    <span className={`text-xs font-mono shrink-0 ${(+l.item_total || 0) < 0 ? "text-red-700" : "text-emerald-700"}`}>${mx(+l.item_total || 0)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+              <div><Lbl>Importe sin IVA — negativo para bajar</Lbl><input type="number" step="0.01" className={inp + " font-mono"} placeholder="-1850.00" value={ajuste.importe} onChange={(e) => { setAjuste({ ...ajuste, importe: e.target.value }); setAjPrevio(null); }} /></div>
+              <div className="md:col-span-2"><Lbl>Motivo — queda escrito en Zoho</Lbl><input className={inp} placeholder="No se instalaron 4 paneles" value={ajuste.motivo} onChange={(e) => { setAjuste({ ...ajuste, motivo: e.target.value }); setAjPrevio(null); }} /></div>
+            </div>
+
+            {ajPrevio?.orden ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                <p className="text-xs text-amber-900">Así quedaría la orden <b className="font-mono">{ajPrevio.orden.numero}</b>:</p>
+                <p className="text-sm font-mono font-semibold text-amber-900">${mx(ajPrevio.orden.totalAntes)} → ${mx(ajPrevio.orden.totalEsperado)} {so.currency_code}</p>
+                <p className="text-[11px] text-amber-800">Impuesto del ajuste: {ajPrevio.orden.impuesto}. Es un renglón nuevo; los {ajPrevio.orden.renglones} que ya están no se tocan.</p>
+                {(ajPrevio.factura || []).length === 1
+                  ? (ajuste.tambienFactura
+                    ? <p className="text-[11px] text-amber-800">La factura {ajPrevio.factura[0].num} pasa de ${mx(ajPrevio.factura[0].total)} con saldo ${mx(ajPrevio.factura[0].saldo)}, y se ajusta igual.</p>
+                    : <p className="text-[11px] text-amber-800">La factura {ajPrevio.factura[0].num} NO se toca: el "por cobrar" de la app sale del saldo de la factura, así que no se va a mover.</p>)
+                  : (ajPrevio.factura || []).length > 1
+                    ? <p className="text-[11px] text-red-700">La orden tiene {ajPrevio.factura.length} facturas ({ajPrevio.factura.map((f) => f.num).join(", ")}): se ajusta solo la OV y la factura la corriges a mano en Zoho.</p>
+                    : <p className="text-[11px] text-amber-800">Sin factura: solo se ajusta la orden de venta.</p>}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-stone-600">
+                <input type="checkbox" checked={ajuste.tambienFactura && facturas.length === 1} disabled={facturas.length !== 1} onChange={(e) => { setAjuste({ ...ajuste, tambienFactura: e.target.checked }); setAjPrevio(null); }} />
+                También la factura
+              </label>
+              <div className="flex-1" />
+              <button onClick={() => pedirAjuste(false)} disabled={!!ajBusy} className="px-3 py-2 text-xs rounded border border-stone-300 hover:border-emerald-400 disabled:opacity-40">{ajBusy === "calcular" ? "Calculando…" : "Calcular"}</button>
+              <button onClick={() => pedirAjuste(true)} disabled={!!ajBusy || !ajPrevio} className="px-4 py-2 bg-red-700 text-white text-xs font-semibold rounded hover:bg-red-800 disabled:opacity-40">{ajBusy === "aplicar" ? "Aplicando…" : "Aplicar en Zoho"}</button>
+            </div>
+
+            <p className="text-[11px] text-stone-400">Entra como renglón "AJUSTE POR CIERRE DE PROYECTO" con tu motivo, la fecha y tu nombre. Primero Calcular, luego Aplicar: el botón de aplicar no se enciende sin haber visto el cálculo.{!cerrado ? " Ojo: esta orden todavía está abierta; el ajuste normalmente va al cerrar." : ""}</p>
+          </div>
+        </Section>
+      )}
 
       <Section n="2" t="Pagos aplicados" r={`$${mx0(totalPagado)}`}>
         <div className="overflow-x-auto"><table className="w-full text-xs min-w-[560px]">

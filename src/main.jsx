@@ -77,6 +77,18 @@ window.acceso = async (payload) => {
   return data
 }
 
+// Helper del AJUSTE POR CIERRE DE PROYECTO. Va a la Edge Function 'so-ajuste',
+// que es la unica que escribe en Zoho. El permiso (profiles.puede_ajustar) lo
+// revisa la funcion con el JWT de quien llama: esconder el boton en la app no
+// es seguridad, es cortesia. Como en mrpEditar, el error NO se traga — un
+// ajuste que no se aplico tiene que verse.
+window.soAjuste = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('so-ajuste', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false && data.error) throw new Error(data.error)
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))

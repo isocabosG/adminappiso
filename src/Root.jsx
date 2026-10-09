@@ -26,7 +26,7 @@ export default function Root() {
     if (!session) { setPerfil(undefined); return }
     let vivo = true
     supabase.from('profiles')
-      .select('id, full_name, role, admin_accesos, es_super, activo')
+      .select('id, full_name, role, admin_accesos, es_super, activo, puede_ajustar')
       .eq('id', session.user.id).maybeSingle()
       .then(({ data, error }) => {
         if (!vivo) return

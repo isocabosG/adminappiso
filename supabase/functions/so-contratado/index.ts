@@ -67,6 +67,12 @@ const esInst = (li: any) =>
   ((li?.line_item_type === "service" || li?.product_type === "service") &&
     /SUMINISTRO\s+E?\s*INSTALACI/i.test(String(li?.name || li?.description || "")));
 
+// El renglon de ajuste por cierre de proyecto (Edge Function so-ajuste). Es
+// parte del contrato, no material con precio: un ajuste de -18,400 autorizado
+// por Jesus o Constanza es lo contratado de verdad, y si no se suma aqui este
+// reporte lo denuncia como orden inflada cada dia.
+const esAjuste = (li: any) => up(li?.sku) === "AJUSTE";
+
 // IVA del renglon, tomado del renglon. Sin constantes escondidas.
 const ivaDe = (li: any) =>
   (li?.line_item_taxes || []).reduce((a: number, t: any) => a + n0(t?.tax_amount), 0);
@@ -131,11 +137,15 @@ Deno.serve(async (req) => {
 
         const inst = lineas.find(esInst) || null;
         const instSinIva = inst ? n0(inst.item_total) : 0;
-        const contratado = inst ? instSinIva + ivaDe(inst) : null;
+        // Contratado = INST + los ajustes por cierre, cada uno con SU impuesto.
+        const ajustes = lineas.filter(esAjuste);
+        const ajusteSinIva = ajustes.reduce((a: number, li: any) => a + n0(li.item_total), 0);
+        const ajusteConIva = ajustes.reduce((a: number, li: any) => a + n0(li.item_total) + ivaDe(li), 0);
+        const contratado = inst ? instSinIva + ivaDe(inst) + ajusteConIva : null;
 
         // Material con precio: lo que deberia ir en cero y no lo esta.
         const conPrecio = lineas
-          .filter((li: any) => !esInst(li) && (li.line_item_type === "goods" || li.product_type === "goods") && n0(li.rate) > 0)
+          .filter((li: any) => !esInst(li) && !esAjuste(li) && (li.line_item_type === "goods" || li.product_type === "goods") && n0(li.rate) > 0)
           .map((li: any) => ({
             sku: up(li.sku), nombre: li.name || li.description || "", cant: n0(li.quantity),
             precio: n0(li.rate), importe: n0(li.item_total),
@@ -153,8 +163,10 @@ Deno.serve(async (req) => {
           modificadoPorId: String(d.salesorder?.last_modified_by_id || ""),
           modificado: d.salesorder?.last_modified_time || "",
           creado: d.salesorder?.created_time || "",
-          contratado,                                  // INST con su IVA — el contrato
+          contratado,                                  // INST + ajustes, con su IVA — el contrato
           instSinIva,
+          ajustes: ajustes.length,                     // ajustes por cierre aplicados
+          ajusteSinIva,
           sinInst: !inst,                              // orden sin concepto de suministro: se revisa a mano
           subtotalOrden: n0(d.salesorder?.sub_total),
           totalOrden: n0(d.salesorder?.total),
