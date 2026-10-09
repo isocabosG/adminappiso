@@ -113,8 +113,16 @@ Deno.serve(async (req) => {
   const ovs: string[] = crudo.map((x) => String(typeof x === "object" ? x?.ov : x));
   // modo "contrato": el total objetivo de cada orden, dado por Fran.
   const meta: Record<string, number> = {};
+  // El id de una orden que NO esta en el barrido. El barrido de so-contratado
+  // excluye las CERRADAS, asi que una orden cerrada que se nos barrio no se
+  // puede corregir por numero: se le pasa el salesorder_id a mano,
+  // ov: [{ ov: "SO-01098", id: "4053294000032633298" }].
+  const idDado: Record<string, string> = {};
   for (const x of crudo) {
-    if (x && typeof x === "object" && x.ov != null) meta[String(x.ov)] = n0(x.total);
+    if (x && typeof x === "object" && x.ov != null) {
+      meta[String(x.ov)] = n0(x.total);
+      if (x.id) idDado[String(x.ov)] = String(x.id);
+    }
   }
 
   if (modo !== "cero" && modo !== "restituir" && modo !== "contrato") {
@@ -155,8 +163,8 @@ Deno.serve(async (req) => {
     if (abortado) { pendientes.push(ov); continue; }
     if ((Date.now() - t0) / 1000 > TOPE_SEG) { pendientes.push(ov); continue; }
 
-    const id = porOv?.[ov]?.id;
-    if (!id) { saltadas.push({ ov, por: "no esta en el barrido de so-contratado" }); continue; }
+    const id = porOv?.[ov]?.id || idDado[ov] || "";
+    if (!id) { saltadas.push({ ov, por: "no esta en el barrido de so-contratado (si esta cerrada, pasa su id)" }); continue; }
 
     try {
       const d = await z.get(`/salesorders/${id}`);
