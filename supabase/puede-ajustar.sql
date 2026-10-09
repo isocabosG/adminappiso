@@ -60,3 +60,15 @@ where u.id = p.id and u.email = v.correo;
 select p.nombre, u.email, p.role, p.admin_accesos, p.es_super, p.puede_ajustar
 from public.profiles p join auth.users u on u.id = p.id
 order by p.puede_ajustar desc, p.nombre;
+
+-- ---------------------------------------------------------------------------
+-- CORRECCION. profiles YA tenia full_name, que es la que lee Root.jsx. La
+-- columna 'nombre' de arriba sobra: se agrego sin revisar el esquema primero.
+-- Los valores buenos ya se pasaron a full_name (hecho el 09-oct). Falta tirar
+-- la columna: el camino de DDL del MCP se colgaba y quedo pendiente.
+--
+-- Correr esto en el editor SQL de Supabase:
+alter table public.profiles drop column if exists nombre;
+
+comment on column public.profiles.full_name is
+  'Nombre de la persona. La bitacora de ajustes y el menu de Usuarios muestran esto, no el correo: admin@innovacionsolar.com no le dice a nadie que es Jesus Miranda.';
