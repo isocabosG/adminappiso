@@ -29,3 +29,34 @@ select u.email, p.role, p.admin_accesos, p.puede_ajustar
 from public.profiles p
 join auth.users u on u.id = p.id
 order by p.puede_ajustar desc, u.email;
+
+-- ---------------------------------------------------------------------------
+-- Nombre de la persona. 09-oct-2026.
+--
+-- POR QUE
+-- La bitacora de ajustes tiene que decir QUIEN. Con el correo solo, el registro
+-- dice "admin@innovacionsolar.com aplico un ajuste de -18,400" y en seis meses
+-- nadie sabe que ese es Jesus Miranda. Es el mismo rastro ciego que nos costo
+-- no poder contestar quien metio el material con precio.
+alter table public.profiles
+  add column if not exists nombre text;
+
+comment on column public.profiles.nombre is
+  'Nombre de la persona. La bitacora de ajustes y el menu de Usuarios muestran esto, no el correo: admin@innovacionsolar.com no le dice a nadie que es Jesus Miranda.';
+
+update public.profiles p
+set nombre = v.nombre
+from auth.users u,
+     (values
+       ('fvargas@innovacionsolar.com',      'Francisco J. Vargas Garibay'),
+       ('fvargascabo@gmail.com',            'Francisco J. Vargas Garibay (cuenta 2)'),
+       ('cbueno@innovacionsolar.com',       'Constanza Bueno'),
+       ('admin@innovacionsolar.com',        'Jesus Miranda'),
+       ('client.care@innovacionsolar.com',  'Sergio Hernandez')
+     ) as v(correo, nombre)
+where u.id = p.id and u.email = v.correo;
+
+-- Verificacion final
+select p.nombre, u.email, p.role, p.admin_accesos, p.es_super, p.puede_ajustar
+from public.profiles p join auth.users u on u.id = p.id
+order by p.puede_ajustar desc, p.nombre;
