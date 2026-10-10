@@ -42,6 +42,18 @@ const diasDe = (iso) => {
 };
 const colorAnt = (d) => (d == null ? "text-stone-400" : d > 90 ? "text-red-700 font-semibold" : d > 60 ? "text-amber-700" : "text-stone-600");
 
+// % de pago. Se calcula EN LA MONEDA DE LA ORDEN, nunca sumando pesos con
+// dolares: ese porcentaje se ve bien y no significa nada. De las 792 ordenes
+// con pago, 510 cobran en USD y 281 en MXN; una sola tiene pagos en las dos, y
+// para esa se muestra aparte lo que entro en la otra moneda en vez de
+// revolverlo en el porcentaje.
+const esUSD = (p) => String(p.moneda || "MXN").toUpperCase() === "USD";
+const cobradoDe = (p) => (esUSD(p) ? p.cobradoUSD : p.cobradoMXN);
+const cobradoOtra = (p) => (esUSD(p) ? p.cobradoMXN : p.cobradoUSD);
+const pctDe = (p) => (p.contratadoConIva > 0.5 ? (cobradoDe(p) / p.contratadoConIva) * 100 : null);
+const colorPct = (v) => (v == null ? "text-stone-300" : v >= 99.5 ? "text-emerald-700" : v >= 50 ? "text-amber-700" : "text-red-700");
+const barraPct = (v) => (v == null ? "bg-stone-200" : v >= 99.5 ? "bg-emerald-600" : v >= 50 ? "bg-amber-500" : "bg-red-500");
+
 function Entrar({ onEntra }) {
   const [email, setEmail] = useState("");
   const [clave, setClave] = useState("");
@@ -175,6 +187,15 @@ function Panel({ sesion, onSalir }) {
   });
   const totMXN = vistas.reduce((a, p) => a + p.saldoMXN, 0);
   const totUSD = vistas.reduce((a, p) => a + p.saldoUSD, 0);
+  // El % global tambien va por moneda, por lo mismo.
+  const globalDe = (usd) => {
+    const g = vistas.filter((p) => esUSD(p) === usd);
+    const base = g.reduce((a, p) => a + p.contratadoConIva, 0);
+    const cob = g.reduce((a, p) => a + cobradoDe(p), 0);
+    return { base, pct: base > 0.5 ? (cob / base) * 100 : null };
+  };
+  const gMXN = globalDe(false);
+  const gUSD = globalDe(true);
 
   return (
     <div className="min-h-screen">
@@ -204,6 +225,11 @@ function Panel({ sesion, onSalir }) {
             {vistas.length} proyecto(s) · por cobrar <b className="font-mono">{mx(totMXN)} MXN</b>
             {totUSD > 0.5 && <> · <b className="font-mono">{mx(totUSD)} USD</b></>}
           </span>
+          <span className="text-xs text-stone-500">
+            {gMXN.pct != null && <>cobrado <b className={`font-mono ${colorPct(gMXN.pct)}`}>{gMXN.pct.toFixed(0)}%</b> MXN</>}
+            {gMXN.pct != null && gUSD.pct != null && " · "}
+            {gUSD.pct != null && <><b className={`font-mono ${colorPct(gUSD.pct)}`}>{gUSD.pct.toFixed(0)}%</b> USD</>}
+          </span>
         </div>
 
         <p className="text-[10px] text-stone-400">
@@ -212,7 +238,7 @@ function Panel({ sesion, onSalir }) {
         </p>
 
         <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-          <table className="w-full text-[12px] min-w-[860px]">
+          <table className="w-full text-[12px] min-w-[960px]">
             <thead className="bg-stone-100 text-[9px] uppercase tracking-wider text-stone-500">
               <tr>
                 <th className="text-left px-3 py-2">Proyecto</th>
@@ -220,6 +246,7 @@ function Panel({ sesion, onSalir }) {
                 <th className="text-left px-3 py-2">OV</th>
                 <th className="text-right px-3 py-2">Contratado</th>
                 <th className="text-right px-3 py-2">Pagos</th>
+                <th className="text-right px-3 py-2">% pagado</th>
                 <th className="text-right px-3 py-2 bg-amber-50 text-amber-800">Por cobrar</th>
                 <th className="text-right px-3 py-2">Antigüedad</th>
                 <th className="px-3 py-2"></th>
@@ -229,6 +256,8 @@ function Panel({ sesion, onSalir }) {
               {vistas.map((p) => {
                 const d = diasDe(p.facturaMasViejaConSaldo);
                 const ab = abierto === p.ov;
+                const pct = pctDe(p);
+                const otra = cobradoOtra(p);
                 return (
                   <React.Fragment key={p.ov}>
                     <tr onClick={() => setAbierto(ab ? null : p.ov)}
@@ -237,7 +266,26 @@ function Panel({ sesion, onSalir }) {
                       <td className="px-3 text-stone-600">{p.cliente || "—"}</td>
                       <td className="px-3 font-mono text-stone-500">{p.ov}</td>
                       <td className="px-3 text-right font-mono">{mx(p.contratadoConIva)}</td>
-                      <td className="px-3 text-right font-mono text-stone-500">{mx(p.cobradoMXN + p.cobradoUSD)}</td>
+                      {/* La moneda va escrita: antes un pago en dolares se
+                          veia igual que uno en pesos y se leia como pesos. */}
+                      <td className="px-3 text-right font-mono text-stone-500">
+                        {mx(cobradoDe(p))} <span className="text-[9px] text-stone-400">{esUSD(p) ? "USD" : "MXN"}</span>
+                      </td>
+                      <td className="px-3 py-1.5">
+                        {pct == null ? <span className="font-mono text-stone-300 block text-right">—</span> : (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <div className="w-10 h-1.5 bg-stone-200 rounded-full overflow-hidden shrink-0">
+                              <div className={`h-full ${barraPct(pct)}`} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+                            </div>
+                            <span className={`font-mono tabular-nums ${colorPct(pct)}`}>{pct.toFixed(0)}%</span>
+                          </div>
+                        )}
+                        {otra > 0.5 && (
+                          <p className="text-[9px] text-stone-400 text-right mt-0.5">
+                            +{mx(otra)} {esUSD(p) ? "MXN" : "USD"} fuera del %
+                          </p>
+                        )}
+                      </td>
                       <td className={`px-3 text-right font-mono font-semibold bg-amber-50/60 ${p.saldoMXN + p.saldoUSD > 0.5 ? "text-amber-900" : "text-stone-300"}`}>
                         {mx(p.saldoMXN)}{p.saldoUSD > 0.5 && <span className="block text-[10px] font-normal">{mx(p.saldoUSD)} USD</span>}
                       </td>
@@ -249,7 +297,7 @@ function Panel({ sesion, onSalir }) {
                     </tr>
                     {ab && (
                       <tr className="bg-emerald-50/60">
-                        <td colSpan={8} className="px-4 py-3">
+                        <td colSpan={9} className="px-4 py-3">
                           <p className="text-[10px] uppercase tracking-widest text-emerald-700 mb-1">Pagos aplicados</p>
                           {p.pagos.length === 0 ? <p className="text-[12px] text-stone-500">Sin pagos registrados.</p> : (
                             <table className="w-full text-[11px]">
@@ -280,7 +328,7 @@ function Panel({ sesion, onSalir }) {
                   </React.Fragment>
                 );
               })}
-              {vistas.length === 0 && <tr><td colSpan={8} className="px-4 py-6 text-center text-sm text-stone-400">Nada con esos filtros.</td></tr>}
+              {vistas.length === 0 && <tr><td colSpan={9} className="px-4 py-6 text-center text-sm text-stone-400">Nada con esos filtros.</td></tr>}
             </tbody>
           </table>
         </div>
