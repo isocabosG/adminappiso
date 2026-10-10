@@ -5,40 +5,46 @@
 //     el concepto 1 de cada orden de venta - SUMINISTRO E INSTALACION ... -
 //     más 16% de IVA
 //
-// Hace falta porque NINGUNO de los tres tableros lo calcula así (10-oct-2026):
-//   - Books devuelve el `total` del encabezado de la orden.
-//   - El tablero de Quote Creator lee `ventas_historico`, su copia de esos
-//     mismos totales.
-//   - AdminAppISO usa el total de la FACTURA cuando la hay, y el de la orden
-//     cuando no (`totDoc()` en App.jsx).
-// Los tres son números distintos y ninguno es el contratado. Esta función es
-// la única que aplica la definición, para que los tres puedan colgarse de ella
-// en vez de discutir totales.
+// Hace falta porque los tres tableros dan tres cifras distintas (10-oct-2026):
+//   - Books y el tablero de Quote Creator (que lee `ventas_historico`, su copia)
+//     devuelven el `total` del encabezado de la orden. Resultan ser los que más
+//     se acercan: 9,401,521 USD contra 9,452,836 de obra. La diferencia son
+//     solo las órdenes que llegan sin IVA y las de concepto 1 exento.
+//   - AdminAppISO usa el total de la FACTURA cuando la hay y el de la orden
+//     cuando no (`totDoc()` en App.jsx), y multiplica por 1.16 solo si
+//     `source = api`. Ese es el que más se aleja.
+// Esta función aplica la definición una sola vez para que los tres se cuelguen
+// de ella en vez de discutir totales.
 //
 // POR QUÉ NO BASTA `so-contratado`
 // Esa barre solo las órdenes VIVAS (excluye las cerradas) y guarda un corte
 // diario: 126 órdenes de todos los años. Para un año completo hacen falta
 // también las cerradas, que son la mayoría.
 //
-// DOS CIFRAS, A PROPÓSITO
-//   contratadoFran = (INST + ajustes) x 1.16
-//   contratadoZoho = (INST + ajustes) + el IVA que Zoho LE CALCULÓ a esos
-//                    renglones
-// No siempre coinciden, y donde no coinciden hay algo que decidir:
-//   - Las órdenes que crea Quote Creator llegan SIN IVA (SO-01127: sub_total
-//     258,874.14, tax_total 0). Ahí el renglón no trae impuesto y la de Zoho
-//     se queda 16% CORTA: manda la de Fran.
-//   - Hay órdenes con el INST genuinamente EXENTO (SO-00950, SO-01077). Ahí
-//     x1.16 cobra un IVA que no va: manda la de Zoho.
-// Por eso se reportan las dos y se cuentan las que difieren, en vez de elegir
-// una y esconder el problema.
+// QUÉ SE LEE COMO CONTRATADO, Y POR QUÉ NO ES EL CONCEPTO 1
+// Leer el concepto 1 directo da 1.9 M USD de menos. Causa: el link viejo de
+// Innobyte le RESTABA al concepto 1 el valor de los materiales que no salían
+// en cero, sin tocar el total. 65 órdenes no-postventa de 2026 traen material
+// con precio y en las 65 se cumple concepto 1 + material = subtotal; en 61 de
+// ellas total = subtotal x 1.16 al centavo. La firma son tres concepto 1 en
+// NEGATIVO (SO-00790, SO-00900, SO-00905): una resta que se pasó.
+// El total nunca se movió, así que el SUBTOTAL es el contrato. Eso es lo que
+// devuelve `contratado`.
 //
-// OJO CON LOS AJUSTES
-// Se leen aparte (`ajSinIva`) y NO deben sumarse al contratado. Los AJUSTE de
-// la depuración del 9-oct son espejo de TODOS los renglones de la orden, no
-// solo del concepto 1: sumarlos tira el MXN de postventa a -5.68 millones.
-// `contratadoFran` los incluye por compatibilidad con `so-ajuste`; el número
-// que se publica se arma con `instSinIva` y nada más.
+// Se toma el subtotal TAL COMO ESTÁ, sin devolver los ajustes de cierre. Los
+// renglones AJUSTE de la depuración del 9-oct son garantías dadas por perdidas,
+// no ventas: devolverlos infla postventa MXN de 2.29 a 8.30 millones. En obra
+// los ajustes son -80,913 USD / -100,555 MXN, el 1% de la cifra.
+//
+// No se corrige el dato en Zoho: de las 38 órdenes con renglón INST comido,
+// 37 están CERRADAS y la única abierta es SO-01069 con 73.52 USD. No hay nada
+// que escribir; se arregla midiendo, no escribiendo.
+//
+// Las órdenes DEPURADAS (garantías llevadas a cero el 9-oct) no aparecen: no
+// son ventas. 2026: 13 de obra y 75 de postventa quedan fuera del conteo.
+//
+// Las órdenes sin concepto 1 (21 en 2026: REVISION, GEN, INGENIERIA, ALARMAS)
+// SÍ cuentan en el total, por decisión de Fran del 10-oct-2026.
 //
 // BARRIDO REANUDABLE
 // Son ~390 órdenes por año y una llamada no alcanza. La primera corrida arma
@@ -47,11 +53,10 @@
 // `reiniciar: true` empieza de cero.
 //
 // CORRIDA DEL 10-OCT-2026 (2026 completo, 389 órdenes, 0 fallos)
-//   obra  USD  concepto 1 6,581,562.50  ->  x1.16 = 7,634,612.50
-//   obra  MXN  concepto 1 1,845,347.42  ->  x1.16 = 2,140,603.01
-// De las 95 órdenes de obra USD con concepto 1, 62 lo traen como la orden
-// completa y 33 desglosan el material aparte (1,282,242.84 USD que el
-// concepto 1 no incluye). Ver claude/contratado-2026-concepto1.md.
+//   OBRA       USD 9,452,835.78   MXN 3,552,091.95   (121 órdenes)
+//   POSTVENTA  USD   122,529.99   MXN 2,288,824.95   (180 órdenes)
+// Leyendo solo el concepto 1 habría dado 7,634,612.50 USD / 2,140,603.01 MXN.
+// Ver claude/contratado-2026-concepto1.md.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { Zoho } from "../_shared/zoho.ts";
 
@@ -171,7 +176,14 @@ Deno.serve(async (req) => {
           sinInst: !inst,
           instSinIva, ajustes: ajustes.length, ajSinIva,
           base,
-          contratadoFran: r2(base * 1.16),
+          // LA CIFRA. El total de la orden nunca se movio cuando la resta le
+          // comio el importe al concepto 1, asi que el subtotal ES el contrato.
+          // Se toma TAL COMO ESTA, sin devolver los ajustes: los AJUSTE de la
+          // depuracion son garantias dadas por perdidas, no ventas. Devolverlos
+          // inflaba postventa MXN de 2.29 a 8.30 millones.
+          contratado: r2(n0(so?.sub_total) * 1.16),
+          // Para contraste, no para reportar:
+          contratadoFran: r2(base * 1.16),       // solo el concepto 1 (+ ajustes)
           contratadoZoho: r2(base + instIva + ajIva),
           totalOrden: r2(n0(so?.total)),
           subtotalOrden: r2(n0(so?.sub_total)),
@@ -192,16 +204,30 @@ Deno.serve(async (req) => {
     await guardar(est);
 
     // ── Totales de lo que lleva ──────────────────────────────────────────────
-    const vals: any[] = Object.values(est.porOv);
+    const todas: any[] = Object.values(est.porOv);
+    // Las depuradas quedan FUERA del reporte, no solo en cero: son garantias,
+    // nunca fueron una venta, y contarlas como ordenes infla el conteo del ano
+    // (2026: 13 de obra y 75 de postventa). Decision de Fran, 10-oct-2026.
+    const vals: any[] = todas.filter((v) => Math.abs(n0(v.subtotalOrden)) >= 1);
+    const depuradas = todas.length - vals.length;
     const esPV = (v: any) => up(v.cliente) === "POSTVENTA" || /POSTVENTA/.test(up(v.proyecto));
+    // Se DERIVA del subtotal en vez de leer el campo `contratado` guardado, para
+    // que un blob escrito por una version anterior tambien de la cifra buena.
+    // Leerlo del campo hacia que un barrido viejo reportara 0.00.
+    const contratadoDe = (v: any) => n0(v.subtotalOrden) * 1.16;
     const bloque = (lista: any[]) => {
       const por = (mon: string, campo: string) =>
         r2(lista.filter((v) => v.moneda === mon).reduce((a, v) => a + n0(v[campo]), 0));
+      const porC = (mon: string) =>
+        r2(lista.filter((v) => v.moneda === mon).reduce((a, v) => a + contratadoDe(v), 0));
       return {
         ordenes: lista.length,
         sinConceptoInst: lista.filter((v) => v.sinInst).length,
-        franUSD: por("USD", "contratadoFran"), franMXN: por("MXN", "contratadoFran"),
-        zohoUSD: por("USD", "contratadoZoho"), zohoMXN: por("MXN", "contratadoZoho"),
+        // La cifra buena:
+        contratadoUSD: porC("USD"), contratadoMXN: porC("MXN"),
+        // Lo que da leer el concepto 1 crudo: 1.9M USD menos, porque 37 ordenes
+        // cerradas traen el importe en los renglones de material. No reportar.
+        soloConcepto1USD: por("USD", "contratadoFran"), soloConcepto1MXN: por("MXN", "contratadoFran"),
         totalOrdenUSD: por("USD", "totalOrden"), totalOrdenMXN: por("MXN", "totalOrden"),
       };
     };
@@ -209,7 +235,8 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true, anio,
-      progreso: { leidas: vals.length, pendientes: est.pendientes.length, completo: est.pendientes.length === 0 },
+      progreso: { leidas: todas.length, pendientes: est.pendientes.length, completo: est.pendientes.length === 0 },
+      depuradasExcluidas: depuradas,
       obra: bloque(vals.filter((v) => !esPV(v))),
       postventa: bloque(vals.filter(esPV)),
       todo: bloque(vals),
