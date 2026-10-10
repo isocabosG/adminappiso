@@ -2818,6 +2818,50 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     })();
   }, []);
 
+  // CONTRATADO: lo manda `contratado-anio`, no esta pantalla.
+  //
+  // Aqui se calculaba solo, y de dos maneras, las dos mal (10-oct-2026):
+  //   - Con factura se usaba el total de LA FACTURA. Una obra facturada a
+  //     medias quedaba valuada en lo facturado, no en lo contratado.
+  //   - Sin factura, total de la OV x 1.16 si `source = api`. Esa regla nacio
+  //     cuando Quote Creator mandaba las ordenes sin IVA; hoy ya las manda con
+  //     IVA, asi que el x1.16 lo cobraba dos veces: +536,428 USD en obra 2026.
+  // Y de fondo, el contratado no se puede sacar del encabezado: el link viejo
+  // de Innobyte le restaba al concepto 1 el valor de los materiales que no
+  // salian en cero, y el subtotal es el unico lugar donde quedo intacto. El
+  // listado de Zoho no devuelve `sub_total`, asi que la cifra se lee del blob
+  // que deja el Edge Function, que si lo leyo orden por orden.
+  //
+  // Quien no este en el blob cae al calculo viejo, para que un ano sin barrer
+  // siga pintando algo; `contratadoDe` dice de donde salio cada numero.
+  const [contratados, setContratados] = useState({});   // OV -> contratado con IVA
+  useEffect(() => {
+    // Los anios se derivan de `sos` y NO de `anios`, que se declara despues del
+    // return condicional de abajo y aqui todavia esta en zona muerta.
+    const years = anio === "todos"
+      ? [...new Set((sos || []).map((x) => (x.date || "").slice(0, 4)).filter(Boolean))]
+      : [anio];
+    if (!years.length) return;
+    (async () => {
+      const faltan = years.filter((y) => !contratados[`@${y}`]);
+      if (!faltan.length) return;
+      const add = {};
+      for (const y of faltan) {
+        add[`@${y}`] = true;                              // marca de ano ya intentado
+        try {
+          const r = await window.storage?.get(`iso3-contratado-${y}`);
+          const blob = r?.value ? JSON.parse(r.value) : null;
+          for (const [ov, v] of Object.entries(blob?.porOv || {})) {
+            // Mismo criterio que la funcion: una venta tiene total positivo; lo
+            // demas esta depurado y vale cero.
+            add[ov] = (+v?.totalOrden || 0) >= 0.5 ? Math.round((+v.subtotalOrden || 0) * 1.16 * 100) / 100 : 0;
+          }
+        } catch { /* sin blob, se queda el calculo viejo */ }
+      }
+      setContratados((m) => ({ ...m, ...add }));
+    })();
+  }, [anio, sos]);
+
   if (modo.startsWith("so:")) {
     const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
     return <ProyectoDetalle {...{ soId: modo.slice(3), proyData, saveProyData, setAviso, onBack: () => setModo("lista"), catalogo, feedProy: feedDe(soSel), feedErr, feedHitos, rol, puedeAjustar }} />;
@@ -2864,7 +2908,14 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     const c = String(s.customer_name || s.company_name || "").trim().toUpperCase();
     return c === "POSTVENTA" || /POSTVENTA/.test(String(s.reference_number || "").toUpperCase());
   };
-  const totDoc = (s) => { const f = facOf(s); return f ? f.total : (+s.total || 0) * ivaF(s); };     // contratado (moneda de la OV)
+  // De donde salio el contratado de esta OV: "fn" del blob de contratado-anio,
+  // "est" del calculo viejo. Sirve para decirlo en pantalla en vez de esconderlo.
+  const contratadoDe = (s) => (contratados[s.salesorder_number] !== undefined ? "fn" : "est");
+  const totDoc = (s) => {                                                        // contratado (moneda de la OV)
+    const c = contratados[s.salesorder_number];
+    if (c !== undefined) return c;
+    return (+s.total || 0) * ivaF(s);
+  };
   const balDoc = (s) => { const f = facOf(s); return f ? f.balance : (+s.balance || 0) * ivaF(s); };  // saldo Zoho (moneda de la OV)
   const manualOf = (s) => (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
   // Por cobrar real.
@@ -3099,6 +3150,10 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     }
     return a;
   };
+  // Cuantas OV del corte traen el contratado de `contratado-anio` y cuantas
+  // siguen con el calculo viejo. Un total mezclado que no dice que lo es
+  // invita a cuadrarlo contra otro tablero y a no poder.
+  const estimadas = rows.filter((s) => contratadoDe(s) === "est").length;
   // Total combinado en dólares. Sin TC no se inventa un número: se devuelve null.
   const combUSD = (a, campo) => (tc > 0 ? a.USD[campo] + a.MXN[campo] / tc : null);
 
@@ -3141,6 +3196,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
               <div className="mt-1 space-y-0.5 text-[11px] font-mono text-emerald-100/90">
                 <p>${mx0(T.USD[campo])} <span className="text-emerald-200/70">USD</span> · {T.USD.n} proy.</p>
                 <p>${mx0(T.MXN[campo])} <span className="text-emerald-200/70">MXN</span> · {T.MXN.n} proy.</p>
+                {campo === "contr" && estimadas > 0 ? (
+                  <p className="text-amber-200 font-sans not-italic" title="El contratado de esas OV no viene de contratado-anio; se estima con el total del encabezado y puede quedar corto.">
+                    {estimadas} estimada{estimadas === 1 ? "" : "s"}: ese año no está barrido
+                  </p>
+                ) : null}
               </div>
             </div>
           ))}
