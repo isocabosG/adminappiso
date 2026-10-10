@@ -8,8 +8,10 @@
 // Hace falta porque los tres tableros dan tres cifras distintas (10-oct-2026):
 //   - Books y el tablero de Quote Creator (que lee `ventas_historico`, su copia)
 //     devuelven el `total` del encabezado de la orden. Resultan ser los que más
-//     se acercan: 9,401,521 USD contra 9,452,836 de obra. La diferencia son
-//     solo las órdenes que llegan sin IVA y las de concepto 1 exento.
+//     se acercan: 9,401,521 USD contra 9,453,037 de obra. Los 51,314 de
+//     diferencia son 7 órdenes: las que entran sin IVA desde Quote Creator
+//     (SO-01127, SO-01077), las de concepto 1 exento (SO-00950, SO-00895) y
+//     las que traen renglones de equipo sin gravar (SO-01051, SO-00952).
 //   - AdminAppISO usa el total de la FACTURA cuando la hay y el de la orden
 //     cuando no (`totDoc()` en App.jsx), y multiplica por 1.16 solo si
 //     `source = api`. Ese es el que más se aleja.
@@ -22,7 +24,7 @@
 // también las cerradas, que son la mayoría.
 //
 // QUÉ SE LEE COMO CONTRATADO, Y POR QUÉ NO ES EL CONCEPTO 1
-// Leer el concepto 1 directo da 1.9 M USD de menos. Causa: el link viejo de
+// Leer el concepto 1 directo da 1.8 M USD de menos. Causa: el link viejo de
 // Innobyte le RESTABA al concepto 1 el valor de los materiales que no salían
 // en cero, sin tocar el total. 65 órdenes no-postventa de 2026 traen material
 // con precio y en las 65 se cumple concepto 1 + material = subtotal; en 61 de
@@ -41,7 +43,8 @@
 // que escribir; se arregla midiendo, no escribiendo.
 //
 // Las órdenes DEPURADAS (garantías llevadas a cero el 9-oct) no aparecen: no
-// son ventas. 2026: 13 de obra y 75 de postventa quedan fuera del conteo.
+// son ventas. 2026: 14 de obra y 75 de postventa quedan fuera del conteo.
+// Se excluyen por TOTAL de la orden en cero, no por subtotal: ver abajo.
 //
 // Las órdenes sin concepto 1 (21 en 2026: REVISION, GEN, INGENIERIA, ALARMAS)
 // SÍ cuentan en el total, por decisión de Fran del 10-oct-2026.
@@ -53,7 +56,7 @@
 // `reiniciar: true` empieza de cero.
 //
 // CORRIDA DEL 10-OCT-2026 (2026 completo, 389 órdenes, 0 fallos)
-//   OBRA       USD 9,452,835.78   MXN 3,552,091.95   (121 órdenes)
+//   OBRA       USD 9,453,036.91   MXN 3,552,091.95   (120 órdenes)
 //   POSTVENTA  USD   122,529.99   MXN 2,288,824.95   (180 órdenes)
 // Leyendo solo el concepto 1 habría dado 7,634,612.50 USD / 2,140,603.01 MXN.
 // Ver claude/contratado-2026-concepto1.md.
@@ -207,8 +210,14 @@ Deno.serve(async (req) => {
     const todas: any[] = Object.values(est.porOv);
     // Las depuradas quedan FUERA del reporte, no solo en cero: son garantias,
     // nunca fueron una venta, y contarlas como ordenes infla el conteo del ano
-    // (2026: 13 de obra y 75 de postventa). Decision de Fran, 10-oct-2026.
-    const vals: any[] = todas.filter((v) => Math.abs(n0(v.subtotalOrden)) >= 1);
+    // (2026: 14 de obra y 75 de postventa). Decision de Fran, 10-oct-2026.
+    //
+    // El criterio es el TOTAL de la orden, no el subtotal. Filtrar por
+    // |subtotal| >= 1 dejaba pasar SO-01011 QUERENCIA 49: subtotal -173.39 con
+    // el total en 0, porque su ajuste de -1,342.96 sobrepaso el subtotal. Metia
+    // -201.13 USD a la cifra de obra. Una venta tiene total positivo; lo demas
+    // esta depurado. Lo encontro Quote Creator al verificar la cifra.
+    const vals: any[] = todas.filter((v) => n0(v.totalOrden) >= 0.5);
     const depuradas = todas.length - vals.length;
     const esPV = (v: any) => up(v.cliente) === "POSTVENTA" || /POSTVENTA/.test(up(v.proyecto));
     // Se DERIVA del subtotal en vez de leer el campo `contratado` guardado, para
@@ -225,13 +234,13 @@ Deno.serve(async (req) => {
         sinConceptoInst: lista.filter((v) => v.sinInst).length,
         // La cifra buena:
         contratadoUSD: porC("USD"), contratadoMXN: porC("MXN"),
-        // Lo que da leer el concepto 1 crudo: 1.9M USD menos, porque 37 ordenes
+        // Lo que da leer el concepto 1 crudo: 1.8M USD menos, porque 35 ordenes
         // cerradas traen el importe en los renglones de material. No reportar.
         soloConcepto1USD: por("USD", "contratadoFran"), soloConcepto1MXN: por("MXN", "contratadoFran"),
         totalOrdenUSD: por("USD", "totalOrden"), totalOrdenMXN: por("MXN", "totalOrden"),
       };
     };
-    const difieren = vals.filter((v) => Math.abs(n0(v.contratadoFran) - n0(v.contratadoZoho)) > 1);
+    const difieren = vals.filter((v) => Math.abs(contratadoDe(v) - n0(v.totalOrden)) > 1);
 
     return json({
       ok: true, anio,
@@ -240,16 +249,20 @@ Deno.serve(async (req) => {
       obra: bloque(vals.filter((v) => !esPV(v))),
       postventa: bloque(vals.filter(esPV)),
       todo: bloque(vals),
-      // Donde x1.16 y el IVA real de Zoho no dicen lo mismo. Son las órdenes
-      // que hay que mirar una por una antes de cerrar la cifra del año.
-      difierenFranVsZoho: {
+      // Donde el contratado no coincide con el total del encabezado. Son las
+      // ordenes que entran sin IVA, las de concepto 1 exento y las que traen
+      // renglones de equipo sin gravar. 2026: 6 ordenes, 51,515 USD.
+      difierenContraEncabezado: {
         ordenes: difieren.length,
-        sinImpuestoEnElRenglon: difieren.filter((v) => n0(v.contratadoZoho) < n0(v.contratadoFran)).length,
-        conImpuestoDeMas: difieren.filter((v) => n0(v.contratadoZoho) > n0(v.contratadoFran)).length,
-        peores: difieren
-          .sort((a, b) => Math.abs(n0(b.contratadoFran) - n0(b.contratadoZoho)) - Math.abs(n0(a.contratadoFran) - n0(a.contratadoZoho)))
-          .slice(0, 8)
-          .map((v) => ({ ov: Object.keys(est.porOv).find((k) => est.porOv[k] === v), proyecto: v.proyecto, moneda: v.moneda, origen: v.origen, fran: v.contratadoFran, zoho: v.contratadoZoho })),
+        detalle: difieren
+          .sort((a, b) => Math.abs(contratadoDe(b) - n0(b.totalOrden)) - Math.abs(contratadoDe(a) - n0(a.totalOrden)))
+          .slice(0, 12)
+          .map((v) => ({
+            ov: Object.keys(est.porOv).find((k) => est.porOv[k] === v),
+            proyecto: v.proyecto, moneda: v.moneda, origen: v.origen,
+            contratado: r2(contratadoDe(v)), totalEncabezado: v.totalOrden,
+            diferencia: r2(contratadoDe(v) - n0(v.totalOrden)),
+          })),
       },
       fallos,
       segundos: Math.round((Date.now() - t0) / 1000),
