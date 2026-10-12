@@ -2881,6 +2881,27 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q) || (s.company_name || "").toLowerCase().includes(q);
   });
   const filtrando = filtros.length > 0 || !!q || anio !== "todos";
+  // BUSCAS ALGO QUE SI EXISTE Y EL FILTRO LO ESCONDE.
+  //
+  // El ano arranca en el actual, asi que cualquier obra de un ano anterior se
+  // busca y contesta "0 proyectos" aunque este ahi. Paso dos dias seguidos con
+  // CHILENO GE 12 (SO-00734, de dic-2025): el dato perfecto en el cache y la
+  // pantalla en blanco. Un buscador que calla cuando SI encontro algo entrena a
+  // desconfiar de la app.
+  //
+  // Se busca en TODAS las OV vivas, ignorando ano y chips, y se ofrece abrirla
+  // de un clic. No se cambian los filtros por su cuenta: quien busca sigue
+  // mandando, solo deja de estar a ciegas.
+  const escondidas = (!rows.length && q)
+    ? (sos || []).filter((s) => {
+        if (CANCELADAS.has(String(s.status || "").toLowerCase())) return false;
+        if (CANCELADAS.has(String(s.order_status || "").toLowerCase())) return false;
+        return (s.salesorder_number || "").toLowerCase().includes(q)
+            || (s.reference_number || "").toLowerCase().includes(q)
+            || (s.customer_name || "").toLowerCase().includes(q)
+            || (s.company_name || "").toLowerCase().includes(q);
+      }).slice(0, 8)
+    : [];
   const anios = Array.from(new Set((sos || []).map((s) => (s.date || "").slice(0, 4)).filter(Boolean))).sort().reverse();
   // Las OV creadas por API (QUOTE CREATOR) llegan SIN IVA; les sumamos 16% solo para mostrar el valor con IVA.
   const ivaF = (s) => (String(s.source || "").toLowerCase() === "api" ? 1.16 : 1);
@@ -3036,10 +3057,14 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
       .map((s) => {
         const f = facOf(s), saldo = balNeto(s);
         return {
-          s, saldo, cur: curOf(s), total: totDoc(s),
+          s, saldo, cur: curOf(s), total: totDoc(s), pct: pctPagado(s),
           fdoc: fact[s.salesorder_number]?.fdoc || null,
           venc: fact[s.salesorder_number]?.venc || null,
           conFactura: !!f, pv: esPostventa(s),
+          // Si esta facturada lo dice ZOHO, no la busqueda de facturas. `facOf`
+          // cruza por reference_number y falla callado cuando la factura no lo
+          // trae; `invoiced_status` es el campo de la orden y no se equivoca.
+          fact: String(s.invoiced_status || "").toLowerCase(),
         };
       })
       .filter((d) => d.saldo > 0.5)
@@ -3098,11 +3123,12 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         </div>
 
         <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-          <table className="w-full min-w-[820px] text-sm">
+          <table className="w-full min-w-[920px] text-sm">
             <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
               <th className="text-left px-3 py-2">OV · proyecto</th>
               <th className="text-left px-3 py-2">Cliente</th>
               <th className="text-right px-3 py-2">Contratado</th>
+              <th className="text-right px-3 py-2">Pagado</th>
               <th className="text-right px-3 py-2">Por cobrar</th>
               <th className="text-right px-3 py-2">Antigüedad</th>
               <th className="text-right px-3 py-2">Vencida</th>
@@ -3114,10 +3140,25 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
                   <td className="px-3 py-2">
                     <span className="font-mono text-xs font-semibold">{d.s.salesorder_number}</span>
                     {d.pv && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">POSTVENTA</span>}
+                    {/* Lo que no se facturo no se puede cobrar, y era lo unico
+                        que esta tabla no decia: la antiguedad salia "sin
+                        factura" en gris, que se lee como dato faltante y no
+                        como el pendiente que es. */}
+                    {d.fact !== "invoiced" && (
+                      <span className={`ml-1 text-[9px] px-1 py-0.5 rounded font-semibold ${d.fact === "partially_invoiced" ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"}`}>
+                        {d.fact === "partially_invoiced" ? "FACT. PARCIAL" : "SIN FACTURAR"}
+                      </span>
+                    )}
                     <span className="block text-xs text-stone-600">{d.s.reference_number || "—"}</span>
                   </td>
                   <td className="px-3 py-2 text-xs text-stone-600">{d.s.customer_name || d.s.company_name || "—"}</td>
                   <td className="px-3 py-2 text-right font-mono text-xs text-stone-500">${mx0(d.total)} <span className="text-[9px] text-stone-400">{d.cur}</span></td>
+                  {/* Mismo pctPagado() que la lista de proyectos: dos formulas
+                      para el mismo porcentaje acaban diciendo numeros distintos
+                      y nadie sabe a cual creerle. */}
+                  <td className={`px-3 py-2 text-right font-mono text-xs ${d.pct == null ? "text-stone-300" : d.pct >= 100 ? "text-emerald-700 font-semibold" : d.pct <= 0 ? "text-red-700 font-semibold" : "text-stone-600"}`}>
+                    {d.pct == null ? "—" : `${d.pct}%`}
+                  </td>
                   <td className="px-3 py-2 text-right font-mono font-semibold">${mx0(d.saldo)} <span className="text-[9px] text-stone-400">{d.cur}</span></td>
                   <td className={`px-3 py-2 text-right font-mono text-xs ${d.edad == null ? "text-stone-300" : d.edad > 90 ? "text-red-700 font-bold" : d.edad > 60 ? "text-orange-700 font-semibold" : d.edad > 30 ? "text-amber-700" : "text-stone-500"}`}>
                     {d.edad == null ? "sin factura" : `${d.edad} d`}
@@ -3128,7 +3169,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
                   </td>
                 </tr>
               ))}
-              {!vistos.length && <tr><td colSpan="6" className="px-3 py-6 text-center text-sm text-stone-400">Nada en ese rango.</td></tr>}
+              {!vistos.length && <tr><td colSpan="7" className="px-3 py-6 text-center text-sm text-stone-400">Nada en ese rango.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -3163,13 +3204,51 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   // Utilidad prom. y compras/materiales: de los proyectos que ya se abrieron (tienen análisis guardado)
   const anal = rows.map((s) => proyData[s.salesorder_id]?.analisis).filter(Boolean);
   const gastoMatMXN = anal.reduce((a, x) => a + (+x.gastoMXN || 0), 0);
-  const margenProm = anal.length ? anal.reduce((a, x) => a + (+x.margen || 0), 0) / anal.length : null;
+  // UTILIDAD PROM. - reglas de Fran, 11-oct-2026.
+  //
+  // Marcaba 340,137.2%. No era un error de formula: `margen = utilidad /
+  // ingreso` revienta cuando el ingreso es ~0 y el costo no, y una sola orden
+  // de prueba -TEST-00918, ingreso 0 y gasto 1,530, margen 15,303,800%- se
+  // llevaba 340,084 de esos 340,137. Un promedio que un solo renglon puede
+  // mover seis ordenes de magnitud no es un promedio.
+  //
+  // Tres filtros, y cada uno quita una clase distinta de basura:
+  //   1. Solo folios SO-. Las TEST- no son ventas. Mismo criterio mecanico que
+  //      uso Quote Creator en su sync, en vez de una lista de folios.
+  //   2. Solo CERRADOS. Un proyecto a medias tiene el ingreso completo contra
+  //      el costo de lo que lleva gastado: su margen se ve bien porque todavia
+  //      no gasta, no porque sea bueno.
+  //   3. Ingreso > 0. Es la guardia del denominador; sin ella vuelve el 15 M%.
+  //
+  // Lo que sigue sin estar: LA MANO DE OBRA. Se captura a mano (dias x costo
+  // por dia) y esta en 0 de 45 proyectos, asi que este numero es un margen
+  // ANTES de cuadrilla y la tarjeta lo dice. Se cierra con la conexion a
+  // ISO HR, no aqui.
+  const esVenta = (s) => String(s.salesorder_number || "").toUpperCase().startsWith("SO-");
+  const cerrada = (s) => String(s.order_status || "").toLowerCase() === "closed";
+  const analMargen = rows
+    .filter((s) => esVenta(s) && cerrada(s))
+    .map((s) => proyData[s.salesorder_id]?.analisis)
+    .filter((x) => x && (+x.ingresoMXN || 0) >= 1);
+  // Ponderado por ingreso, no media simple: con media simple un proyecto de
+  // 5,000 pesos pesa igual que uno de 3 millones.
+  const ingTot = analMargen.reduce((a, x) => a + (+x.ingresoMXN || 0), 0);
+  const margenProm = ingTot > 0
+    ? (analMargen.reduce((a, x) => a + (+x.utilMXN || 0), 0) / ingTot) * 100
+    : null;
 
   return (
     <div className="space-y-4">
       <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <p className="text-[10px] uppercase tracking-widest text-emerald-100">Resumen de proyectos{filtrando ? " (filtrados)" : ""} · {rows.length}</p>
+          {/* Un tablero que pinta $0 cuando quiere decir "no encontre nada" se lee
+              como falla de datos. Pasa seguido al buscar una obra de otro ano. */}
+          {!rows.length && (
+            <p className="text-[11px] text-amber-200 font-medium">
+              Ningún proyecto con estos filtros — los ceros de abajo no son el dato, son el filtro.
+            </p>
+          )}
           <div className="flex items-center gap-1.5 text-xs">
             <span className="text-emerald-100">Año:</span>
             <select value={anio} onChange={(e) => setAnio(e.target.value)} className="px-2 py-1 rounded bg-white/15 border border-white/25 text-white text-xs focus:outline-none">
@@ -3223,8 +3302,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
               contrato y lo que falta por cobrar, no el margen. */}
           {rol !== "cobranza" && (
             <div className="bg-white/10 rounded-lg px-3 py-2">
-              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom.</p>
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Utilidad prom. <span className="normal-case tracking-normal text-emerald-200/80">· antes de mano de obra</span></p>
               <p className="text-sm font-bold font-mono">{margenProm == null ? "—" : margenProm.toFixed(1) + "%"}</p>
+              <p className="text-[10px] font-mono text-emerald-100/80">
+                {analMargen.length ? `${analMargen.length} proy. cerrado${analMargen.length === 1 ? "" : "s"}` : "sin proyectos cerrados con análisis"} · ponderado por ingreso
+              </p>
               <p className="text-[10px] font-mono text-emerald-100/80">Compras/mat.: ${mx0(gastoMatMXN)} · {anal.length} proy. abierto{anal.length === 1 ? "" : "s"}</p>
             </div>
           )}
@@ -3232,7 +3314,9 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
 
         <p className="text-[10px] text-emerald-100/80 mt-2">
           {anio === "todos" ? "Todos los años" : `Año ${anio}`} · sin órdenes canceladas · montos con IVA · el combinado convierte MXN a USD al TC {tc || "—"}{fechaRefresh ? ` · datos al ${fechaRefresh}` : ""}.
-          {" "}Utilidad prom. y compras/materiales solo de los proyectos ya abiertos (se llenan al entrar a cada uno), no del total.
+          {" "}Compras/materiales solo de los proyectos ya abiertos (se llenan al entrar a cada uno), no del total.
+          {" "}La utilidad prom. sale solo de los proyectos CERRADOS con análisis e ingreso, ponderada por ingreso, y
+          {" "}<b>no incluye mano de obra</b>: hoy se captura a mano y está en cero en todos. Pendiente la conexión con ISO HR.
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3340,6 +3424,30 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         </div>
       )}
       <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por proyecto, OV o cliente…" className="w-full px-3 py-2 text-sm bg-white border border-stone-300 rounded" />
+      {escondidas.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2.5">
+          <p className="text-[11px] text-amber-900 font-medium">
+            No hay nada con los filtros de arriba, pero {escondidas.length === 1 ? "esta orden coincide" : `estas ${escondidas.length} órdenes coinciden`} fuera de ellos:
+          </p>
+          <div className="mt-1.5 space-y-1">
+            {escondidas.map((s) => (
+              <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)}
+                      className="w-full text-left flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-2 py-1 rounded hover:bg-amber-100">
+                <span className="font-mono text-xs font-semibold text-amber-900">{s.salesorder_number}</span>
+                <span className="text-xs text-amber-900">{s.reference_number || s.customer_name || "—"}</span>
+                <span className="text-[10px] font-mono text-amber-700">
+                  {(s.date || "").slice(0, 4)} · {s.order_status === "closed" ? "cerrada" : "abierta"}
+                </span>
+                <span className="text-[10px] text-amber-800 underline ml-auto">abrir →</span>
+              </button>
+            ))}
+          </div>
+          <button onClick={() => { setAnio("todos"); setFiltros([]); }}
+                  className="mt-1.5 text-[11px] text-amber-800 underline">
+            o quitar año y filtros para verlas en la lista
+          </button>
+        </div>
+      )}
       {sos === null ? (
         <div className="bg-white border border-stone-200 rounded-lg p-10 text-center text-sm text-stone-500">{cargando ? "Leyendo proyectos de Zoho…" : "Dale ↻ Actualizar de Zoho para traer los proyectos."}</div>
       ) : (
