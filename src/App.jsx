@@ -5,7 +5,25 @@ import Preguntar from "./Preguntar.jsx";
 import Usuarios from "./Usuarios.jsx";
 import { bomPorHito } from "./mrp.js";
 import { leadDe, porqueLead, fechaPedido } from "./hitos.js";
-import { CAMARO_IMG } from "./camaroImg.js";
+
+// Recargar de verdad la version desplegada. Un location.reload() pelado puede
+// contestarse con el index.html que el navegador tiene en cache y dejarte en la
+// version vieja aunque Vercel ya sirva la nueva; por eso primero se tira la
+// Cache API y luego se pide el documento con un ?v= que ninguna cache tiene
+// guardado. La app no lee parametros de la URL, asi que el ?v= no estorba.
+async function recargarVersion() {
+  try {
+    if (window.caches?.keys) {
+      const ks = await window.caches.keys();
+      await Promise.all(ks.map((k) => window.caches.delete(k)));
+    }
+  } catch (e) { /* sin Cache API basta el ?v= de abajo */ }
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.set("v", Date.now().toString(36));
+    window.location.replace(u.toString());
+  } catch (e) { window.location.reload(); }
+}
 
 function extraerJSON(txt) {
   if (!txt || !txt.trim()) throw new Error("la IA devolvió una respuesta vacía");
@@ -2183,12 +2201,6 @@ function App({ perfil, correo }) {
               <p className="text-[9px] font-mono text-emerald-300/70" title="Build desplegado y cuenta de la sesion">
                 v {__BUILD__}{correo ? ` · ${correo}` : " · sin sesion"}
               </p>
-              <div className="camaro-track"><img src={CAMARO_IMG} alt="Camaro" className="camaro-run" /></div>
-              <style>{`
-                .camaro-track{position:relative;height:24px;width:200px;overflow:hidden;margin-top:2px}
-                .camaro-run{position:absolute;top:0;height:22px;width:auto;animation:camaroRun 5s linear infinite;will-change:transform}
-                @keyframes camaroRun{0%{transform:translateX(200px)}92%{transform:translateX(-58px)}100%{transform:translateX(-58px)}}
-              `}</style>
             </div>
           </div>
           {/* El buscador con IA: arriba y siempre visible, para preguntar desde
@@ -2206,6 +2218,11 @@ function App({ perfil, correo }) {
                 {badge > 0 && <span className="ml-1.5 px-1.5 py-0.5 text-[9px] rounded-full bg-amber-400 text-emerald-900 font-bold">{badge}</span>}
               </button>
             ))}
+            <button onClick={recargarVersion} title="Recargar la pagina para traer la ultima version desplegada"
+              className="ml-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/30 text-emerald-50 text-xs font-medium hover:bg-white/15 transition-colors">
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>
+              Recargar
+            </button>
             <button onClick={toggleDark} title="Cambiar tema"
               className="ml-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-white/30 text-emerald-50 text-xs font-medium hover:bg-white/15 transition-colors">
               <span className="text-sm leading-none">{dark ? "☀️" : "🌙"}</span>{dark ? "Claro" : "Oscuro"}
