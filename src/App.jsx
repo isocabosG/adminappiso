@@ -2325,7 +2325,7 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
       } catch {}
 
       const c = { ...catalogo };
-      let nuevos = 0, marcados = 0;
+      let nuevos = 0, marcados = 0, adoptados = 0;
       for (const [skuRaw, x] of Object.entries(z.items || {})) {
         const sku = String(skuRaw).toUpperCase();
         const prev = c[sku];
@@ -2340,19 +2340,42 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
           };
           nuevos++;
         } else {
-          // Al que ya existe NO se le toca el costo: el promedio de la app es mas
-          // reciente que el de Zoho, porque la escritura de vuelta todavia no
-          // existe. Solo se completa lo que falte y se marca si murio en Zoho.
+          // QUIEN MANDA EN EL COSTO (14-oct-2026)
+          // Zoho es la fuente de verdad. La app conserva el costo SOLO de los
+          // SKUs que ella misma costeo -los que traen historia, promedio
+          // pendiente o un envio previo-, y esos viajan a Zoho con el boton de
+          // empujar cuando se cierra una importacion. Todo lo demas adopta lo
+          // que diga Zoho.
+          //
+          // Aqui decia que no se tocaba el costo "porque la escritura de vuelta
+          // todavia no existe". Si existe: es update_item_cost, en empujar(),
+          // en este mismo archivo. Mientras ese comentario siguio vigente, 1,070
+          // SKUs de semilla que nadie habia costeado aqui quedaron congelados en
+          // un costo viejo, y con ese costo se estaba costeando cada proyecto.
           const upd = { ...prev };
           let cambio = false;
           if (!upd.itemId && x.itemId) { upd.itemId = x.itemId; cambio = true; }
           if (!!upd.bajaZoho !== !x.activo) { upd.bajaZoho = !x.activo; cambio = true; marcados++; }
+
+          // Se mira `prev`, no `upd`: lo que importa es si la app llego a
+          // costear este SKU alguna vez, no lo que acabamos de completar.
+          const loCosteoLaApp = (prev.historia?.length || 0) > 0 || prev.promedioPendiente != null || !!prev.ultimoEnvio;
+          const suyo = +x.rate || 0;
+          if (!loCosteoLaApp && suyo > 0 && Math.abs((+prev.costoVigente || 0) - suyo) > 0.01) {
+            upd.costoVigente = suyo;
+            cambio = true;
+            adoptados++;
+          }
           if (cambio) c[sku] = upd;
         }
       }
-      if (!nuevos && !marcados) { setAviso({ t: "ok", m: "El catalogo ya estaba al dia." }); return; }
+      if (!nuevos && !marcados && !adoptados) { setAviso({ t: "ok", m: "El catalogo ya estaba al dia." }); return; }
       saveCatalogo(c);
-      setAviso({ t: "ok", m: `${nuevos} articulo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} de Zoho${marcados ? ` y ${marcados} marcado${marcados === 1 ? "" : "s"} de baja` : ""}. Revisa su categoria.` });
+      const partes = [];
+      if (nuevos) partes.push(`${nuevos} articulo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"}`);
+      if (adoptados) partes.push(`${adoptados} costo${adoptados === 1 ? "" : "s"} adoptado${adoptados === 1 ? "" : "s"} de Zoho`);
+      if (marcados) partes.push(`${marcados} marcado${marcados === 1 ? "" : "s"} de baja`);
+      setAviso({ t: "ok", m: `${partes.join(", ")}.${nuevos ? " Revisa su categoria." : ""}` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudo sincronizar: " + (e?.message || e) });
     } finally { setSincronizando(false); }
