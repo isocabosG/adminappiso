@@ -31,61 +31,108 @@
         darkMode: "class",
         theme: {
           extend: {
+            // PALETA CORPORATIVA INNOVACION SOLAR (ISO Warehouse, 14-oct-2026).
+            //
+            // Se remapean las RAMPAS de Tailwind en vez de tocar las clases:
+            // App.jsx usa 1,153 clases de color y editarlas una por una seria
+            // irrepetible y se desincronizaria al primer cambio. Aqui los
+            // valores de marca caen en el escalon que la app ya usa, asi que
+            // toda la interfaz se mueve junta y sin tocar un solo componente.
+            //
+            // Donde cae cada valor de la paleta:
+            //   --bg   #eef0f2 -> stone-100   (fondo de pagina)
+            //   --line #d9dee3 -> stone-200   (bordes y divisores)
+            //   --mut  #66717d -> stone-500   (texto secundario)
+            //   --ink  #1f2933 -> stone-800   (texto principal)
+            //   --acc  #2f8f3a -> emerald-600 y teal-600 (botones, activo)
+            //   --acc2 #1f6e2b -> emerald-800 (hover y links)
+            //   --warn #b7791f -> amber-600
+            //   --bad  #c62f2f -> red-600
             colors: {
-              // Acento de marca Innovación Solar (verde esmeralda) — remapea "teal" en toda la app
-              teal: { 50: "#ecfdf5", 100: "#d1fae5", 200: "#a7f3d0", 300: "#6ee7b7", 400: "#34d399", 500: "#10b981", 600: "#059669", 700: "#047857", 800: "#065f46", 900: "#064e3b" },
+              // Neutros frios de marca. Los de Tailwind son calidos (cafe) y
+              // es lo que mas separaba a esta app de ISO Warehouse.
+              stone: { 50: "#f7f8f9", 100: "#eef0f2", 200: "#d9dee3", 300: "#c3cad1", 400: "#9aa4ae", 500: "#66717d", 600: "#525c66", 700: "#3d454d", 800: "#1f2933", 900: "#141b22" },
+              // Verde de marca. `teal` ya estaba remapeado al acento; ahora los
+              // dos apuntan al mismo verde para que no convivan dos verdes.
+              emerald: { 50: "#eef7ef", 100: "#d7ecd9", 200: "#b0dab5", 300: "#85c68d", 400: "#58ad63", 500: "#3d9c48", 600: "#2f8f3a", 700: "#277a31", 800: "#1f6e2b", 900: "#185622" },
+              teal:    { 50: "#eef7ef", 100: "#d7ecd9", 200: "#b0dab5", 300: "#85c68d", 400: "#58ad63", 500: "#3d9c48", 600: "#2f8f3a", 700: "#277a31", 800: "#1f6e2b", 900: "#185622" },
+              amber:   { 50: "#fdf7ec", 100: "#faecd0", 200: "#f3d79e", 300: "#e8bb63", 400: "#d79f36", 500: "#c4881f", 600: "#b7791f", 700: "#96621a", 800: "#7a5017", 900: "#654314" },
+              red:     { 50: "#fdf0f0", 100: "#fadcdc", 200: "#f3b9b9", 300: "#e88e8e", 400: "#da6060", 500: "#cf4040", 600: "#c62f2f", 700: "#a52626", 800: "#882121", 900: "#711e1e" },
             },
+            // Tarjetas 10px, botones y campos 8px.
+            borderRadius: { lg: "10px", md: "8px", DEFAULT: "8px" },
           },
         },
       };
     </script>
     <style>
-      /* ===== Modo oscuro VERDE: fondo verde fuerte, recuadros verde mas claro =====
-         Se aplica a toda la pagina; el header verde y las tarjetas verdes fijas se protegen aparte. */
-      .dark { color-scheme: dark; }
-      .dark body { background-color: #04291b; }
-      .dark { color: #eaf5ef; }
-      /* Fondo general de la pagina (wrapper bg-stone-100 / bg-stone-50) = verde fuerte */
-      .dark .bg-stone-100 { background-color: #053a26 !important; }
-      .dark .bg-stone-50 { background-color: #063e2a !important; }
-      /* Recuadros / tarjetas (bg-white) = verde mas claro */
-      .dark .bg-white { background-color: #0e5238 !important; }
-      .dark .bg-stone-200 { background-color: #135a3f !important; }
-      .dark .border-stone-100 { border-color: #0f4a34 !important; }
-      .dark .border-stone-200 { border-color: #1c6448 !important; }
-      .dark .border-stone-300 { border-color: #27785a !important; }
-      .dark .text-stone-900 { color: #f2faf6 !important; }
-      .dark .text-stone-800 { color: #e9f5ef !important; }
-      .dark .text-stone-700 { color: #d3e8de !important; }
-      .dark .text-stone-600 { color: #b4d2c4 !important; }
-      .dark .text-stone-500 { color: #93bcab !important; }
-      .dark .text-stone-400 { color: #82ab99 !important; }
-      .dark .text-stone-300 { color: #74a08d !important; }
-      /* Acentos */
-      .dark .bg-amber-50 { background-color: #3d3410 !important; }
-      .dark .bg-amber-100 { background-color: #4d4212 !important; }
-      .dark .text-amber-700, .dark .text-amber-800 { color: #fbbf24 !important; }
-      .dark .bg-blue-50 { background-color: #123048 !important; }
-      .dark .text-blue-700 { color: #93c5fd !important; }
-      .dark .bg-red-50 { background-color: #431a1c !important; }
-      .dark .text-red-600, .dark .text-red-700, .dark .text-red-900 { color: #fca5a5 !important; }
-      .dark .border-red-300 { border-color: #8a2a2a !important; }
-      .dark .bg-emerald-50 { background-color: #0f5c3e !important; }
-      .dark .text-emerald-700, .dark .text-emerald-800 { color: #6ee7b7 !important; }
-      .dark .bg-teal-50 { background-color: #0f5c3e !important; }
-      .dark .bg-teal-100 { background-color: #167048 !important; }
-      .dark .text-teal-700, .dark .text-teal-800, .dark .text-teal-900 { color: #a7f3d0 !important; }
-      .dark .border-teal-300 { border-color: #10774f !important; }
-      /* Inputs */
-      .dark input, .dark select, .dark textarea { background-color: #0e5238 !important; color: #e9f5ef !important; border-color: #27785a !important; }
-      .dark input:read-only { background-color: #063e2a !important; }
-      .dark ::placeholder { color: #82ab99 !important; }
-      /* Proteger el HEADER verde: la pastilla activa del menu se queda blanca */
+      /* ===== Uniformidad con ISO Warehouse (14-oct-2026) =====
+         Las rampas de color ya viven en tailwind.config de arriba. Aqui queda
+         solo lo que una clase de Tailwind no puede expresar: el encabezado, el
+         modo oscuro y la tipografia. */
+
+      body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+      /* ENCABEZADO: charcoal con filo verde de 3px, como ISO Warehouse.
+         Antes era un degradado verde. Se apaga el degradado aqui y no en
+         App.jsx para no tocar el componente; las cuatro TARJETAS de resumen
+         conservan el suyo a proposito -ahi el verde si es dato, no cromo. */
+      header { background-image: none !important; background-color: #1f2933 !important; border-bottom: 3px solid #2f8f3a; }
+
+      /* ===== Modo oscuro =====
+         Era un tema VERDE (#04291b) hecho a mano. ISO Warehouse usa un oscuro
+         neutro, asi que esta app pasa a lo mismo: el verde se queda como
+         acento, no como fondo. */
+      .dark { color-scheme: dark; color: #e8ebee; }
+      .dark body { background-color: #15191d; }
+      .dark header { background-color: #15191d !important; border-bottom-color: #47a84f; }
+
+      /* Superficies */
+      .dark .bg-stone-100 { background-color: #15191d !important; }
+      .dark .bg-stone-50  { background-color: #1a1f24 !important; }
+      .dark .bg-white     { background-color: #1e2328 !important; }
+      .dark .bg-stone-200 { background-color: #262c32 !important; }
+
+      /* Bordes */
+      .dark .border-stone-100 { border-color: #262c32 !important; }
+      .dark .border-stone-200 { border-color: #323940 !important; }
+      .dark .border-stone-300 { border-color: #3d454d !important; }
+
+      /* Texto */
+      .dark .text-stone-900, .dark .text-stone-800 { color: #e8ebee !important; }
+      .dark .text-stone-700 { color: #d2d8de !important; }
+      .dark .text-stone-600 { color: #b8c0c8 !important; }
+      .dark .text-stone-500 { color: #9aa4ae !important; }
+      .dark .text-stone-400 { color: #87919b !important; }
+      .dark .text-stone-300 { color: #78828c !important; }
+
+      /* Acentos: en oscuro el verde de marca se aclara para que se lea */
+      .dark .bg-emerald-50, .dark .bg-teal-50   { background-color: #1b2e1f !important; }
+      .dark .bg-emerald-100, .dark .bg-teal-100 { background-color: #223a27 !important; }
+      .dark .text-emerald-700, .dark .text-emerald-800,
+      .dark .text-teal-700, .dark .text-teal-800, .dark .text-teal-900 { color: #5cbf63 !important; }
+      .dark .border-teal-300, .dark .border-emerald-300 { border-color: #2f5c35 !important; }
+      .dark .bg-amber-50  { background-color: #332a14 !important; }
+      .dark .bg-amber-100 { background-color: #41361a !important; }
+      .dark .text-amber-700, .dark .text-amber-800 { color: #e0a93f !important; }
+      .dark .bg-red-50 { background-color: #381c1c !important; }
+      .dark .text-red-600, .dark .text-red-700, .dark .text-red-900 { color: #e88e8e !important; }
+      .dark .border-red-300 { border-color: #7a2a2a !important; }
+      .dark .bg-blue-50 { background-color: #16293a !important; }
+      .dark .text-blue-700 { color: #8ab4e8 !important; }
+
+      /* Campos */
+      .dark input, .dark select, .dark textarea { background-color: #1e2328 !important; color: #e8ebee !important; border-color: #3d454d !important; }
+      .dark input:read-only { background-color: #1a1f24 !important; }
+      .dark ::placeholder { color: #87919b !important; }
+
+      /* La pastilla activa del menu se queda blanca sobre el encabezado oscuro */
       .dark header .bg-white { background-color: #ffffff !important; }
-      .dark header .text-emerald-800 { color: #065f46 !important; }
-      /* Proteger tarjetas verdes fijas (bg-emerald-700): su texto se queda claro */
-      .dark .bg-emerald-700 { color: #ffffff !important; }
-      .dark .bg-emerald-700 [class*="text-stone-"] { color: rgba(255,255,255,0.72) !important; }
+      .dark header .text-emerald-800 { color: #1f6e2b !important; }
+      /* Tarjetas verdes fijas: su texto se queda claro en los dos modos */
+      .dark .bg-emerald-700, .dark .bg-emerald-800 { color: #ffffff !important; }
+      .dark .bg-emerald-700 [class*="text-stone-"],
+      .dark .bg-emerald-800 [class*="text-stone-"] { color: rgba(255,255,255,0.75) !important; }
     </style>
   </head>
   <body>
