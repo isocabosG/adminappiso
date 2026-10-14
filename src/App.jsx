@@ -2256,7 +2256,7 @@ function App({ perfil, correo }) {
         {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vistaSegura === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
         {vistaSegura === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
-        {vistaSegura === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
+        {vistaSegura === "mas" && <Mas {...{ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, perfil, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }} />}
       </main>
     </div>
   );
@@ -6794,42 +6794,130 @@ function Mas(props) {
   );
 }
 
-function Respaldo({ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }) {
+function Respaldo({ catalogo, fletes, pedimentos, cuentas, operaciones, tcFix, perfil,
+                    saveCatalogo, saveFletes, savePedimentos, saveCuentas, saveOperaciones, saveTcFix, setAviso }) {
+  // IMPORTAR ESCRIBE EN adm_kv, Y adm_kv ES DE TODOS.
+  // El texto de esta tarjeta decia "la app guarda todo en este dispositivo".
+  // Eso quedo de cuando esto era un artefacto con localStorage; hoy
+  // storageShim.js guarda en Supabase y su propio comentario dice
+  // "Compartido entre todos los usuarios". Por eso un respaldo viejo importado
+  // no restauraba "lo tuyo": le regresaba a la empresa entera el catalogo de
+  // costos de la fecha del archivo, de un clic en el selector, sin confirmar y
+  // sin deshacer. `pend` es el respaldo ya leido pero TODAVIA no aplicado:
+  // primero se ve que se gana y que se pierde.
+  const [pend, setPend] = useState(null);
+  const admin = !!perfil?.admin_accesos;
+
+  const cuantos = (v) =>
+    Array.isArray(v) ? v.length : (v && typeof v === "object") ? Object.keys(v).length : null;
+
   const exportar = () => {
     const data = { _app: "AdminAppISO", _version: 1, _fecha: new Date().toISOString(), catalogo, fletes, pedimentos, cuentas, operaciones, tcFix };
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));
     a.download = `AdminAppISO-respaldo-${hoy()}.json`;
     a.click();
-    setAviso({ t: "ok", m: "Respaldo descargado. Guárdalo en un lugar seguro." });
+    setAviso({ t: "ok", m: "Respaldo descargado. Guardalo FUERA de Supabase." });
   };
-  const importar = async (file) => {
+
+  // Leer no aplica nada. Solo arma el comparativo para que la confirmacion
+  // diga numeros y no un "estas seguro?" que nadie lee.
+  const leer = async (file) => {
     if (!file) return;
     try {
-      const txt = await file.text();
-      const d = extraerJSON(txt);
-      if (d.catalogo) saveCatalogo(d.catalogo);
-      if (d.fletes) saveFletes(d.fletes);
-      if (d.pedimentos) savePedimentos(d.pedimentos);
-      if (d.cuentas) saveCuentas(d.cuentas);
-      if (d.operaciones) saveOperaciones(d.operaciones);
-      if (d.tcFix != null) saveTcFix(d.tcFix);
-      setAviso({ t: "ok", m: "Respaldo restaurado. Todos los datos se cargaron." });
+      const d = extraerJSON(await file.text());
+      if (!d || typeof d !== "object" || d._app !== "AdminAppISO") {
+        setAviso({ t: "err", m: "Ese archivo no es un respaldo de AdminAppISO." });
+        return;
+      }
+      setPend({
+        d,
+        fecha: String(d._fecha || "").slice(0, 10) || "sin fecha",
+        cmp: [
+          ["Articulos", cuantos(d.catalogo), cuantos(catalogo)],
+          ["Fletes", cuantos(d.fletes), cuantos(fletes)],
+          ["Pedimentos", cuantos(d.pedimentos), cuantos(pedimentos)],
+          ["Cuentas", cuantos(d.cuentas), cuantos(cuentas)],
+          ["Operaciones", cuantos(d.operaciones), cuantos(operaciones)],
+        ].filter(([, enArchivo]) => enArchivo != null),
+      });
     } catch {
-      setAviso({ t: "err", m: "Archivo de respaldo inválido." });
+      setAviso({ t: "err", m: "Archivo de respaldo invalido." });
     }
   };
+
+  const aplicar = () => {
+    const d = pend.d;
+    if (d.catalogo) saveCatalogo(d.catalogo);
+    if (d.fletes) saveFletes(d.fletes);
+    if (d.pedimentos) savePedimentos(d.pedimentos);
+    if (d.cuentas) saveCuentas(d.cuentas);
+    if (d.operaciones) saveOperaciones(d.operaciones);
+    if (d.tcFix != null) saveTcFix(d.tcFix);
+    const f = pend.fecha;
+    setPend(null);
+    setAviso({ t: "ok", m: `Respaldo del ${f} aplicado. El cambio lo ven todos los usuarios.` });
+  };
+
+  const pierde = pend ? pend.cmp.filter(([, a, b]) => a < b) : [];
+
   return (
     <div className="bg-white border border-stone-200 rounded-lg p-4">
       <h3 className="text-sm font-semibold">Respaldo de datos</h3>
-      <p className="text-xs text-stone-500 mt-1">La app guarda todo en este dispositivo. Exporta un respaldo con frecuencia y para pasar los datos a otro equipo. Importar reemplaza los datos actuales.</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <button onClick={exportar} className="px-4 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">⬇ Exportar respaldo</button>
-        <label className="px-4 py-2 border border-stone-300 text-xs font-medium rounded cursor-pointer">⬆ Importar respaldo
-          <input type="file" accept="application/json" className="hidden" onChange={(e) => importar(e.target.files?.[0])} />
-        </label>
-      </div>
-      <p className="mt-2 text-[11px] font-mono text-stone-400">{Object.keys(catalogo).length} artículos · {pedimentos.length} pedimentos · {operaciones.length} operaciones · {cuentas.length} cuentas</p>
+      <p className="text-xs text-stone-500 mt-1">
+        Estos datos viven en Supabase y son los mismos para todos los usuarios, no en este dispositivo.
+        Lo que exportas es justo lo que <b>no</b> esta en Zoho: catalogo de costos, fletes, pedimentos,
+        cuentas, operaciones y el TC fijo. Guarda el archivo fuera de Supabase: un respaldo que vive
+        dentro de lo que respalda no es respaldo.
+      </p>
+
+      {!pend && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={exportar} className="px-4 py-2 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800">&#11015; Exportar respaldo</button>
+          {admin ? (
+            <label className="px-4 py-2 border border-stone-300 text-xs font-medium rounded cursor-pointer">&#11014; Importar respaldo
+              <input type="file" accept="application/json" className="hidden"
+                     onChange={(e) => { leer(e.target.files?.[0]); e.target.value = ""; }} />
+            </label>
+          ) : (
+            <span className="px-4 py-2 border border-stone-200 text-xs text-stone-400 rounded"
+                  title="Importar reemplaza los datos de todos los usuarios, por eso queda con quien administra accesos">
+              &#11014; Importar &middot; solo admin
+            </span>
+          )}
+        </div>
+      )}
+
+      {pend && (
+        <div className="mt-3 border border-amber-300 bg-amber-50 rounded p-3">
+          <p className="text-xs font-semibold text-amber-900">
+            Vas a reemplazar los datos de <u>todos los usuarios</u> con el respaldo del {pend.fecha}.
+          </p>
+          <table className="mt-2 text-[11px] font-mono w-full max-w-md">
+            <tbody>
+              {pend.cmp.map(([t, enArchivo, vivo]) => (
+                <tr key={t} className={enArchivo < vivo ? "text-red-700 font-bold" : "text-stone-600"}>
+                  <td className="py-0.5">{t}</td>
+                  <td className="text-right py-0.5">{vivo} ahora</td>
+                  <td className="text-right py-0.5">&rarr; {enArchivo}</td>
+                  <td className="text-right py-0.5">{enArchivo < vivo ? `pierdes ${vivo - enArchivo}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {pierde.length > 0 && (
+            <p className="mt-2 text-[11px] text-red-700">
+              Ese archivo trae menos registros que lo que hay vivo. Lo que no venga en el se borra, para todos, y no hay deshacer.
+            </p>
+          )}
+          <div className="mt-3 flex gap-2">
+            <button onClick={() => setPend(null)} className="px-3 py-1.5 border border-stone-300 bg-white text-xs font-medium rounded">Cancelar</button>
+            <button onClick={aplicar} className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700">Si, reemplazar para todos</button>
+          </div>
+        </div>
+      )}
+
+      <p className="mt-2 text-[11px] font-mono text-stone-400">{Object.keys(catalogo).length} articulos &middot; {pedimentos.length} pedimentos &middot; {operaciones.length} operaciones &middot; {cuentas.length} cuentas</p>
     </div>
   );
 }
