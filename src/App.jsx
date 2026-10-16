@@ -5517,6 +5517,103 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   if (modo === "recepcion")
     return <RecepcionCamara catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} onSalir={() => setModo("lista")} />;
 
+  // ── REPORTE 1: INVENTARIO PARA LOS CONTADORES ──────────────────────────
+  //
+  // Lo que se reporta no es lo que hay en la bodega, es lo que es NUESTRO. El
+  // material comprometido a una obra ya tiene duenno aunque siga fisicamente
+  // aqui, asi que se resta, este la obra calendarizada o no.
+  //
+  // DE DONDE SALE EL COMPROMETIDO
+  // De `iso3-comprometido-ov` y no del campo que Zoho trae por articulo. Se
+  // compararon las dos el 16-oct-2026: coinciden en 504 de 534 SKU y en los
+  // otros 30 la de ordenes de venta es MAYOR, nunca menor. Ademas trae el
+  // desglose por OV, que es lo unico que hace cuadrable un negativo: sin saber
+  // que obra lo aparto, un faltante no se puede investigar.
+  //
+  // POR QUE CADA SKU SE PISA EN CERO
+  // El comprometido total es ~2.3 veces lo que hay en almacen, porque una orden
+  // de venta aparta material que todavia no se compra. Restar crudo da un
+  // inventario NEGATIVO de decenas de millones, y eso como cifra contable no
+  // significa nada: no se puede descontar algo que nunca entro. Por eso cada
+  // SKU reporta max(0, aMano - comprometido) y los faltantes se listan aparte
+  // para cuadrarlos, sin ensuciar el numero que va al contador.
+  const [rep, setRep] = useState(null);
+  const [repCargando, setRepCargando] = useState(false);
+
+  const armarReporte = async () => {
+    if (!fis) { setAviso({ t: "err", m: "Primero actualiza el inventario fisico." }); return; }
+    setRepCargando(true);
+    try {
+      let comp = null;
+      try { const r = await window.storage?.get("iso3-comprometido-ov"); if (r?.value) comp = JSON.parse(r.value); } catch {}
+      // Sin comprometido el reporte diria que TODO es nuestro, que es justo el
+      // error que este reporte existe para no cometer. Mejor no darlo.
+      if (!comp?.porSku) {
+        setAviso({ t: "err", m: "No se pudo leer el comprometido por orden de venta. Sin eso el reporte diria que todo el almacen es nuestro." });
+        return;
+      }
+      const porSku = comp.porSku || {};
+      const filas = [];
+      for (const [sku, a] of Object.entries(fis)) {
+        const aMano = +a?.aMano || 0;
+        const ovs = porSku[sku]?.ovs || [];
+        const comprometido = ovs.reduce((t, o) => t + (+o.cant || 0), 0);
+        if (!aMano && !comprometido) continue;          // ni existencia ni compromiso
+        const costo = +a?.cost || 0;
+        const neto = Math.max(0, aMano - comprometido);
+        filas.push({
+          sku, desc: a?.desc || sku, aMano, comprometido, neto, costo,
+          falta: Math.max(0, comprometido - aMano),
+          valor: neto * costo,
+          ovs: ovs.map((o) => `${o.ov}${o.proyecto ? " " + o.proyecto : ""} (${o.cant})`).join(" · "),
+        });
+      }
+      filas.sort((x, y) => y.valor - x.valor || y.falta - x.falta);
+      const negs = filas.filter((f) => f.falta > 0).sort((x, y) => y.falta * y.costo - x.falta * x.costo);
+      setRep({
+        fechaFisico: fisFecha || "—",
+        fechaComp: comp.fecha || "—",
+        filas, negs, skus: filas.length,
+        valorAMano: filas.reduce((t, f) => t + f.aMano * f.costo, 0),
+        valorComp:  filas.reduce((t, f) => t + f.comprometido * f.costo, 0),
+        valorNeto:  filas.reduce((t, f) => t + f.valor, 0),
+        sinNada:    negs.filter((f) => f.aMano === 0).length,
+      });
+    } finally { setRepCargando(false); }
+  };
+
+  const bajarReporte = () => {
+    if (!rep) return;
+    const col = ["SKU", "Descripcion", "A mano", "Comprometido en obras", "Neto reportable",
+                 "Falta (comprometido de mas)", "Costo unitario", "Valor reportable", "Obras que lo comprometen"];
+    const r2 = (n) => Math.round((+n || 0) * 100) / 100;
+    const cuerpo = rep.filas.map((f) =>
+      [f.sku, f.desc, f.aMano, f.comprometido, f.neto, f.falta ? -f.falta : 0, r2(f.costo), r2(f.valor), f.ovs]
+        .map(csvCell).join(","));
+    // El encabezado va en el mismo archivo: un CSV que llega sin fecha de corte
+    // ni criterio obliga al contador a preguntar, y para entonces ya nadie se
+    // acuerda de con que se genero.
+    const csv = "\uFEFF" + [
+      "Reporte de inventario para contadores - Innovacion Solar",
+      `Conteo fisico al,${rep.fechaFisico}`,
+      `Comprometido en obras al,${rep.fechaComp}`,
+      `Criterio,"Se reporta A MANO menos COMPROMETIDO. El material apartado a una obra no es inventario propio, este calendarizada o no. Cada SKU se piso en cero: un comprometido mayor al existente es material por comprar, no inventario negativo."`,
+      `SKU en el reporte,${rep.skus}`,
+      `Valor a mano,${r2(rep.valorAMano)}`,
+      `Valor comprometido en obras,${r2(rep.valorComp)}`,
+      `VALOR REPORTABLE,${r2(rep.valorNeto)}`,
+      `SKU con comprometido mayor al existente,${rep.negs.length}`,
+      "",
+      col.map(csvCell).join(","),
+      ...cuerpo,
+    ].join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    a.download = `inventario-contadores-${hoy()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-gradient-to-r from-emerald-800 to-emerald-600 text-white rounded-lg p-4">
@@ -5527,7 +5624,13 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           </div>
           <div className="text-right">
             <p className="text-xs text-emerald-100">{fisProg || (fisFecha ? `al ${fisFecha}` : "sin datos")}</p>
-            <button onClick={refrescarFisico} disabled={!!fisProg || noConn} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+            <div className="mt-1 flex flex-wrap gap-1.5 justify-end">
+              <button onClick={refrescarFisico} disabled={!!fisProg || noConn} className="px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
+              <button onClick={armarReporte} disabled={!fis || repCargando} title="Reporte 1: lo que tenemos a mano menos lo comprometido en obras"
+                      className="px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">
+                {repCargando ? "Armando…" : "Crear reporte de inventario"}
+              </button>
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-3 gap-2">
@@ -5548,6 +5651,78 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         </div>
         <p className="text-[10px] text-emerald-100/80 mt-2">Existencias <b>físicas</b> netas de la empresa, tal como las reporta Zoho (no el stock contable). Incluye <b>todos</b> los almacenes.</p>
       </div>
+
+      {rep && (
+        <div className="bg-white border border-stone-200 rounded-lg p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold">Reporte 1 · Inventario para contadores</h3>
+              <p className="text-[11px] text-stone-500">Conteo físico al {rep.fechaFisico} · comprometido al {rep.fechaComp} · {rep.skus} SKU</p>
+            </div>
+            <div className="flex gap-1.5">
+              <button onClick={bajarReporte} className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800">⬇ Descargar CSV</button>
+              <button onClick={() => setRep(null)} className="px-3 py-1.5 text-xs font-medium rounded border border-stone-300">Cerrar</button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="rounded-lg p-3 bg-stone-50">
+              <p className="text-[10px] uppercase tracking-widest text-stone-400">A mano</p>
+              <p className="text-sm font-bold font-mono">${mx0(rep.valorAMano)}</p>
+            </div>
+            <div className="rounded-lg p-3 bg-stone-50">
+              <p className="text-[10px] uppercase tracking-widest text-stone-400">Comprometido en obras</p>
+              <p className="text-sm font-bold font-mono">−${mx0(rep.valorComp)}</p>
+            </div>
+            <div className="rounded-lg p-3 bg-emerald-50 ring-1 ring-emerald-200">
+              <p className="text-[10px] uppercase tracking-widest text-emerald-700">Valor reportable</p>
+              <p className="text-base font-bold font-mono text-emerald-800">${mx0(rep.valorNeto)}</p>
+            </div>
+          </div>
+
+          {/* El piso en cero se DICE, no se esconde: si el contador ve que a mano
+              menos comprometido no le da el reportable, tiene que saber por que. */}
+          {rep.negs.length > 0 && (
+            <div className="mt-3 border border-amber-300 bg-amber-50 rounded p-3">
+              <p className="text-xs font-semibold text-amber-900">
+                {rep.negs.length} SKU tienen más comprometido que existencia
+              </p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                No se restan en negativo: cada SKU se pisa en cero, porque un comprometido mayor al existente es
+                material <b>por comprar</b>, no inventario negativo. De esos, <b>{rep.sinNada}</b> no tienen
+                nada en almacén —ésos son compras pendientes, no descuadres— y los otros {rep.negs.length - rep.sinNada} sí
+                tienen algo y deben revisarse: o falta comprar, o salió a obra y nadie lo descargó.
+              </p>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-[11px] font-mono min-w-[560px]">
+                  <thead><tr className="text-stone-500 text-left">
+                    <th className="py-1">SKU</th><th>Descripción</th>
+                    <th className="text-right">A mano</th><th className="text-right">Comprom.</th><th className="text-right">Falta</th>
+                  </tr></thead>
+                  <tbody>
+                    {rep.negs.slice(0, 8).map((f) => (
+                      <tr key={f.sku} className="border-t border-amber-200/70">
+                        <td className="py-1 font-semibold">{f.sku}</td>
+                        <td className="font-sans text-stone-600">{String(f.desc).slice(0, 38)}</td>
+                        <td className="text-right">{f.aMano}</td>
+                        <td className="text-right">{f.comprometido}</td>
+                        <td className="text-right text-red-700 font-bold">−{f.falta}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {rep.negs.length > 8 && <p className="text-[10px] text-amber-700 mt-1.5">Los {rep.negs.length} van completos en el CSV, con las obras que los comprometen.</p>}
+            </div>
+          )}
+
+          <p className="text-[11px] text-stone-400 mt-3">
+            Se reporta <b>a mano menos comprometido</b>: el material apartado a una obra no es inventario propio,
+            esté la obra calendarizada o no. El comprometido sale de las órdenes de venta ({rep.fechaComp}), que
+            cubren todas las obras.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
