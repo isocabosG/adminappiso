@@ -3823,8 +3823,27 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const facturado = facturas.reduce((a, i) => a + (+i.total || 0), 0);
   const saldoFact = facturas.reduce((a, i) => a + (+i.balance || 0), 0);
   const hayFactura = facturas.length > 0 && facturado > 0;
-  const montoConIva = hayFactura ? facturado : conIva;              // lo efectivamente facturado (o la OV si no hay factura)
-  const porPagar = hayFactura ? saldoFact : (conIva - totalPagado); // saldo real de facturas
+  // MEDIR CONTRA EL CONTRATO (16-oct-2026)
+  // Mismo interruptor que en la lista (`balNeto`), porque la ficha trae su
+  // PROPIA formula y por eso no se arreglo sola: aqui el saldo tambien salia
+  // de la factura. SO-00403 tiene 228,675 contratados, una factura de
+  // 172,524.24 ya pagada, y saldoFact = 0. Por eso decia que no debian nada.
+  //
+  // El cobrado NO se toma de `totalPagado`: eso depende de que la OV traiga
+  // `payments`, y una factura pagada no siempre los cuelga de la orden. Se
+  // deriva de las facturas -lo facturado menos lo que sigue debiendose- mas lo
+  // capturado a mano, que es lo mismo que hace cobradoDe() en la lista.
+  const vsContrato = !!datos.medirVsContrato;
+  const cobradoVsContrato = hayFactura
+    ? Math.max(0, facturado - saldoFact) + pagosManual.reduce((a, b) => a + b.monto, 0)
+    : totalPagado;
+  // El estado de cuenta tiene que ir con el contrato tambien: si se cobra sobre
+  // 228,675, mostrar 172,524.24 como monto dejaria un documento que no cuadra
+  // solo (facturado = pagado y aun asi hay saldo).
+  const montoConIva = (vsContrato || !hayFactura) ? conIva : facturado;
+  const porPagar = vsContrato
+    ? Math.max(0, conIva - cobradoVsContrato)
+    : (hayFactura ? saldoFact : (conIva - totalPagado));
   const difFacturaContrato = hayFactura ? facturado - conIva : 0;   // diferencia factura vs OV (informativa)
 
   // Ajuste por cierre de proyecto ────────────────────────────────────────
@@ -4084,8 +4103,15 @@ ${porPagar >= 0
               <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Total OV en Zoho</p><p className="text-sm font-semibold font-mono">${mx0(+so.total || 0)}</p></div>
               <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Facturado</p><p className="text-sm font-semibold font-mono">${mx0(facturado)}</p>{facturas.length !== 1 ? <p className="text-[10px] text-stone-400">{facturas.length ? facturas.length + " facturas" : "sin factura"}</p> : null}</div>
               <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Cobrado</p><p className="text-sm font-semibold font-mono">${mx0(totalPagado)}</p></div>
-              <div className="bg-stone-50 rounded-lg p-3"><p className="text-[10px] uppercase tracking-widest text-stone-400">Por cobrar</p><p className="text-sm font-semibold font-mono">${mx0(porPagar)}</p></div>
+              <div className={`rounded-lg p-3 ${vsContrato ? "bg-amber-50" : "bg-stone-50"}`}><p className={`text-[10px] uppercase tracking-widest ${vsContrato ? "text-amber-700" : "text-stone-400"}`}>Por cobrar</p><p className="text-sm font-semibold font-mono">${mx0(porPagar)}</p>{vsContrato ? <p className="text-[10px] text-amber-700">vs. contrato</p> : null}</div>
             </div>
+            {vsContrato && (
+              <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
+                Este proyecto se mide <b>contra el contrato</b>, no contra la factura: ${mx0(conIva)} contratados
+                menos ${mx0(cobradoVsContrato)} cobrados. El saldo de las facturas de Zoho es ${mx0(saldoFact)},
+                o sea que faltan ${mx0(Math.max(0, conIva - facturado))} por facturar.
+              </p>
+            )}
 
             {ajustesPrevios.length ? (
               <div className="border border-stone-200 rounded-lg divide-y divide-stone-100">
