@@ -2987,7 +2987,34 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   // los dos lados se descontaría DOS VECES y el por cobrar saldría de menos.
   // Por eso la captura manual solo se resta cuando NO hay factura: ahí el saldo
   // sale de la orden de venta, que no refleja ningún pago.
-  const balNeto = (s) => { const f = facOf(s); return f ? Math.max(0, balDoc(s)) : Math.max(0, balDoc(s) - manualOf(s)); };
+  // Cobrado de verdad: lo que las facturas de Zoho ya recibieron mas lo
+  // tecleado aqui. Un pago capturado a mano que TAMBIEN exista en Zoho se
+  // contaria dos veces; hoy no hay ninguno (0 de 50 proyectos con datos
+  // propios), por eso se suma derecho, pero es lo primero que hay que mirar si
+  // alguna vez el cobrado sale de mas.
+  const cobradoDe = (s) => {
+    const f = facOf(s);
+    return (f ? Math.max(0, (+f.total || 0) - (+f.balance || 0)) : 0) + manualOf(s);
+  };
+  // MEDIR CONTRA EL CONTRATO Y NO CONTRA LA FACTURA (16-oct-2026)
+  //
+  // Por omision el saldo sale de la factura de Zoho, y eso falla cuando la OV
+  // se facturo de menos. El caso que lo destapo: SO-00403 PALMILLA 514, 228,675
+  // USD contratados, UNA factura de 172,524.24 ya pagada y por lo tanto saldo
+  // de factura CERO. La app la daba por liquidada al 100% con 56,150.76 que
+  // nunca se facturaron ni se cobraron.
+  //
+  // Con `medirVsContrato` prendido en los datos del proyecto, el saldo pasa a
+  // ser contratado - cobrado. Se prende UNO POR UNO a proposito: hay 191
+  // ordenes en el mismo caso, y la diferencia no siempre es dinero por cobrar
+  // -puede estar facturada en COMPAQ, que no se habla con Zoho-. Prenderlo en
+  // bloque mandaria a cobranza a perseguir dinero que ya entro.
+  const vsContrato = (s) => !!proyData[s.salesorder_id]?.medirVsContrato;
+  const balNeto = (s) => {
+    if (vsContrato(s)) return Math.max(0, totDoc(s) - cobradoDe(s));
+    const f = facOf(s);
+    return f ? Math.max(0, balDoc(s)) : Math.max(0, balDoc(s) - manualOf(s));
+  };
   // Pagos recibidos de Zoho para esa OV (los de verdad, no los tecleados).
   const pagosDe = (s) => pagos[s.salesorder_number] || null;
   // Resumen: MXN base (con IVA) y USD al TC de hoy
@@ -4027,6 +4054,18 @@ ${porPagar >= 0
               <span className="inline-block text-[11px] px-2.5 py-1 rounded bg-red-50 text-red-700 font-medium">⚠ Diferencia de ${mx(Math.abs(cotejoDiff))} {cotejoDiff > 0 ? "(contratado mayor que contrato)" : "(contratado menor que contrato)"}</span>
             )}
           </div>
+        </div>
+        <div className="px-4 pb-3">
+          <label className="inline-flex items-start gap-2 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={!!datos.medirVsContrato}
+                   onChange={(e) => setDatos({ medirVsContrato: e.target.checked })} />
+            <span className="text-[11px] text-stone-600 leading-snug">
+              <b>Medir el saldo contra el contrato, no contra la factura.</b> Prende esto cuando la OV se
+              factur&oacute; de menos: el por cobrar pasa a ser <i>contratado &minus; cobrado</i> en vez del saldo de
+              la factura, que sale en cero cuando la &uacute;nica factura ya se pag&oacute;. Antes de prenderlo,
+              confirma en COMPAQ que la diferencia no est&eacute; facturada all&aacute;.
+            </span>
+          </label>
         </div>
         <p className="px-4 pb-3 text-[11px] text-stone-400">{cerrado ? "Proyecto cerrado: se usa el total de la orden de venta (Innobyte lo ajusta al cerrar para que la OV = lo contratado)." : "Proyecto abierto: se usa el renglón \"Suministro e instalación\". Ajústalo si tu contrato dice otra cosa."} Puedes sobrescribir el monto sin IVA cuando lo necesites.</p>
       </Section>
