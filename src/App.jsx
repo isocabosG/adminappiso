@@ -5419,7 +5419,6 @@ async function completarComprometido(items, orden, onProg) {
    la pregunta es "¿dónde se usa esto?", no "¿qué compro?". */
 function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
-  const [modo, setModo] = useState("lista");
   const q = busca.trim().toLowerCase();
   // ---- Existencias FISICAS netas de la empresa, como las reporta Zoho. Cache + refresco diario. ----
   const [fis, setFis] = useState(null);              // { [SKU]: {itemId, desc, aMano, comprometido, disponible, cost} }
@@ -5502,6 +5501,40 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     .map(([sku, x]) => [sku, x, (x.aMano || 0) * (x.cost || 0)])
     .sort((a, b) => b[2] - a[2]) : [];
 
+  // EL COMPROMETIDO VIENE DE LAS ORDENES DE VENTA, NO DE ZOHO POR ARTICULO
+  // El campo `comprometido` que trae cada articulo de Zoho se llena con ~2,200
+  // llamadas y casi siempre esta a medias ("faltan N SKU por consultar"), asi
+  // que un inventario contable calculado con el saldria inflado: lo que no se
+  // consulto cuenta como cero apartado. `iso3-comprometido-ov` lo arma el cron
+  // de una vez, con TODAS las ordenes vivas, calendarizadas o no.
+  const [compOv, setCompOv] = useState(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage?.get("iso3-comprometido-ov");
+        if (r?.value) setCompOv(JSON.parse(r.value));
+      } catch { /* sin esto la tarjeta contable se queda en "—", no miente */ }
+    })();
+  }, []);
+
+  // Inventario contable: a mano menos TODO lo comprometido en obras activas.
+  // Cada SKU se piso en cero -si debe mas de lo que hay no aporta, y tampoco
+  // resta-, y los que quedan sin nada libre se cuentan aparte en vez de
+  // desaparecer.
+  const contable = (() => {
+    if (!fis || !compOv?.porSku) return null;
+    let skus = 0, piezas = 0, valor = 0, fuera = 0, comprometidas = 0;
+    for (const [sku, a] of Object.entries(fis)) {
+      const aMano = +a?.aMano || 0;
+      const comp = (compOv.porSku[sku]?.ovs || []).reduce((t, o) => t + (+o.cant || 0), 0);
+      comprometidas += comp;
+      const libre = aMano - comp;
+      if (libre > 0) { skus++; piezas += libre; valor += libre * (+a?.cost || 0); }
+      else if (comp > 0 || aMano !== 0) fuera++;
+    }
+    return { skus, piezas, valor, fuera, comprometidas, fecha: compOv.fecha || "—" };
+  })();
+
   const tot = fis ? Object.values(fis).reduce((a, x) => ({
     valor: a.valor + (x.aMano || 0) * (x.cost || 0),
     aMano: a.aMano + (x.aMano || 0),
@@ -5513,9 +5546,6 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const numCell = (v) => v == null
     ? <span className="text-stone-300">—</span>
     : <span className="font-mono">{v}</span>;
-
-  if (modo === "recepcion")
-    return <RecepcionCamara catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} onSalir={() => setModo("lista")} />;
 
   // ── REPORTE 1: INVENTARIO PARA LOS CONTADORES ──────────────────────────
   //
@@ -5542,8 +5572,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     if (!fis) { setAviso({ t: "err", m: "Primero actualiza el inventario fisico." }); return; }
     setRepCargando(true);
     try {
-      let comp = null;
-      try { const r = await window.storage?.get("iso3-comprometido-ov"); if (r?.value) comp = JSON.parse(r.value); } catch {}
+      let comp = compOv;
+      if (!comp?.porSku) {
+        try { const r = await window.storage?.get("iso3-comprometido-ov"); if (r?.value) comp = JSON.parse(r.value); } catch {}
+      }
       // Sin comprometido el reporte diria que TODO el almacen es nuestro, que
       // es justo el error que este reporte existe para no cometer.
       if (!comp?.porSku) {
@@ -5659,23 +5691,40 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
           <div className="rounded-lg p-2.5 bg-white/20 ring-1 ring-white/40">
             <p className="text-[10px] uppercase tracking-widest text-emerald-100">A mano</p>
-            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `${tot.aMano} pzas`}</p>
+            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `$${mx0(tot.valor)}`}</p>
+            <p className="text-[10px] text-emerald-100/90">{tot == null ? "" : `${mx0(tot.aMano)} pzas`}</p>
           </div>
           <div className="rounded-lg p-2.5 bg-white/10">
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Comprometidas</p>
-            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `${tot.comp} pzas`}</p>
-            {tot != null && tot.pend > 0 && <p className="text-[10px] text-emerald-100/90">faltan {tot.pend} SKU por consultar</p>}
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Comprometidas en obras</p>
+            <p className="text-sm font-bold font-mono leading-tight">{contable == null ? "—" : `${mx0(contable.comprometidas)} pzas`}</p>
+            <p className="text-[10px] text-emerald-100/90">{contable == null ? "sin datos de órdenes" : `de ${compOv?.ordenes ?? "—"} órdenes vivas`}</p>
           </div>
-          <div className={`rounded-lg p-2.5 ${tot && tot.neg > 0 ? "bg-red-500/30 ring-1 ring-red-200/60" : "bg-white/10"}`}>
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Disponible negativo</p>
-            <p className="text-sm font-bold font-mono leading-tight">{tot == null ? "—" : `${tot.neg} SKU`}</p>
-            {tot != null && tot.neg > 0 && <p className="text-[10px] text-emerald-50">comprometido de más</p>}
+          {/* LA TARJETA CONTABLE. Es lo que se le reporta al contador: lo que
+              esta en el almacen y no tiene duenno. El resto de este panel es
+              operativo -sirve para surtir-, esta es la unica cifra que sale de
+              la empresa. */}
+          <div className="rounded-lg p-2.5 bg-white/20 ring-1 ring-white/40 col-span-2 lg:col-span-1">
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Inventario contable</p>
+            <p className="text-sm font-bold font-mono leading-tight">{contable == null ? "—" : `$${mx0(contable.valor)}`}</p>
+            <p className="text-[10px] text-emerald-100/90">
+              {contable == null ? "falta el comprometido por orden" : `${contable.skus} SKU · ${mx0(contable.piezas)} pzas`}
+            </p>
+          </div>
+          <div className={`rounded-lg p-2.5 ${contable && contable.fuera > 0 ? "bg-red-500/30 ring-1 ring-red-200/60" : "bg-white/10"}`}>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Sin existencia libre</p>
+            <p className="text-sm font-bold font-mono leading-tight">{contable == null ? "—" : `${contable.fuera} SKU`}</p>
+            <p className="text-[10px] text-emerald-50">{contable == null ? "" : "no entran al reporte"}</p>
           </div>
         </div>
-        <p className="text-[10px] text-emerald-100/80 mt-2">Existencias <b>físicas</b> netas de la empresa, tal como las reporta Zoho (no el stock contable). Incluye <b>todos</b> los almacenes.</p>
+        <p className="text-[10px] text-emerald-100/80 mt-2">
+          <b>A mano</b>: existencias físicas de todos los almacenes, como las reporta Zoho.
+          <b> Inventario contable</b>: lo que queda al restar todo lo comprometido en obras activas, estén
+          calendarizadas o no{contable ? ` (órdenes al ${contable.fecha})` : ""} — es la cifra que va al contador,
+          con cada SKU pisado en cero.
+        </p>
       </div>
 
       {rep && (
@@ -5746,12 +5795,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         </div>
       )}
 
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold">Inventario</h2>
-          <p className="text-xs text-stone-500">A mano · comprometidas · disponible para venta, de Zoho.</p>
-        </div>
-        <button onClick={() => setModo("recepcion")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">📷 Recepción por cámara</button>
+      <div>
+        <h2 className="text-sm font-semibold">Inventario</h2>
+        <p className="text-xs text-stone-500">A mano · comprometidas · disponible para venta, de Zoho.</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -5820,251 +5866,6 @@ function clank() {
     g.gain.setValueAtTime(0.25, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.13);
     o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.13);
   } catch { /* silencio si no hay audio */ }
-}
-
-function RecepcionCamara({ catalogo, saveCatalogo, setAviso, onSalir }) {
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const [camError, setCamError] = useState(null);
-  const [estado, setEstado] = useState("listo"); // listo | leyendo | confirmar | error
-  const [flash, setFlash] = useState(null); // "verde" | "rojo"
-  const [detectado, setDetectado] = useState(null); // {sku, descripcion, cantidad, serie}
-  const [capturas, setCapturas] = useState([]); // acumulado
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        streamRef.current = s;
-        if (videoRef.current) { videoRef.current.srcObject = s; await videoRef.current.play().catch(() => {}); }
-      } catch {
-        setCamError("No se pudo abrir la cámara en este entorno. Usa “Subir foto”.");
-      }
-    })();
-    return () => { if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop()); };
-  }, []);
-
-  const skuList = Object.entries(catalogo).map(([sku, a]) => `${sku}: ${a.descripcion}`).join("\n");
-  const PROMPT = `Eres un asistente de almacén. La imagen es la etiqueta o caja de un producto de energía solar (batería, inversor, panel, control) recién llegado.
-Catálogo de SKU disponibles:
-${skuList}
-
-Lee la etiqueta y responde ÚNICAMENTE JSON compacto, sin markdown:
-{"sku":"","modelo":"","cantidad":1,"serie":""}
-- sku: el SKU del catálogo que mejor corresponda al modelo leído; si ninguno corresponde, "".
-- modelo: el texto del modelo/descripción que leíste.
-- cantidad: número de piezas si la etiqueta lo indica; si no, 1.
-- serie: número de serie si aparece; si no, "".
-Si la imagen está borrosa o no es una etiqueta de producto, responde {"error":"ilegible"}.`;
-
-  const leerImagen = async (b64) => {
-    setEstado("leyendo"); setDetectado(null);
-    try {
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 1500, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }, { type: "text", text: PROMPT }] }] });
-      const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
-      const p = extraerJSON(txt);
-      if (p.error || (!p.sku && !p.modelo)) { setFlash("rojo"); setEstado("error"); setTimeout(() => setFlash(null), 600); return; }
-      const desc = catalogo[p.sku]?.descripcion || p.modelo || "Modelo no reconocido";
-      setDetectado({ sku: p.sku || "", descripcion: desc, cantidad: +p.cantidad || 1, serie: p.serie || "" });
-      setEstado("confirmar");
-    } catch {
-      setFlash("rojo"); setEstado("error"); setTimeout(() => setFlash(null), 600);
-    }
-  };
-
-  const disparar = () => {
-    clank();
-    const v = videoRef.current;
-    if (!v || !v.videoWidth) { setCamError("Cámara no lista. Usa “Subir foto”."); return; }
-    const cv = document.createElement("canvas");
-    cv.width = v.videoWidth; cv.height = v.videoHeight;
-    cv.getContext("2d").drawImage(v, 0, 0);
-    leerImagen(cv.toDataURL("image/jpeg", 0.7).split(",")[1]);
-  };
-
-  const subirFoto = async (file) => {
-    if (!file) return;
-    clank();
-    const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
-    leerImagen(b64);
-  };
-
-  const agregarItem = (item) => {
-    setCapturas((cs) => {
-      const key = item.sku || item.descripcion;
-      const idx = cs.findIndex((c) => (c.sku || c.descripcion) === key);
-      const series = item.serie ? [item.serie] : (item.series || []);
-      if (idx >= 0) {
-        const cp = [...cs];
-        cp[idx] = { ...cp[idx], cantidad: cp[idx].cantidad + (item.cantidad || 1), series: [...cp[idx].series, ...series] };
-        return cp;
-      }
-      return [...cs, { sku: item.sku || "", descripcion: item.descripcion, cantidad: item.cantidad || 1, series }];
-    });
-  };
-
-  const agregar = () => {
-    clank(); setFlash("verde"); setTimeout(() => setFlash(null), 600);
-    agregarItem(detectado);
-    setDetectado(null); setEstado("listo");
-  };
-
-  const [manualAbierto, setManualAbierto] = useState(false);
-  const [man, setMan] = useState({ sku: "", cantidad: 1, serie: "" });
-  const agregarManual = () => {
-    if (!man.sku) return;
-    agregarItem({ sku: man.sku, descripcion: catalogo[man.sku]?.descripcion || man.sku, cantidad: +man.cantidad || 1, serie: man.serie });
-    clank(); setFlash("verde"); setTimeout(() => setFlash(null), 400);
-    setMan({ sku: "", cantidad: 1, serie: "" }); setManualAbierto(false);
-  };
-
-  const [leyendoDoc, setLeyendoDoc] = useState(false);
-  const subirDoc = async (file) => {
-    if (!file) return;
-    setLeyendoDoc(true);
-    try {
-      const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
-      const prompt = `Es una orden de compra o pedimento de importación. Extrae los renglones de mercancía y responde SOLO JSON compacto: {"items":[{"sku":"","modelo":"","cantidad":0}]}. Empata cada renglón con el catálogo:\n${skuList}\nUsa el SKU del catálogo que corresponda; si ninguno, "".`;
-      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 3000, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }, { type: "text", text: prompt }] }] });
-      const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
-      const p = extraerJSON(txt);
-      (p.items || []).forEach((it) => agregarItem({ sku: it.sku || "", descripcion: catalogo[it.sku]?.descripcion || it.modelo || "Modelo", cantidad: +it.cantidad || 1 }));
-      clank(); setFlash("verde"); setTimeout(() => setFlash(null), 500);
-      setAviso({ t: "ok", m: `Documento leído: ${(p.items || []).length} renglones agregados a la lista.` });
-    } catch {
-      setAviso({ t: "err", m: "No se pudo leer el documento. Intenta con mejor calidad o captura manual." });
-    }
-    setLeyendoDoc(false);
-  };
-
-  const confirmarEntrada = () => {
-    const c = { ...catalogo };
-    capturas.forEach((cap) => {
-      if (!cap.sku) return; // sin SKU reconocido no toca inventario
-      const a = c[cap.sku] || { descripcion: cap.descripcion, categoria: "Otro", existencia: 0, costoVigente: 0 };
-      c[cap.sku] = { ...a, existencia: (a.existencia || 0) + cap.cantidad, series: [...(a.series || []), ...cap.series] };
-    });
-    saveCatalogo(c);
-    setAviso({ t: "ok", m: `Entrada registrada: ${capturas.reduce((s, x) => s + x.cantidad, 0)} pzas en ${capturas.length} modelos.` });
-    setCapturas([]); onSalir();
-  };
-
-  const totalPzas = capturas.reduce((s, c) => s + c.cantidad, 0);
-  const borde = flash === "verde" ? "ring-4 ring-teal-400" : flash === "rojo" ? "ring-4 ring-red-400" : estado === "leyendo" ? "ring-4 ring-amber-400" : "ring-1 ring-stone-300";
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Recepción por cámara</h2>
-        <button onClick={onSalir} className="text-xs text-stone-500 hover:text-stone-800">← Volver a inventario</button>
-      </div>
-
-      <div className={`relative rounded-lg overflow-hidden bg-black aspect-[4/3] ${borde}`}>
-        <video ref={videoRef} playsInline muted className="w-full h-full object-cover" />
-        {camError && <div className="absolute inset-0 flex items-center justify-center bg-stone-800 text-stone-300 text-xs text-center p-4">{camError}</div>}
-        {estado === "leyendo" && <div className="absolute inset-0 flex items-center justify-center bg-black/40"><p className="text-amber-300 text-sm font-mono">leyendo etiqueta…</p></div>}
-        {flash === "verde" && <div className="absolute inset-0 flex items-center justify-center bg-teal-500/30"><p className="text-white text-4xl">✓</p></div>}
-        {flash === "rojo" && <div className="absolute inset-0 flex items-center justify-center bg-red-500/30"><p className="text-white text-sm">✗ repite la foto</p></div>}
-
-        {/* Recuadro de confirmación sobre la foto */}
-        {estado === "confirmar" && detectado && (
-          <div className="absolute inset-x-3 bottom-3 bg-white rounded-lg shadow-xl p-3">
-            <p className="text-[10px] uppercase tracking-widest text-stone-500">Detectado</p>
-            <p className="text-sm font-semibold">{detectado.descripcion}</p>
-            {detectado.sku ? <p className="text-[11px] font-mono text-teal-700">{detectado.sku}</p> : <p className="text-[11px] text-amber-700">⚠ SKU no reconocido — elige o corrige</p>}
-            {!detectado.sku && (
-              <select className="mt-1 w-full px-2 py-1 text-xs border border-stone-300 rounded" value="" onChange={(e) => setDetectado({ ...detectado, sku: e.target.value, descripcion: catalogo[e.target.value]?.descripcion || detectado.descripcion })}>
-                <option value="">— Empatar con SKU —</option>
-                {Object.entries(catalogo).map(([sku, a]) => <option key={sku} value={sku}>{sku} · {a.descripcion}</option>)}
-              </select>
-            )}
-            <div className="mt-2 flex items-center gap-2">
-              <div className="flex items-center gap-1">
-                <button onClick={() => setDetectado((d) => ({ ...d, cantidad: Math.max(1, d.cantidad - 1) }))} className="w-8 h-8 rounded border border-stone-300 text-lg">−</button>
-                <input type="number" value={detectado.cantidad} onChange={(e) => setDetectado((d) => ({ ...d, cantidad: +e.target.value || 1 }))} className="w-14 text-center px-1 py-1.5 text-sm border border-stone-300 rounded font-mono" />
-                <button onClick={() => setDetectado((d) => ({ ...d, cantidad: d.cantidad + 1 }))} className="w-8 h-8 rounded border border-stone-300 text-lg">+</button>
-              </div>
-              <span className="text-xs text-stone-500">pzas</span>
-              {detectado.serie && <span className="text-[11px] font-mono text-stone-500 ml-auto truncate">Serie: {detectado.serie}</span>}
-            </div>
-            <div className="mt-2 flex gap-2">
-              <button onClick={() => { setDetectado(null); setEstado("listo"); }} className="flex-1 py-2 text-xs rounded border border-stone-300">Repetir</button>
-              <button onClick={agregar} className="flex-1 py-2 text-xs rounded bg-teal-700 text-white font-medium">Aceptar y seguir ✓</button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Controles de captura */}
-      {estado !== "confirmar" && (
-        <>
-          <div className="flex items-center gap-2">
-            <button onClick={disparar} disabled={estado === "leyendo"} className="flex-1 py-3 bg-emerald-700 text-white text-sm font-semibold rounded-lg disabled:opacity-40">● Capturar</button>
-            <label className="py-3 px-4 border border-stone-300 rounded-lg text-sm cursor-pointer">Subir foto
-              <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => subirFoto(e.target.files?.[0])} />
-            </label>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setManualAbierto((v) => !v)} className="flex-1 py-2 border border-stone-300 rounded-lg text-xs font-medium text-stone-700">✏️ Ingresar manual</button>
-            <label className="flex-1 py-2 border border-stone-300 rounded-lg text-xs font-medium text-stone-700 text-center cursor-pointer">
-              {leyendoDoc ? "leyendo documento…" : "📄 Subir OC / Pedimento"}
-              <input type="file" accept="application/pdf" className="hidden" disabled={leyendoDoc} onChange={(e) => subirDoc(e.target.files?.[0])} />
-            </label>
-          </div>
-          {manualAbierto && (
-            <div className="bg-white border border-stone-200 rounded-lg p-3 space-y-2">
-              <p className="text-[10px] uppercase tracking-widest text-stone-500">Entrada manual</p>
-              <select className="w-full px-2 py-1.5 text-sm border border-stone-300 rounded" value={man.sku} onChange={(e) => setMan({ ...man, sku: e.target.value })}>
-                <option value="">— Elegir artículo —</option>
-                {Object.entries(catalogo).map(([sku, a]) => <option key={sku} value={sku}>{sku} · {a.descripcion}</option>)}
-              </select>
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setMan((m) => ({ ...m, cantidad: Math.max(1, m.cantidad - 1) }))} className="w-8 h-8 rounded border border-stone-300 text-lg">−</button>
-                  <input type="number" value={man.cantidad} onChange={(e) => setMan({ ...man, cantidad: +e.target.value || 1 })} className="w-14 text-center px-1 py-1.5 text-sm border border-stone-300 rounded font-mono" />
-                  <button onClick={() => setMan((m) => ({ ...m, cantidad: m.cantidad + 1 }))} className="w-8 h-8 rounded border border-stone-300 text-lg">+</button>
-                </div>
-                <input value={man.serie} onChange={(e) => setMan({ ...man, serie: e.target.value })} placeholder="Serie (opcional)" className="flex-1 px-2 py-1.5 text-sm border border-stone-300 rounded font-mono" />
-              </div>
-              <button onClick={agregarManual} disabled={!man.sku} className="w-full py-2 text-xs rounded bg-teal-700 text-white font-medium disabled:opacity-40">Agregar a la lista</button>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Lista acumulada */}
-      <div className="bg-white border border-stone-200 rounded-lg">
-        <div className="px-4 py-2.5 border-b border-stone-200 flex items-baseline justify-between">
-          <h3 className="text-sm font-semibold">Escaneado</h3>
-          <span className="text-[11px] font-mono text-stone-500">{totalPzas} pzas · {capturas.length} modelos</span>
-        </div>
-        {capturas.length === 0 ? (
-          <p className="p-6 text-sm text-stone-500 text-center">Apunta a la etiqueta y captura. Cada modelo se va acumulando aquí.</p>
-        ) : (
-          <div className="divide-y divide-stone-50">
-            {capturas.map((c, i) => (
-              <div key={i} className="px-4 py-2 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm truncate">{c.descripcion}</p>
-                  <p className="text-[11px] font-mono text-stone-400">{c.sku || "sin SKU"}{c.series.length ? ` · ${c.series.length} serie(s)` : ""}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-semibold">{c.cantidad}</span>
-                  <button onClick={() => setCapturas((cs) => cs.filter((_, j) => j !== i))} className="text-stone-400 hover:text-red-600 text-sm">×</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        {capturas.length > 0 && (
-          <div className="p-3 border-t border-stone-200">
-            <button onClick={confirmarEntrada} className="w-full py-2.5 bg-teal-700 text-white text-sm font-semibold rounded-lg">Confirmar entrada al inventario</button>
-          </div>
-        )}
-      </div>
-      <p className="text-[11px] text-stone-400">La cámara y la lectura funcionan en el navegador; el alta se guarda en la app y se empujará a Zoho Inventory al conectar la escritura. Los modelos sin SKU no tocan inventario hasta que los empates.</p>
-    </div>
-  );
 }
 
 function LimpiezaSO({ setAviso }) {
