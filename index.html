@@ -75,9 +75,44 @@
 
       /* ENCABEZADO: charcoal con filo verde de 3px, como ISO Warehouse.
          Antes era un degradado verde. Se apaga el degradado aqui y no en
-         App.jsx para no tocar el componente; las cuatro TARJETAS de resumen
-         conservan el suyo a proposito -ahi el verde si es dato, no cromo. */
+         App.jsx para no tocar el componente. */
       header { background-image: none !important; background-color: #1f2933 !important; border-bottom: 3px solid #2f8f3a; }
+
+      /* ===== PANELES DE RESUMEN (.panel-iso) =====
+         Las cuatro tarjetas de arriba de Proyectos, Cobranza, Inventario y
+         Tesoreria eran bloques verdes solidos. El verde corporativo pasa a ser
+         ACENTO, no fondo: blanco con filo verde a la izquierda.
+         Se hace aqui, con una sola clase gancho, y no reescribiendo las ~60
+         utilidades de Tailwind que viven dentro de esos paneles: un cambio de
+         color no vale tocar cuatro bloques de JSX renglon por renglon. */
+      .panel-iso { background: #ffffff; border: 1px solid #d9dee3; border-left: 4px solid #2f8f3a; color: #1f2933; }
+
+      /* Texto: lo que era blanco o verde claro sobre verde ahora es tinta y gris. */
+      .panel-iso .text-white { color: #1f2933 !important; }
+      .panel-iso [class*="text-emerald-50"],
+      .panel-iso [class*="text-emerald-100"],
+      .panel-iso [class*="text-emerald-200"] { color: #66717d !important; }
+      .panel-iso [class*="text-red-50"],
+      .panel-iso [class*="text-red-100"] { color: #c62f2f !important; }
+
+      /* Cajitas internas: eran transparencias sobre verde, ahora grises claras. */
+      .panel-iso [class*="bg-white/"] { background-color: #f7f8f9 !important; }
+      .panel-iso .bg-white\/20 { background-color: #eef7ef !important; }
+      .panel-iso .hover\:bg-white\/25:hover { background-color: #eef0f2 !important; }
+      .panel-iso [class*="border-white/"] { border-color: #c3cad1 !important; }
+      .panel-iso [class*="ring-white/"] { --tw-ring-color: #c9e3cc !important; }
+
+      /* El rojo sigue siendo alarma, pero legible sobre blanco. */
+      .panel-iso [class*="bg-red-500/"] { background-color: #fdecec !important; }
+      .panel-iso [class*="ring-red-200/"] { --tw-ring-color: #f0b4b4 !important; }
+
+      .dark .panel-iso { background: #1e2328; border-color: #323940; border-left-color: #47a84f; color: #e8ebee; }
+      .dark .panel-iso .text-white { color: #e8ebee !important; }
+      .dark .panel-iso [class*="bg-white/"] { background-color: #262c32 !important; }
+      .dark .panel-iso .bg-white\/20 { background-color: #1f3524 !important; }
+      .dark .panel-iso .hover\:bg-white\/25:hover { background-color: #2e353c !important; }
+      .dark .panel-iso [class*="border-white/"] { border-color: #3d454d !important; }
+      .dark .panel-iso [class*="bg-red-500/"] { background-color: #3a2020 !important; }
 
       /* ===== Modo oscuro =====
          Era un tema VERDE (#04291b) hecho a mano. ISO Warehouse usa un oscuro
