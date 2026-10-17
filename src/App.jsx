@@ -5567,6 +5567,11 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // aparte, en pantalla, nada mas para que no desaparezcan en silencio.
   const [rep, setRep] = useState(null);
   const [repCargando, setRepCargando] = useState(false);
+  // Que SKU entran al reporte. Arranca con los que tienen existencia libre y
+  // de ahi se mueve a mano: el criterio automatico acierta en la mayoria, pero
+  // quien sabe si una pieza apartada en realidad ya es nuestra es el que
+  // camina el almacen, no la formula.
+  const [incluidos, setIncluidos] = useState(() => new Set());
 
   const armarReporte = async () => {
     if (!fis) { setAviso({ t: "err", m: "Primero actualiza el inventario fisico." }); return; }
