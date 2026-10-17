@@ -5552,23 +5552,35 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       }
       const porSku = comp.porSku || {};
       const filas = [];
-      let excluidos = 0;
+      const fuera = [];
       for (const [sku, a] of Object.entries(fis)) {
         const aMano = +a?.aMano || 0;
-        const comprometido = (porSku[sku]?.ovs || []).reduce((t, o) => t + (+o.cant || 0), 0);
+        const ovs = porSku[sku]?.ovs || [];
+        const comprometido = ovs.reduce((t, o) => t + (+o.cant || 0), 0);
         const libre = aMano - comprometido;
+        const costo = +a?.cost || 0;
         if (libre > 0) {
-          const costo = +a?.cost || 0;
           filas.push({ sku, desc: a?.desc || sku, libre, costo, valor: libre * costo });
         } else if (comprometido > 0 || aMano !== 0) {
-          excluidos++;                                   // sin nada libre que declarar
+          // No entra al reporte del contador, pero SI se ve en pantalla: 300 y
+          // pico de SKU que desaparecen sin aviso es lo que despues nadie puede
+          // explicar. Se guarda con que obra lo aparta, que es lo unico que
+          // permite investigarlo.
+          fuera.push({
+            sku, desc: a?.desc || sku, aMano, comprometido, costo,
+            falta: comprometido - aMano,
+            ovs: ovs.map((o) => `${o.ov}${o.proyecto ? " " + o.proyecto : ""} (${o.cant})`).join(" · "),
+          });
         }
       }
       filas.sort((x, y) => y.valor - x.valor);
+      fuera.sort((x, y) => y.falta * y.costo - x.falta * x.costo);
       setRep({
         fechaFisico: fisFecha || "—",
         fechaComp: comp.fecha || "—",
-        filas, excluidos,
+        filas, fuera,
+        excluidos: fuera.length,
+        sinNada: fuera.filter((f) => f.aMano === 0).length,
         skus: filas.length,
         valor: filas.reduce((t, f) => t + f.valor, 0),
         piezas: filas.reduce((t, f) => t + f.libre, 0),
@@ -5598,6 +5610,32 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     a.download = `inventario-${hoy()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  // Archivo SEPARADO, y a proposito. Esto es papel de trabajo interno: que obra
+  // aparta que pieza. Mezclarlo con el del contador es lo que convierte un
+  // reporte en una discusion.
+  const bajarNoEntran = () => {
+    if (!rep?.fuera?.length) return;
+    const r2 = (n) => Math.round((+n || 0) * 100) / 100;
+    const col = ["SKU", "Descripcion", "A mano", "Comprometido", "Faltante", "Costo unitario", "Obras que lo comprometen"];
+    const cuerpo = rep.fuera.map((f) =>
+      [f.sku, f.desc, f.aMano, f.comprometido, f.falta, r2(f.costo), f.ovs].map(csvCell).join(","));
+    const csv = "\uFEFF" + [
+      "SKU sin existencia libre - papel de trabajo interno (NO es el reporte de contabilidad)",
+      `Corte,${rep.fechaFisico}`,
+      `Comprometido al,${rep.fechaComp}`,
+      `SKU,${rep.fuera.length}`,
+      `De esos, sin nada en almacen,${rep.sinNada}`,
+      "",
+      col.map(csvCell).join(","),
+      ...cuerpo,
+    ].join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    a.download = `sin-existencia-libre-${hoy()}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -5659,13 +5697,46 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
             <p className="text-[11px] text-emerald-800/80 mt-0.5">Existencia a mano que no está comprometida a ninguna obra.</p>
           </div>
 
-          {/* Los excluidos se cuentan, no se listan: no son parte del reporte,
-              pero desaparecer 246 SKU sin decirlo es como no decir el corte. */}
+          {/* En PANTALLA si se ven, en el archivo del contador no. Son dos
+              documentos distintos: uno declara, el otro investiga. */}
           {rep.excluidos > 0 && (
-            <p className="mt-2 text-[11px] text-stone-500">
-              Quedan fuera <b>{rep.excluidos} SKU</b> sin existencia libre: lo que tienen está comprometido a obras,
-              o deben más de lo que hay. No se reportan en cero ni en negativo.
-            </p>
+            <div className="mt-3 border border-stone-200 rounded-lg">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
+                <div>
+                  <p className="text-xs font-semibold">{rep.excluidos} SKU no entran al reporte</p>
+                  <p className="text-[11px] text-stone-500">
+                    Sin existencia libre. {rep.sinNada} no tienen nada en almacén —material por comprar— y
+                    los otros {rep.excluidos - rep.sinNada} sí tienen algo pero deben más: o falta comprar, o salió a obra y nadie lo descargó.
+                  </p>
+                </div>
+                <button onClick={bajarNoEntran} className="px-2.5 py-1 text-[11px] font-medium rounded border border-stone-300 bg-white hover:bg-stone-50 shrink-0">⬇ CSV de trabajo</button>
+              </div>
+              <div className="max-h-72 overflow-auto">
+                <table className="w-full text-[11px] font-mono min-w-[620px]">
+                  <thead className="sticky top-0 bg-white shadow-[0_1px_0_#e7e5e4]">
+                    <tr className="text-stone-500 text-left">
+                      <th className="px-3 py-1.5">SKU</th><th>Descripción</th>
+                      <th className="text-right">A mano</th><th className="text-right">Comprom.</th>
+                      <th className="text-right pr-3">Falta</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rep.fuera.map((f) => (
+                      <tr key={f.sku} className="border-t border-stone-100" title={f.ovs}>
+                        <td className="px-3 py-1 font-semibold">{f.sku}</td>
+                        <td className="font-sans text-stone-600">{String(f.desc).slice(0, 44)}</td>
+                        <td className="text-right">{f.aMano}</td>
+                        <td className="text-right">{f.comprometido}</td>
+                        <td className="text-right pr-3 text-red-700 font-bold">−{f.falta}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="px-3 py-1.5 text-[10px] text-stone-400 border-t border-stone-100">
+                Pasa el cursor sobre un renglón para ver qué obras lo comprometen. Nada de esto va en el CSV del contador.
+              </p>
+            </div>
           )}
 
           <p className="text-[11px] text-stone-400 mt-2">
