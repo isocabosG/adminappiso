@@ -5591,8 +5591,12 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         const comprometido = ovs.reduce((t, o) => t + (+o.cant || 0), 0);
         const libre = aMano - comprometido;
         const costo = +a?.cost || 0;
+        // `cant` es con cuanto se reportaria ese SKU si entra. Para los que
+        // tienen libre, el libre. Para los que no, el A MANO completo: incluir
+        // uno a mano es decir "esto en realidad si es nuestro", y entonces
+        // cuenta todo lo que hay fisicamente, no un sobrante que es negativo.
         if (libre > 0) {
-          filas.push({ sku, desc: a?.desc || sku, libre, costo, valor: libre * costo });
+          filas.push({ sku, desc: a?.desc || sku, aMano, comprometido, costo, libre, cant: libre, valor: libre * costo });
         } else if (comprometido > 0 || aMano !== 0) {
           // No entra al reporte del contador, pero SI se ve en pantalla: 300 y
           // pico de SKU que desaparecen sin aviso es lo que despues nadie puede
@@ -5600,6 +5604,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           // permite investigarlo.
           fuera.push({
             sku, desc: a?.desc || sku, aMano, comprometido, costo,
+            libre, cant: aMano, valor: aMano * costo,
             falta: comprometido - aMano,
             ovs: ovs.map((o) => `${o.ov}${o.proyecto ? " " + o.proyecto : ""} (${o.cant})`).join(" · "),
           });
@@ -5611,20 +5616,100 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         fechaFisico: fisFecha || "—",
         fechaComp: comp.fecha || "—",
         filas, fuera,
-        excluidos: fuera.length,
         sinNada: fuera.filter((f) => f.aMano === 0).length,
-        skus: filas.length,
-        valor: filas.reduce((t, f) => t + f.valor, 0),
-        piezas: filas.reduce((t, f) => t + f.libre, 0),
       });
+      // La seleccion arranca en el criterio automatico. Los renglones NO se
+      // mueven de tabla al marcarlos: si brincaran de lista en cada clic seria
+      // imposible repasar 1,149 SKU sin perder el lugar.
+      setIncluidos(new Set(filas.map((f) => f.sku)));
     } finally { setRepCargando(false); }
+  };
+
+  // Lo que hoy se reportaria, segun las casillas. Se recalcula en cada render
+  // a proposito: el numero grande y el CSV tienen que salir de la MISMA cuenta
+  // que las casillas, no de una foto tomada al armar el reporte.
+  const seleccion = rep
+    ? [...rep.filas, ...rep.fuera].filter((f) => incluidos.has(f.sku))
+    : [];
+  const selTot = {
+    skus: seleccion.length,
+    piezas: seleccion.reduce((t, f) => t + f.cant, 0),
+    valor: seleccion.reduce((t, f) => t + f.cant * f.costo, 0),
+    forzados: rep ? rep.fuera.filter((f) => incluidos.has(f.sku)).length : 0,
+    quitados: rep ? rep.filas.filter((f) => !incluidos.has(f.sku)).length : 0,
+  };
+
+  const toggleSku = (sku) => setIncluidos((prev) => {
+    const n = new Set(prev);
+    if (n.has(sku)) n.delete(sku); else n.add(sku);
+    return n;
+  });
+  const marcarTodos = (lista, on) => setIncluidos((prev) => {
+    const n = new Set(prev);
+    for (const f of lista) { if (on) n.add(f.sku); else n.delete(f.sku); }
+    return n;
+  });
+
+  const tablaSel = (titulo, sub, rows, extra = null) => {
+    const nSel = rows.filter((f) => incluidos.has(f.sku)).length;
+    return (
+      <div className="mt-3 border border-stone-200 rounded-lg">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold">{titulo} · {nSel} de {rows.length}</p>
+            <p className="text-[11px] text-stone-500">{sub}</p>
+          </div>
+          <div className="flex gap-1.5 shrink-0">
+            <button onClick={() => marcarTodos(rows, true)} className="px-2 py-1 text-[11px] rounded border border-stone-300 bg-white hover:bg-stone-50">Todos</button>
+            <button onClick={() => marcarTodos(rows, false)} className="px-2 py-1 text-[11px] rounded border border-stone-300 bg-white hover:bg-stone-50">Ninguno</button>
+            {extra}
+          </div>
+        </div>
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full text-[11px] font-mono min-w-[700px]">
+            <thead className="sticky top-0 bg-white shadow-[0_1px_0_#e7e5e4]">
+              <tr className="text-stone-500 text-left">
+                <th className="px-3 py-1.5 w-8"></th>
+                <th>SKU</th><th>Descripción</th>
+                <th className="text-right">A mano</th>
+                <th className="text-right">Comprom.</th>
+                <th className="text-right">Reporta</th>
+                <th className="text-right pr-3">Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((f) => {
+                const on = incluidos.has(f.sku);
+                return (
+                  <tr key={f.sku} title={f.ovs || "Sin obras que lo comprometan"}
+                      className={`border-t border-stone-100 ${on ? "" : "opacity-40"}`}>
+                    <td className="px-3 py-1">
+                      <input type="checkbox" checked={on} onChange={() => toggleSku(f.sku)} />
+                    </td>
+                    <td className="font-semibold">{f.sku}</td>
+                    <td className="font-sans text-stone-600">{String(f.desc).slice(0, 40)}</td>
+                    <td className="text-right">{mx0(f.aMano)}</td>
+                    <td className="text-right">{mx0(f.comprometido)}</td>
+                    <td className={`text-right font-bold ${f.libre > 0 ? "" : "text-amber-700"}`}>{mx0(f.cant)}</td>
+                    <td className="text-right pr-3">${mx0(f.cant * f.costo)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
   };
 
   const bajarReporte = () => {
     if (!rep) return;
     const r2 = (n) => Math.round((+n || 0) * 100) / 100;
     const col = ["SKU", "Descripcion", "Cantidad", "Costo unitario", "Valor"];
-    const cuerpo = rep.filas.map((f) => [f.sku, f.desc, f.libre, r2(f.costo), r2(f.valor)].map(csvCell).join(","));
+    const cuerpo = seleccion
+      .slice()
+      .sort((x, y) => y.cant * y.costo - x.cant * x.costo)
+      .map((f) => [f.sku, f.desc, f.cant, r2(f.costo), r2(f.cant * f.costo)].map(csvCell).join(","));
     // El criterio va en el archivo: un CSV que llega sin fecha de corte ni
     // definicion obliga al contador a preguntar, y para entonces nadie se
     // acuerda de con que se genero.
@@ -5632,9 +5717,12 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       "Reporte de inventario - Innovacion Solar",
       `Corte,${rep.fechaFisico}`,
       `Criterio,"Existencia fisica propia: lo que esta en almacen y NO esta comprometido a ninguna obra. El material apartado a un proyecto no se incluye."`,
-      `SKU,${rep.skus}`,
-      `Piezas,${rep.piezas}`,
-      `VALOR TOTAL,${r2(rep.valor)}`,
+      ...(selTot.forzados || selTot.quitados
+        ? [`Ajustes manuales,"${selTot.forzados} SKU incluidos a mano pese a estar comprometidos; ${selTot.quitados} quitados del criterio automatico."`]
+        : []),
+      `SKU,${selTot.skus}`,
+      `Piezas,${selTot.piezas}`,
+      `VALOR TOTAL,${r2(selTot.valor)}`,
       "",
       col.map(csvCell).join(","),
       ...cuerpo,
@@ -5732,65 +5820,47 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <h3 className="text-sm font-semibold">Reporte de inventario · contadores</h3>
-              <p className="text-[11px] text-stone-500">Corte al {rep.fechaFisico} · {rep.skus} SKU · {mx0(rep.piezas)} piezas</p>
+              <p className="text-[11px] text-stone-500">Corte al {rep.fechaFisico} · órdenes al {rep.fechaComp}</p>
             </div>
             <div className="flex gap-1.5">
-              <button onClick={bajarReporte} className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800">⬇ Descargar CSV</button>
+              <button onClick={bajarReporte} disabled={!selTot.skus}
+                      className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">⬇ Descargar CSV</button>
               <button onClick={() => setRep(null)} className="px-3 py-1.5 text-xs font-medium rounded border border-stone-300">Cerrar</button>
             </div>
           </div>
 
           <div className="mt-3 rounded-lg p-3 bg-emerald-50 ring-1 ring-emerald-200">
             <p className="text-[10px] uppercase tracking-widest text-emerald-700">Valor del inventario propio</p>
-            <p className="text-xl font-bold font-mono text-emerald-800">${mx0(rep.valor)}</p>
-            <p className="text-[11px] text-emerald-800/80 mt-0.5">Existencia a mano que no está comprometida a ninguna obra.</p>
+            <p className="text-xl font-bold font-mono text-emerald-800">${mx0(selTot.valor)}</p>
+            <p className="text-[11px] text-emerald-800/80 mt-0.5">
+              {selTot.skus} SKU · {mx0(selTot.piezas)} piezas
+              {selTot.forzados > 0 && ` · ${selTot.forzados} incluidos a mano`}
+              {selTot.quitados > 0 && ` · ${selTot.quitados} quitados a mano`}
+            </p>
           </div>
 
-          {/* En PANTALLA si se ven, en el archivo del contador no. Son dos
-              documentos distintos: uno declara, el otro investiga. */}
-          {rep.excluidos > 0 && (
-            <div className="mt-3 border border-stone-200 rounded-lg">
-              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
-                <div>
-                  <p className="text-xs font-semibold">{rep.excluidos} SKU no entran al reporte</p>
-                  <p className="text-[11px] text-stone-500">
-                    Sin existencia libre. {rep.sinNada} no tienen nada en almacén —material por comprar— y
-                    los otros {rep.excluidos - rep.sinNada} sí tienen algo pero deben más: o falta comprar, o salió a obra y nadie lo descargó.
-                  </p>
-                </div>
-                <button onClick={bajarNoEntran} className="px-2.5 py-1 text-[11px] font-medium rounded border border-stone-300 bg-white hover:bg-stone-50 shrink-0">⬇ CSV de trabajo</button>
-              </div>
-              <div className="max-h-72 overflow-auto">
-                <table className="w-full text-[11px] font-mono min-w-[620px]">
-                  <thead className="sticky top-0 bg-white shadow-[0_1px_0_#e7e5e4]">
-                    <tr className="text-stone-500 text-left">
-                      <th className="px-3 py-1.5">SKU</th><th>Descripción</th>
-                      <th className="text-right">A mano</th><th className="text-right">Comprom.</th>
-                      <th className="text-right pr-3">Falta</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rep.fuera.map((f) => (
-                      <tr key={f.sku} className="border-t border-stone-100" title={f.ovs}>
-                        <td className="px-3 py-1 font-semibold">{f.sku}</td>
-                        <td className="font-sans text-stone-600">{String(f.desc).slice(0, 44)}</td>
-                        <td className="text-right">{f.aMano}</td>
-                        <td className="text-right">{f.comprometido}</td>
-                        <td className="text-right pr-3 text-red-700 font-bold">−{f.falta}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p className="px-3 py-1.5 text-[10px] text-stone-400 border-t border-stone-100">
-                Pasa el cursor sobre un renglón para ver qué obras lo comprometen. Nada de esto va en el CSV del contador.
-              </p>
-            </div>
+          {(selTot.forzados > 0 || selTot.quitados > 0) && (
+            <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
+              Este reporte ya no es el criterio automático: lo moviste a mano. El CSV lo dice en su encabezado,
+              para que dentro de tres meses se sepa por qué no cuadra con el cálculo.
+            </p>
           )}
 
-          <p className="text-[11px] text-stone-400 mt-2">
+          {tablaSel(
+            "Entran al reporte",
+            "Tienen existencia libre: lo que hay en almacén alcanza y sobra después de lo comprometido. Desmarca uno para sacarlo.",
+            rep.filas)}
+
+          {tablaSel(
+            "No entran al reporte",
+            `Sin existencia libre. ${rep.sinNada} no tienen nada en almacén —material por comprar— y los otros ${rep.fuera.length - rep.sinNada} sí tienen algo pero deben más. Marca uno para incluirlo con todo lo que hay a mano.`,
+            rep.fuera,
+            <button onClick={bajarNoEntran} className="px-2.5 py-1 text-[11px] font-medium rounded border border-stone-300 bg-white hover:bg-stone-50">⬇ CSV de trabajo</button>)}
+
+          <p className="text-[11px] text-stone-400 mt-3">
             Criterio: existencia física menos lo comprometido en órdenes de venta ({rep.fechaComp}), estén las obras
-            calendarizadas o no. El comprometido se usa para restar; no va en el archivo.
+            calendarizadas o no. Pasa el cursor sobre un renglón para ver qué obras lo comprometen. El comprometido
+            se usa para restar; no va en el archivo del contador.
           </p>
         </div>
       )}
