@@ -5387,8 +5387,28 @@ async function leerAManoFisico(catalogo, onProg) {
 }
 
 // Pasada 2 (1 llamada por SKU, en lotes paralelos): comprometidas y disponible.
+// SOLO EL ALMACEN CENTRAL (18-oct-2026, a peticion de los contadores).
+//
+// Zoho tiene diez almacenes: RMA -lo que se devuelve al proveedor por
+// garantia-, Devolucion, Desecho, Semi-OK, Laboratorio, Coordinacion y dos de
+// importacion. El total global los suma todos. SARK30K: 16 globales contra 7
+// en Central; los otros nueve son garantias por devolver y laboratorio, que ni
+// son vendibles ni son lo que pide el contador.
+//
+// Esta funcion YA pedia get_item por SKU, que es lo unico que trae
+// `warehouses[]`, pero tomaba el global de esa misma respuesta. El Edge
+// Function `inventario-sync` escribe el MISMO blob filtrando Central, asi que
+// el archivo quedaba con dos definiciones y mandaba quien escribiera al final:
+// apretar "Actualizar" en la pantalla le metia al reporte del contador el
+// material de RMA y laboratorio, en silencio.
+const ALMACEN_CENTRAL = "4053294000001024003";
+
 async function completarComprometido(items, orden, onProg) {
-  const skus = orden.filter((s) => items[s]?.itemId && items[s]?.activo !== false);
+  // Se pregunta por los activos Y por los de baja que traigan existencia: un
+  // SKU muerto con piezas en algun almacen sigue siendo dinero, y sin
+  // preguntar no hay forma de saber si esas piezas estan en Central.
+  const skus = orden.filter((s) => items[s]?.itemId && (items[s]?.activo !== false || (+items[s]?.aMano || 0) > 0));
+  const preguntados = new Set(skus);
   let hechos = 0;
   for (let i = 0; i < skus.length; i += LOTE_GET_ITEM) {
     const lote = skus.slice(i, i + LOTE_GET_ITEM);
@@ -5396,17 +5416,32 @@ async function completarComprometido(items, orden, onProg) {
       try {
         const d = await window.zohoBooks({ action: "get_item", params: { item_id: items[sku].itemId } });
         const it = d.item || {};
-        const comp = Math.max(0, +it.actual_committed_stock || 0);
+        const alm = (it.warehouses || []).find((w) => String(w.warehouse_id) === ALMACEN_CENTRAL);
+        // El "a mano" se CORRIGE aqui: el de la pasada barata es el global,
+        // porque el listado de Zoho no desglosa por almacen.
+        if (alm) items[sku].aMano = Math.max(0, +alm.warehouse_actual_available_stock || 0);
+        const comp = alm
+          ? Math.max(0, +alm.warehouse_actual_committed_stock || 0)
+          : Math.max(0, +it.actual_committed_stock || 0);
         items[sku].comprometido = comp;
         // OJO: el disponible PUEDE SER NEGATIVO (comprometido de mas). No envolver
         // en Math.max(0, ...): ese negativo es justo la senal util de la pantalla.
-        items[sku].disponible = it.actual_available_for_sale_stock != null
-          ? +it.actual_available_for_sale_stock
+        items[sku].disponible = alm && alm.warehouse_actual_available_for_sale_stock != null
+          ? +alm.warehouse_actual_available_for_sale_stock
           : (items[sku].aMano - comp);
       } catch { /* si un SKU falla queda en null y la tabla muestra "-" */ }
     }));
     hechos += lote.length;
     onProg?.(`Comprometidas: ${hechos}/${skus.length}`, { ...items });
+  }
+  // A lo que no se pregunto no se le conoce el Central, y el global NO sirve de
+  // sustituto: es justo lo que inflaba el reporte. Se deja en cero, que es lo
+  // unico afirmable de un SKU que ya venia sin existencia global.
+  for (const sku of Object.keys(items)) {
+    if (preguntados.has(sku)) continue;
+    items[sku].aMano = 0;
+    items[sku].comprometido = 0;
+    items[sku].disponible = 0;
   }
   return items;
 }
@@ -5721,7 +5756,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     const csv = "\uFEFF" + [
       "Reporte de inventario - Innovacion Solar",
       `Corte,${rep.fechaFisico}`,
-      `Criterio,"Existencia fisica propia: lo que esta en almacen y NO esta comprometido a ninguna obra. El material apartado a un proyecto no se incluye."`,
+      `Criterio,"Existencia fisica del ALMACEN CENTRAL que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
       ...(selTot.forzados || selTot.quitados
         ? [`Ajustes manuales,"${selTot.forzados} SKU incluidos a mano pese a estar comprometidos; ${selTot.quitados} quitados del criterio automatico."`]
         : []),
@@ -5813,7 +5848,8 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           </div>
         </div>
         <p className="text-[10px] text-emerald-100/80 mt-2">
-          <b>A mano</b>: existencias físicas de todos los almacenes, como las reporta Zoho.
+          <b>A mano</b>: existencias físicas del <b>Almacén Central</b>, como las reporta Zoho. No incluye RMA,
+          devolución, desecho, Semi-OK, laboratorio, coordinación ni los almacenes de importación.
           <b> Inventario contable</b>: lo que queda al restar todo lo comprometido en obras activas, estén
           calendarizadas o no{contable ? ` (órdenes al ${contable.fecha})` : ""} — es la cifra que va al contador,
           con cada SKU pisado en cero.
@@ -5872,7 +5908,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
 
       <div>
         <h2 className="text-sm font-semibold">Inventario</h2>
-        <p className="text-xs text-stone-500">A mano · comprometidas · disponible para venta, de Zoho.</p>
+        <p className="text-xs text-stone-500">Almacén Central · a mano, comprometidas y disponible para venta, de Zoho.</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
