@@ -6555,11 +6555,21 @@ function MrpCompras({ setAviso }) {
 
   const mesesVisibles = meses.filter((m) => !mesesOff.has(m));
 
+  // EL CANDADO DE LA LISTA DE EXCLUIDOS.
+  // Un excluido que una obra pide, o que está apartado en una orden de venta,
+  // SALE de todos modos y marcado. La lista es para quitar ruido, no para tapar
+  // material que alguien necesita: APL00038 estaba dado de baja, nadie lo veía,
+  // y tenía 393 piezas apartadas en 16 obras. Esconderlo habría dejado a esas
+  // 16 sin arandela y sin aviso.
+  const reclamado = (f) => f.pideObra > 0 || f.porSurtir > 0;
+  const esFuera = (f) => fuera.has(f.sku) && !reclamado(f);
+  const colado = (f) => fuera.has(f.sku) && reclamado(f);
+
   const q = busca.trim().toUpperCase();
   const vistas = useMemo(() => filas.filter((f) => {
     // Los que compras sacó del MRP no se mezclan nunca con los buenos: o estás
     // viendo el MRP, o estás revisando la lista de excluidos.
-    if (fuera.has(f.sku) !== verFuera) return false;
+    if (esFuera(f) !== verFuera) return false;
     if (q && !(f.sku.includes(q) || f.desc.toUpperCase().includes(q) || f.prov.toUpperCase().includes(q))) return false;
     if (soloFalta && f.stockFinal >= 0) return false;
     if (soloQty && !(qty[f.sku] > 0)) return false;
@@ -6572,7 +6582,11 @@ function MrpCompras({ setAviso }) {
 
   // La lista de excluidos puede traer SKU que ya no están en el catálogo; lo
   // que cuenta aquí es cuántos de los de HOY está escondiendo.
-  const nFuera = useMemo(() => filas.filter((f) => fuera.has(f.sku)).length, [filas, fuera]);
+  const nFuera = useMemo(() => filas.filter((f) => fuera.has(f.sku) && !(f.pideObra > 0 || f.porSurtir > 0)).length, [filas, fuera]);
+  // Los que están en la lista pero alguna obra los reclama. Si esto no es cero,
+  // hay SKU muerto vivo en las órdenes de venta y hay que corregir el SKU, no
+  // esconderlo.
+  const nColados = useMemo(() => filas.filter((f) => fuera.has(f.sku) && (f.pideObra > 0 || f.porSurtir > 0)).length, [filas, fuera]);
   const universo = verFuera ? nFuera : filas.length - nFuera;
   const escondidos = universo - vistas.length;
   const totQty = useMemo(() => vistas.reduce((a, f) => a + (+qty[f.sku] || 0), 0), [vistas, qty]);
@@ -6867,6 +6881,13 @@ function MrpCompras({ setAviso }) {
           Falta alguna sincronía de la madrugada: {[!cat && "catálogo", !inv && "inventario", !comp && "comprometido"].filter(Boolean).join(", ")}. Esas columnas salen en cero.
         </p>
       )}
+      {nColados > 0 && !verFuera && (
+        <p className="text-xs text-amber-900 bg-amber-100 border border-amber-400 rounded p-2">
+          <b>{mx0(nColados)}</b> artículo(s) de la lista «fuera del MRP» siguen saliendo porque una obra los pide o están
+          apartados en una orden de venta. Van marcados <b className="text-amber-700">FUERA</b> en el renglón. No se esconden
+          a propósito: si el SKU está dado de baja, hay que cambiarlo en la orden de venta, no taparlo.
+        </p>
+      )}
       {nDiscrepan > 0 && (
         <button onClick={() => setSoloDiscrepa(!soloDiscrepa)}
           className={`w-full text-left text-xs rounded p-2 border ${soloDiscrepa ? "bg-amber-100 border-amber-500 text-amber-900" : "bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100"}`}>
@@ -7020,6 +7041,12 @@ function MrpCompras({ setAviso }) {
                 <td className="px-2 whitespace-nowrap">
                   <span className={`font-mono font-semibold ${f.activo ? "" : "text-stone-400 line-through"}`}
                     title={f.activo ? "" : "Dado de baja en Zoho"}>{f.sku}</span>
+                  {colado(f) && (
+                    <span className="ml-1 px-1 rounded bg-amber-200 text-amber-900 text-[8px] font-bold align-middle"
+                      title="Está en la lista de fuera del MRP, pero una obra lo pide o está apartado en una orden de venta. Por eso sigue saliendo.">
+                      FUERA
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 text-stone-600 max-w-xs truncate" title={f.desc}>{f.desc}</td>
                 <td className="px-2 text-stone-500 max-w-[10rem] truncate" title={f.prov}>{f.prov}</td>
