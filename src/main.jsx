@@ -89,6 +89,23 @@ window.soAjuste = async (payload) => {
   return data
 }
 
+// Botón "Actualizar de Zoho" del MRP. Las sincronías de madrugada siguen
+// siendo las que mandan; esto es para cuando compras necesita ver AHORA un SKU
+// recién creado o una orden de venta levantada hace un rato.
+//
+// La lista blanca está aquí y no en la pantalla a propósito: desde el navegador
+// solo se puede pedir una de estas tres, y ninguna escribe en Zoho — las tres
+// leen y dejan su blob en adm_kv. `inventario-sync` NO está: son ~2,300
+// llamadas a Zoho y el tope diario lo comparten esta app, IS-PMT y los crons.
+const SYNCS = ['catalogo-sync', 'comprometido-sync', 'oc-sync']
+window.sincronizar = async (nombre) => {
+  if (!SYNCS.includes(nombre)) throw new Error(`Sincronía no permitida: ${nombre}`)
+  const { data, error } = await supabase.functions.invoke(nombre, { body: {} })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false && data.error) throw new Error(data.error)
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))

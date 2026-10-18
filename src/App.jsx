@@ -5862,7 +5862,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
               operativo -sirve para surtir-, esta es la unica cifra que sale de
               la empresa. */}
           <div className="rounded-lg p-2.5 bg-white/20 ring-1 ring-white/40 col-span-2 lg:col-span-1">
-            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Inventario contable</p>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-100">Inventario real para contadores</p>
             <p className="text-sm font-bold font-mono leading-tight">{contable == null ? "—" : `$${mx0(contable.valor)}`}</p>
             <p className="text-[10px] text-emerald-100/90">
               {contable == null ? "falta el comprometido por orden" : `${contable.skus} SKU · ${mx0(contable.piezas)} pzas`}
@@ -5877,7 +5877,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         <p className="text-[10px] text-emerald-100/80 mt-2">
           <b>A mano</b>: existencias físicas del <b>Almacén Central</b>, como las reporta Zoho. No incluye RMA,
           devolución, desecho, Semi-OK, laboratorio, coordinación ni los almacenes de importación.
-          <b> Inventario contable</b>: lo que queda al restar todo lo comprometido en obras activas, estén
+          <b> Inventario real para contadores</b>: lo que queda al restar todo lo comprometido en obras activas, estén
           calendarizadas o no{contable ? ` (órdenes al ${contable.fecha})` : ""} — es la cifra que va al contador,
           con cada SKU pisado en cero.
         </p>
@@ -6291,6 +6291,13 @@ const mesClave = (f) => String(f || "").slice(0, 7);
 const mesTitulo = (k) => (k === "SIN" ? "SIN FECHA" : `${MESES_ES[+k.slice(5, 7) - 1]} ${k.slice(2, 4)}`);
 const mesAhora = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
 const QTY_KEY = "iso3-mrp-qty";
+// Los SKU que compras sacó del MRP a mano: servicios, viáticos, consumibles de
+// oficina, artículos dados de baja. No son material de obra y ensuciaban los
+// ~2,300 renglones. Vive en la base, compartido: si Jesús saca uno, lo ve todo
+// el equipo. Se guarda la lista de los EXCLUIDOS y no la de los buenos, para
+// que un SKU nuevo entre al MRP por omisión — un artículo de más molesta; uno
+// que no se ve, para la obra.
+const FUERA_KEY = "iso3-mrp-fuera";
 // Los meses que el equipo dejó prendidos. Se guarda la lista de los PRENDIDOS,
 // no la de los apagados: así un mes nuevo que entra al horizonte arranca
 // apagado en vez de aparecer solo y ensuciar la vista.
@@ -6319,21 +6326,32 @@ function MrpCompras({ setAviso }) {
   const [mesesGuardados, setMesesGuardados] = useState(null);
   const [ocultaBaja, setOcultaBaja] = useState(false);
   const [sel, setSel] = useState(() => new Set());
+  const [fuera, setFuera] = useState(() => new Set());   // SKU que no son material de obra
+  const [verFuera, setVerFuera] = useState(false);       // ver JUSTO esos, para revisarlos
+  const [sincro, setSincro] = useState(null);            // qué se está trayendo de Zoho
   const [detalle, setDetalle] = useState(null);   // sku cuyo desglose de obra está abierto
   const [scroll, setScroll] = useState(0);
   const cajaRef = useRef(null);
   const yaInicie = useRef(false);
 
+  // Lee los blobs que dejaron las sincronías. Se usa al abrir la pantalla y
+  // otra vez cuando alguien le da a Actualizar: el botón no sirve de nada si
+  // trae datos nuevos a Supabase y la pantalla sigue pintando los viejos.
+  const cargarBlobs = async () => {
+    const leer = async (k) => { const r = await window.storage?.get(k); return r?.value ? JSON.parse(r.value) : null; };
+    const [c, i, o, cm, blobQty, bf] = await Promise.all([
+      leer("iso3-catalogo-zoho"), leer("iso3-inventario-fisico"),
+      leer("iso3-mrp-oc-cache-v2"), leer("iso3-comprometido-ov"), leer(QTY_KEY), leer(FUERA_KEY),
+    ]);
+    setCat(c); setInv(i); setOc(o); setComp(cm); setQty(blobQty?.qty || {});
+    setFuera(new Set((bf?.skus || []).map((x) => String(x).trim().toUpperCase())));
+    try { const mg = await leer(MESES_KEY); if (Array.isArray(mg?.on)) setMesesGuardados(mg.on); } catch {}
+  };
+
   useEffect(() => {
     (async () => {
       try {
-        const leer = async (k) => { const r = await window.storage?.get(k); return r?.value ? JSON.parse(r.value) : null; };
-        const [c, i, o, cm, blobQty] = await Promise.all([
-          leer("iso3-catalogo-zoho"), leer("iso3-inventario-fisico"),
-          leer("iso3-mrp-oc-cache-v2"), leer("iso3-comprometido-ov"), leer(QTY_KEY),
-        ]);
-        setCat(c); setInv(i); setOc(o); setComp(cm); setQty(blobQty?.qty || {});
-        try { const mg = await leer(MESES_KEY); if (Array.isArray(mg?.on)) setMesesGuardados(mg.on); } catch {}
+        await cargarBlobs();
         // IS-PMT: fechas de instalación y qué material pide cada obra. Si el feed
         // no contesta, la tabla sigue sirviendo — los meses caen en SIN FECHA.
         try {
@@ -6365,6 +6383,39 @@ function MrpCompras({ setAviso }) {
       finally { setCargando(false); }
     })();
   }, []);
+
+  // Sacar o regresar SKU del MRP. Se escribe la lista completa y no un diff:
+  // es un blob compartido y lo que no puede pasar es que quede a medias.
+  const cambiarFuera = async (skus, sacar) => {
+    const n = new Set(fuera);
+    for (const x of skus) { if (sacar) n.add(x); else n.delete(x); }
+    setFuera(n); setSel(new Set());
+    try {
+      await window.storage?.set(FUERA_KEY, JSON.stringify({ fecha: hoy(), skus: [...n].sort() }));
+      setAviso({ t: "ok", m: `${mx0(skus.length)} SKU ${sacar ? "fuera del" : "de regreso al"} MRP. Son ${mx0(n.size)} en total.` });
+    } catch (e) { setAviso({ t: "err", m: `No se pudo guardar la lista: ${e?.message || e}` }); }
+  };
+
+  // Traer de Zoho AHORA. Las sincronías de madrugada siguen siendo las que
+  // mandan; esto existe porque un SKU creado a media mañana, o una orden de
+  // venta levantada hace un rato, no se ven hasta el día siguiente.
+  // El inventario físico NO entra: son ~2,300 llamadas a Zoho, pega contra el
+  // tope diario de la organización y no se puede pedir a botonazos.
+  const actualizar = async () => {
+    if (typeof window.sincronizar !== "function") {
+      setAviso({ t: "err", m: "Esta versión de la app todavía no trae el botón. Recarga la página." }); return;
+    }
+    const pasos = [["catalogo-sync", "catálogo"], ["comprometido-sync", "apartados"], ["oc-sync", "órdenes de compra"]];
+    for (const [fn, que] of pasos) {
+      setSincro(que);
+      try { await window.sincronizar(fn); }
+      catch (e) { setSincro(null); setAviso({ t: "err", m: `Falló la sincronía de ${que}: ${e?.message || e}` }); return; }
+    }
+    setSincro("leyendo");
+    try { await cargarBlobs(); } catch (e) { setAviso({ t: "err", m: `Se trajo de Zoho pero no se pudo releer: ${e?.message || e}` }); }
+    setSincro(null);
+    setAviso({ t: "ok", m: "Catálogo, apartados y órdenes de compra al día. El inventario físico sigue siendo el de la madrugada." });
+  };
 
   const guardarQty = (sku, v) => {
     setQty((prev) => {
@@ -6404,6 +6455,11 @@ function MrpCompras({ setAviso }) {
       const eta = lotes.find((l) => l.eta)?.eta || null;
       const nuestroSinTransito = stock - porSurtir;
       const obras = pmt[sku] || [];
+      // Lo que las obras piden y todavía no se les entrega, según la lista de
+      // materiales de IS-PMT. NO es lo mismo que POR SURTIR, que es lo apartado
+      // en la orden de venta de Zoho: son dos fuentes distintas y donde no
+      // coinciden está el material que va a faltar.
+      const pideObra = obras.reduce((a, o) => a + o.falta, 0);
 
       // El desglose por obra, juntando las dos fuentes por número de OV:
       //   · lo APARTADO en la orden de venta de Zoho (comprometido-ov)
@@ -6451,7 +6507,7 @@ function MrpCompras({ setAviso }) {
         stockFinal: backOrder + stock - porSurtir,
         dispZoho: dz ?? null,
         discrepa: dz != null && Math.abs(+dz - nuestroSinTransito) > 0.01,
-        obras, lineas, pideObra: obras.reduce((a, o) => a + o.falta, 0),
+        obras, lineas, pideObra, dif: pideObra - porSurtir,
         lead, leadPorque: porqueLead(paraLead), pedirAntes,
         obraProxima: obraProxima ? obraProxima.proyecto : null,
         instalaProxima: obraProxima ? obraProxima.fecha : null,
@@ -6501,6 +6557,9 @@ function MrpCompras({ setAviso }) {
 
   const q = busca.trim().toUpperCase();
   const vistas = useMemo(() => filas.filter((f) => {
+    // Los que compras sacó del MRP no se mezclan nunca con los buenos: o estás
+    // viendo el MRP, o estás revisando la lista de excluidos.
+    if (fuera.has(f.sku) !== verFuera) return false;
     if (q && !(f.sku.includes(q) || f.desc.toUpperCase().includes(q) || f.prov.toUpperCase().includes(q))) return false;
     if (soloFalta && f.stockFinal >= 0) return false;
     if (soloQty && !(qty[f.sku] > 0)) return false;
@@ -6509,9 +6568,13 @@ function MrpCompras({ setAviso }) {
     if (soloDiscrepa && !f.discrepa) return false;
     if (ocultaBaja && !f.activo) return false;
     return true;
-  }), [filas, q, soloFalta, soloQty, obraFiltro, soloDiscrepa, ocultaBaja, qty]);
+  }), [filas, q, soloFalta, soloQty, obraFiltro, soloDiscrepa, ocultaBaja, qty, fuera, verFuera]);
 
-  const escondidos = filas.length - vistas.length;
+  // La lista de excluidos puede traer SKU que ya no están en el catálogo; lo
+  // que cuenta aquí es cuántos de los de HOY está escondiendo.
+  const nFuera = useMemo(() => filas.filter((f) => fuera.has(f.sku)).length, [filas, fuera]);
+  const universo = verFuera ? nFuera : filas.length - nFuera;
+  const escondidos = universo - vistas.length;
   const totQty = useMemo(() => vistas.reduce((a, f) => a + (+qty[f.sku] || 0), 0), [vistas, qty]);
   const nDiscrepan = useMemo(() => filas.filter((f) => f.discrepa).length, [filas]);
   // Vencido = la fecha límite para pedirlo ya pasó y la obra lo sigue
@@ -6545,9 +6608,22 @@ function MrpCompras({ setAviso }) {
     a.download = nombre; a.click();
   };
 
+  // PIDE OBRA va pegado a POR SURTIR, con la diferencia al lado: separados por
+  // ocho columnas nadie los compara, y la comparación es el punto.
+  //
+  // OTROS MESES existe porque los meses apagados NO salen en el archivo, y sin
+  // esa columna el renglón no cuadra: POR SURTIR decía 272 y los meses sumaban
+  // 115 sin que nada explicara el hueco. Con ella, POR SURTIR = suma de los
+  // meses + otros meses, siempre.
   const exportar = () => bajar(`MRP_${hoy()}.csv`,
-    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "PEDIR ANTES DE", "DIAS DE ENTREGA", "DISPONIBLE SEGUN ZOHO", "PIDE OBRA", ...mesesVisibles.map(mesTitulo)],
-    vistas.map((f) => [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.stock, f.stockFinal, qty[f.sku] ?? "", f.pedirAntes || "", f.lead, f.dispZoho ?? "", f.pideObra || "", ...mesesVisibles.map((m) => f.porMes[m] || 0)]));
+    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "PIDE OBRA", "DIF", "STOCK AL DIA", "STOCK FINAL", "QTY", "PEDIR ANTES DE", "DIAS DE ENTREGA", "DISPONIBLE SEGUN ZOHO",
+     ...mesesVisibles.map((m) => `${mesTitulo(m)} (APARTADO)`), "OTROS MESES"],
+    vistas.map((f) => {
+      const enVista = mesesVisibles.reduce((a, m) => a + (f.porMes[m] || 0), 0);
+      return [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.pideObra || "", f.dif || "", f.stock, f.stockFinal,
+        qty[f.sku] ?? "", f.pedirAntes || "", f.lead, f.dispZoho ?? "",
+        ...mesesVisibles.map((m) => f.porMes[m] || 0), f.porSurtir - enVista];
+    }));
 
   // Orden de compra: solo lo marcado, agrupado por proveedor. La cantidad es la
   // de QTY; si no la capturó, el faltante. Nunca se inventa un número cuando no
@@ -6777,10 +6853,11 @@ function MrpCompras({ setAviso }) {
             <p><b className="text-white">STOCK AL DÍA</b> — existencia física en Almacén Central según Zoho, sin descontar apartados.</p>
             <p><b className="text-white">STOCK FINAL</b> — back order + stock al día − por surtir. En rojo cuando da negativo: eso es lo que falta comprar.</p>
             <p><b className="text-white">QTY</b> — la cantidad que tú decides pedir. Se escribe a mano, se guarda y alimenta la orden de compra.</p>
-            <p><b className="text-white">Columnas por mes</b> — el mismo material apartado, repartido por la fecha de instalación que trae el calendario de IS-PMT. Los meses se prenden y apagan; lo que no está calendarizado cae en «sin fecha».</p>
+            <p><b className="text-white">PIDE OBRA y DIF</b> — lo que las obras piden en IS-PMT menos lo entregado, y su diferencia contra POR SURTIR. Son dos fuentes distintas y no tienen por qué coincidir: DIF en rojo es material que la obra pide y que nadie apartó en la orden de venta.</p>
+            <p><b className="text-white">Columnas por mes</b> — el mismo material <b>apartado</b> (POR SURTIR, no PIDE OBRA), repartido por la fecha de instalación que trae el calendario de IS-PMT. Los meses se prenden y apagan; lo que no está calendarizado cae en «sin fecha».</p>
             <p className="sm:col-span-2"><b className="text-white">Recuadro morado</b> — IS-PMT lo pide para una obra: continuo si la obra ya tiene fecha, punteado si aún no está calendarizada.
               Clic en cualquier renglón abre el desglose por obra, con lo apartado en Zoho al lado de lo que pide la obra; donde no coinciden está el material que va a faltar.</p>
-            <p className="sm:col-span-2 text-teal-200">Todo se actualiza solo de madrugada: catálogo 5:00, órdenes de compra 5:10, apartados 5:15, calendario de IS-PMT 5:30, inventario 5:40. Nada se captura a mano.</p>
+            <p className="sm:col-span-2 text-teal-200">Todo se actualiza solo de madrugada: catálogo 5:00, órdenes de compra 5:10, apartados 5:15, calendario de IS-PMT 5:30, inventario 5:40. Nada se captura a mano. <b className="text-white">Actualizar de Zoho</b> trae catálogo, apartados y órdenes de compra en el momento — para un SKU recién creado o una orden levantada hace un rato. El inventario físico no entra ahí: ése solo corre de madrugada.</p>
           </div>
         </details>
       </div>
@@ -6815,11 +6892,25 @@ function MrpCompras({ setAviso }) {
           ))}
         </span>
         {chip(ocultaBaja, setOcultaBaja, "Ocultar dados de baja")}
+        {(nFuera > 0 || verFuera) && (
+          <button onClick={() => { setVerFuera(!verFuera); setSel(new Set()); }}
+            title="Artículos que no son material de obra: servicios, viáticos, consumibles, dados de baja"
+            className={`px-2 py-1 text-[11px] font-medium rounded border whitespace-nowrap ${
+              verFuera ? "bg-amber-600 text-white border-amber-600" : "border-amber-400 text-amber-700 hover:bg-amber-50"}`}>
+            {verFuera ? "← Volver al MRP" : `Fuera del MRP ${mx0(nFuera)}`}
+          </button>
+        )}
         {nDiscrepan > 0 && chip(soloDiscrepa, setSoloDiscrepa, "Solo los que no cuadran", nDiscrepan)}
         <span className="text-xs text-stone-500">
-          {mx0(vistas.length)} de {mx0(filas.length)} SKU
+          {mx0(vistas.length)} de {mx0(universo)} SKU
           {escondidos > 0 && <span className="text-amber-700"> · {mx0(escondidos)} escondidos por filtros</span>}
         </span>
+        <button onClick={actualizar} disabled={!!sincro}
+          title="Trae de Zoho el catálogo, lo apartado en órdenes de venta y las órdenes de compra. El inventario físico no: ése corre de madrugada."
+          className={`px-3 py-1.5 text-xs font-medium rounded border ${sincro
+            ? "border-stone-200 text-stone-400 cursor-wait" : "bg-teal-700 text-white border-teal-700 hover:bg-teal-800"}`}>
+          {sincro ? `Trayendo ${sincro}…` : "Actualizar de Zoho"}
+        </button>
         <button onClick={exportar} className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50">Exportar tabla</button>
         <button onClick={exportarSemillaProv} title="A quién se le ha comprado cada SKU, para llenar el proveedor en Zoho de un jalón"
           className="px-2.5 py-1.5 border border-stone-300 text-stone-500 text-[11px] rounded hover:bg-stone-50">Semilla de proveedores</button>
@@ -6868,6 +6959,11 @@ function MrpCompras({ setAviso }) {
             title="Las mismas partidas en CSV, con las columnas de precio vacías">
             · CSV para llenar
           </button>
+          <button onClick={() => cambiarFuera(seleccionados.map((f) => f.sku), !verFuera)}
+            title={verFuera ? "Vuelven a contar como material de obra" : "Dejan de salir en el MRP: servicios, viáticos, consumibles"}
+            className="px-3 py-1.5 border border-amber-500 text-amber-800 text-xs font-medium rounded hover:bg-amber-50">
+            {verFuera ? "Regresar al MRP" : "Sacar del MRP"}
+          </button>
           <button onClick={() => setSel(new Set())} className="text-[11px] text-teal-700 hover:underline">quitar marcas</button>
         </div>
       )}
@@ -6883,7 +6979,9 @@ function MrpCompras({ setAviso }) {
               <th className="text-left px-2 py-2">DESCRIPCION</th>
               <th className="text-left px-2 py-2">PROVEEDOR</th>
               <th className="text-right px-2 py-2">BACK ORDER</th>
-              <th className="text-right px-2 py-2">POR SURTIR</th>
+              <th className="text-right px-2 py-2" title="Apartado en órdenes de venta abiertas de Zoho. Es lo que reparten las columnas por mes.">POR SURTIR</th>
+              <th className="text-right px-2 py-2 bg-purple-50 text-purple-800" title="Lo que las obras piden en su lista de materiales de IS-PMT, menos lo ya entregado. Otra fuente: NO tiene por qué coincidir con POR SURTIR.">PIDE OBRA</th>
+              <th className="text-right px-2 py-2 bg-purple-50 text-purple-800" title="PIDE OBRA − POR SURTIR. En rojo: la obra lo pide y nadie lo apartó en la orden de venta — ése es el material que va a faltar.">DIF</th>
               <th className="text-right px-2 py-2">STOCK AL DIA</th>
               <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
               <th className="text-right px-2 py-2">QTY</th>
@@ -6895,6 +6993,8 @@ function MrpCompras({ setAviso }) {
               <td className="px-2 py-1.5"></td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("backOrder"))}</td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("porSurtir"))}</td>
+              <td className="px-2 py-1.5 text-right font-mono bg-purple-50 text-purple-900">{mx0(tot("pideObra"))}</td>
+              <td className="px-2 py-1.5 text-right font-mono bg-purple-50 text-purple-900">{mx0(tot("dif"))}</td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
               <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
               <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
@@ -6903,7 +7003,7 @@ function MrpCompras({ setAviso }) {
             </tr>
           </thead>
           <tbody>
-            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
+            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={13 + mesesVisibles.length} /></tr>}
             {enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
@@ -6931,6 +7031,14 @@ function MrpCompras({ setAviso }) {
                   {f.eta && <span className="block text-[9px] text-stone-400 font-normal">{f.eta.slice(5)}</span>}
                 </td>
                 <td className="px-2 text-right font-mono">{f.porSurtir || ""}</td>
+                <td className="px-2 text-right font-mono bg-purple-50/40">{f.pideObra || ""}</td>
+                {/* La diferencia solo es alarma cuando la obra pide MÁS de lo
+                    apartado: eso falta y POR SURTIR no lo ve. Al revés es
+                    material retenido, que molesta pero no para una obra. */}
+                <td className={`px-2 text-right font-mono bg-purple-50/40 ${f.dif > 0 ? "text-red-600 font-semibold" : "text-stone-400"}`}
+                  title={f.dif > 0 ? `La obra pide ${f.dif} más de lo apartado en la orden de venta` : (f.dif < 0 ? `Hay ${-f.dif} apartadas que ninguna obra pide` : "")}>
+                  {f.dif || ""}
+                </td>
                 <td className="px-2 text-right font-mono">{f.stock || ""}</td>
                 <td className={`px-2 text-right font-mono font-semibold bg-stone-50 ${f.stockFinal < 0 ? "text-red-600" : ""}`}>
                   {f.discrepa && <span className="text-amber-600 mr-1" title={`Zoho reporta ${f.dispZoho} disponible; nosotros ${f.stock - f.porSurtir}. Sin contar el back order.`}>▲</span>}
@@ -6955,7 +7063,7 @@ function MrpCompras({ setAviso }) {
               </tr>
               {detalle === f.sku && (
                 <tr style={{ outline: "2px solid #7e22ce", outlineOffset: "-2px" }} className="bg-purple-50">
-                  <td colSpan={11 + mesesVisibles.length} className="px-3 py-2">
+                  <td colSpan={13 + mesesVisibles.length} className="px-3 py-2">
                     {f.lineas.length === 0 ? (
                       <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta ni lo pide ninguna obra en IS-PMT.</p>
                     ) : (
@@ -6997,7 +7105,7 @@ function MrpCompras({ setAviso }) {
               )}
               </Fragment>
             ))}
-            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
+            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={13 + mesesVisibles.length} /></tr>}
           </tbody>
         </table>
       </div>
