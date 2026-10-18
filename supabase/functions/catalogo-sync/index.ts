@@ -68,6 +68,17 @@ Deno.serve(async (req) => {
           desc: it.name || sku,
           activo,
           rate: +it.purchase_rate || 0,
+          // PRECIO DE VENTA (18-oct-2026). `rate` es el campo de venta de Zoho.
+          //
+          // Medido sobre 200 articulos: 198 traen `rate` identico a
+          // `purchase_rate`, porque aqui se captura el mismo numero en los dos.
+          // O sea que hoy esta columna casi siempre va a repetir el de compra.
+          // Se guarda igual: el costo DE VERDAD vive en `iso3-catalogo`
+          // (promedio ponderado de Importaciones), asi que teniendo los dos se
+          // puede ver el margen por SKU y, de paso, cachar en que articulos
+          // alguien si separo compra de venta -BRC03812: 60 de venta contra 30
+          // de compra- y en cuales no.
+          venta: +it.rate || 0,
         };
         leidos++;
       }

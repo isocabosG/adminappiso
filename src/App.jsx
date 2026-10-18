@@ -5543,12 +5543,22 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // consulto cuenta como cero apartado. `iso3-comprometido-ov` lo arma el cron
   // de una vez, con TODAS las ordenes vivas, calendarizadas o no.
   const [compOv, setCompOv] = useState(null);
+  // El precio de VENTA sale de `rate` de Zoho, que es su campo de venta.
+  // Medido el 18-oct sobre los 2,326 SKU: solo 5 traen venta distinta a compra,
+  // porque aqui se captura el mismo numero en los dos campos. La columna sirve
+  // igual, pero contra el COSTO del catalogo de Importaciones -que si es el de
+  // adquisicion-: ahi la diferencia es el margen de verdad.
+  const [catZoho, setCatZoho] = useState(null);
   useEffect(() => {
     (async () => {
       try {
         const r = await window.storage?.get("iso3-comprometido-ov");
         if (r?.value) setCompOv(JSON.parse(r.value));
       } catch { /* sin esto la tarjeta contable se queda en "—", no miente */ }
+      try {
+        const r = await window.storage?.get("iso3-catalogo-zoho");
+        if (r?.value) setCatZoho(JSON.parse(r.value));
+      } catch { /* sin venta la columna sale en "—", no en cero */ }
     })();
   }, []);
 
@@ -5623,6 +5633,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         return;
       }
       const porSku = comp.porSku || {};
+      const ventaDe = (sku) => {
+        const v = +catZoho?.items?.[sku]?.venta;
+        return isFinite(v) && v > 0 ? v : null;   // null, no cero: "no se sabe" no es "vale cero"
+      };
       const filas = [];
       const fuera = [];
       for (const [sku, a] of Object.entries(fis)) {
@@ -5636,14 +5650,14 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         // uno a mano es decir "esto en realidad si es nuestro", y entonces
         // cuenta todo lo que hay fisicamente, no un sobrante que es negativo.
         if (libre > 0) {
-          filas.push({ sku, desc: a?.desc || sku, aMano, comprometido, costo, libre, cant: libre, valor: libre * costo });
+          filas.push({ sku, desc: a?.desc || sku, aMano, comprometido, costo, venta: ventaDe(sku), libre, cant: libre, valor: libre * costo });
         } else if (comprometido > 0 || aMano !== 0) {
           // No entra al reporte del contador, pero SI se ve en pantalla: 300 y
           // pico de SKU que desaparecen sin aviso es lo que despues nadie puede
           // explicar. Se guarda con que obra lo aparta, que es lo unico que
           // permite investigarlo.
           fuera.push({
-            sku, desc: a?.desc || sku, aMano, comprometido, costo,
+            sku, desc: a?.desc || sku, aMano, comprometido, costo, venta: ventaDe(sku),
             libre, cant: aMano, valor: aMano * costo,
             falta: comprometido - aMano,
             ovs: ovs.map((o) => `${o.ov}${o.proyecto ? " " + o.proyecto : ""} (${o.cant})`).join(" · "),
@@ -5675,6 +5689,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     skus: seleccion.length,
     piezas: seleccion.reduce((t, f) => t + f.cant, 0),
     valor: seleccion.reduce((t, f) => t + f.cant * f.costo, 0),
+    // A precio de venta. Los SKU sin venta conocida NO se suman como cero: se
+    // cuentan aparte, para que el total no se lea mas chico de lo que es.
+    valorVenta: seleccion.reduce((t, f) => t + (f.venta != null ? f.cant * f.venta : 0), 0),
+    sinVenta: seleccion.filter((f) => f.venta == null).length,
     forzados: rep ? rep.fuera.filter((f) => incluidos.has(f.sku)).length : 0,
     quitados: rep ? rep.filas.filter((f) => !incluidos.has(f.sku)).length : 0,
   };
@@ -5706,7 +5724,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           </div>
         </div>
         <div className="max-h-80 overflow-auto">
-          <table className="w-full text-[11px] font-mono min-w-[700px]">
+          <table className="w-full text-[11px] font-mono min-w-[840px]">
             <thead className="sticky top-0 bg-white shadow-[0_1px_0_#e7e5e4]">
               <tr className="text-stone-500 text-left">
                 <th className="px-3 py-1.5 w-8"></th>
@@ -5714,6 +5732,8 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
                 <th className="text-right">A mano</th>
                 <th className="text-right">Comprom.</th>
                 <th className="text-right">Reporta</th>
+                <th className="text-right">Costo u.</th>
+                <th className="text-right">Venta u.</th>
                 <th className="text-right pr-3">Valor</th>
               </tr>
             </thead>
@@ -5731,6 +5751,8 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
                     <td className="text-right">{mx0(f.aMano)}</td>
                     <td className="text-right">{mx0(f.comprometido)}</td>
                     <td className={`text-right font-bold ${f.libre > 0 ? "" : "text-amber-700"}`}>{mx0(f.cant)}</td>
+                    <td className="text-right text-stone-600">${mx0(f.costo)}</td>
+                    <td className="text-right text-stone-600">{f.venta == null ? "—" : `$${mx0(f.venta)}`}</td>
                     <td className="text-right pr-3">${mx0(f.cant * f.costo)}</td>
                   </tr>
                 );
@@ -5745,11 +5767,13 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const bajarReporte = () => {
     if (!rep) return;
     const r2 = (n) => Math.round((+n || 0) * 100) / 100;
-    const col = ["SKU", "Descripcion", "Cantidad", "Costo unitario", "Valor"];
+    const col = ["SKU", "Descripcion", "Cantidad", "Costo unitario", "Valor al costo", "Precio de venta", "Valor a la venta"];
     const cuerpo = seleccion
       .slice()
       .sort((x, y) => y.cant * y.costo - x.cant * x.costo)
-      .map((f) => [f.sku, f.desc, f.cant, r2(f.costo), r2(f.cant * f.costo)].map(csvCell).join(","));
+      .map((f) => [f.sku, f.desc, f.cant, r2(f.costo), r2(f.cant * f.costo),
+                   f.venta == null ? "" : r2(f.venta),
+                   f.venta == null ? "" : r2(f.cant * f.venta)].map(csvCell).join(","));
     // El criterio va en el archivo: un CSV que llega sin fecha de corte ni
     // definicion obliga al contador a preguntar, y para entonces nadie se
     // acuerda de con que se genero.
@@ -5757,12 +5781,15 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       "Reporte de inventario - Innovacion Solar",
       `Corte,${rep.fechaFisico}`,
       `Criterio,"Existencia fisica del ALMACEN CENTRAL que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
+      `Costo,"Costo de adquisicion del catalogo de Importaciones (promedio ponderado). El precio de venta sale del campo rate de Zoho."`,
       ...(selTot.forzados || selTot.quitados
         ? [`Ajustes manuales,"${selTot.forzados} SKU incluidos a mano pese a estar comprometidos; ${selTot.quitados} quitados del criterio automatico."`]
         : []),
       `SKU,${selTot.skus}`,
       `Piezas,${selTot.piezas}`,
-      `VALOR TOTAL,${r2(selTot.valor)}`,
+      `VALOR TOTAL AL COSTO,${r2(selTot.valor)}`,
+      `Valor a precio de venta,${r2(selTot.valorVenta)}`,
+      ...(selTot.sinVenta ? [`SKU sin precio de venta en Zoho,${selTot.sinVenta}`] : []),
       "",
       col.map(csvCell).join(","),
       ...cuerpo,
@@ -5873,8 +5900,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           <div className="mt-3 rounded-lg p-3 bg-emerald-50 ring-1 ring-emerald-200">
             <p className="text-[10px] uppercase tracking-widest text-emerald-700">Valor del inventario propio</p>
             <p className="text-xl font-bold font-mono text-emerald-800">${mx0(selTot.valor)}</p>
+            <p className="text-sm font-mono text-emerald-900/70">a precio de venta ${mx0(selTot.valorVenta)}</p>
             <p className="text-[11px] text-emerald-800/80 mt-0.5">
               {selTot.skus} SKU · {mx0(selTot.piezas)} piezas
+              {selTot.sinVenta > 0 && ` · ${selTot.sinVenta} sin precio de venta`}
               {selTot.forzados > 0 && ` · ${selTot.forzados} incluidos a mano`}
               {selTot.quitados > 0 && ` · ${selTot.quitados} quitados a mano`}
             </p>
