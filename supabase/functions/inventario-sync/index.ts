@@ -53,7 +53,7 @@ const INTENTOS_MAX = 2;
 // globales: 9 en Central y 6 en RMA — seis inversores apartados para devolver,
 // contados como vendibles. Lo cachó Fran el 26-sep.
 const ALMACEN = Deno.env.get("ZOHO_ALMACEN_ID") || "4053294000001024003";
-const FORMATO = 3;             // sube si cambia la forma del parcial
+const FORMATO = 4;             // sube si cambia la forma del parcial, o si cambia como se valua
 const HUECOS_TOLERADOS = 0.02; // 2% de artículos sin leer y ya no se publica
 
 type Pend = { sku: string; itemId: string; desc: string; activo: boolean; aMano: number; cost: number; dispZoho: number | null; pregunta: boolean; intentos?: number };
@@ -123,6 +123,24 @@ Deno.serve(async (req) => {
 
     // ── Arranque: la lista de artículos, que sí viene paginada y barata ──────
     if (!parcial || parcial.v !== FORMATO || parcial.fecha !== hoyLocal()) {
+      // EL COSTO SALE DEL CATALOGO, NO DE `purchase_rate` (18-oct-2026).
+      //
+      // En Zoho `rate` y `purchase_rate` traen el MISMO numero porque asi se
+      // captura aqui, y en el material importado ese numero es el precio de
+      // VENTA. Valuar con el inflaba el inventario al doble en lo mas caro:
+      // BREHV5KW salia en 29,700 cuando costo 15,512.90; 3P30KLV en 280,800
+      // contra 134,883.15. El catalogo de la app -el de promedio ponderado del
+      // modulo de Importaciones- SI trae el costo de adquisicion, y cuadra
+      // contra la valuacion del contador casi al centavo.
+      //
+      // `purchase_rate` se queda solo como respaldo para un SKU que el catalogo
+      // no conozca; vale mas un costo aproximado que un cero.
+      const catalogo = (await leerBlob("iso3-catalogo")) || {};
+      const costoDe = (sku: string, rate: number) => {
+        const cv = +catalogo?.[sku]?.costoVigente;
+        return isFinite(cv) && cv > 0 ? cv : rate;
+      };
+      let sinCosto = 0;
       const pendientes: Pend[] = [];
       let page = 1, more = true, quietos = 0;
       while (more && page <= 40) {
@@ -152,7 +170,7 @@ Deno.serve(async (req) => {
             desc: it.name || sku,
             activo,
             aMano: Math.max(0, aas),
-            cost: +it.purchase_rate || 0,
+            cost: costoDe(sku, +it.purchase_rate || 0),
             dispZoho: afs,
             pregunta,
           });
@@ -161,11 +179,12 @@ Deno.serve(async (req) => {
         page++;
       }
       if (!pendientes.length) throw new Error("Zoho no devolvió artículos; no se toca el inventario.");
+      sinCosto = pendientes.filter((x) => !(+catalogo?.[x.sku]?.costoVigente > 0)).length;
       // Primero los que hay que preguntar: si la corrida se corta, se cortó en
       // lo que no cuesta llamadas.
       pendientes.sort((a, b) => Number(b.pregunta) - Number(a.pregunta));
       parcial = {
-        v: FORMATO, fecha: hoyLocal(), i: 0, total: pendientes.length, quietos,
+        v: FORMATO, fecha: hoyLocal(), i: 0, total: pendientes.length, quietos, sinCosto,
         porPreguntar: pendientes.filter((p) => p.pregunta).length,
         preguntados: 0, huecos: 0, lista: pendientes, items: {},
       };
