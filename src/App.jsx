@@ -5452,6 +5452,12 @@ async function completarComprometido(items, orden, onProg) {
 /* Buscar un SKU en TODOS los proyectos del feed, estén o no calendarizados.
    A diferencia del resto del MRP, aquí no se filtra por estatus ni por fecha:
    la pregunta es "¿dónde se usa esto?", no "¿qué compro?". */
+// Los SKU que nunca entran al reporte del contador. Se guarda la lista de los
+// APAGADOS y no la de los buenos: un SKU nuevo entra al reporte solo, y de un
+// lado el error es reportar de mas -se corrige- y del otro es declarar menos
+// inventario del que hay, que es el error que no se ve.
+const REPFUERA_KEY = "iso3-inv-reporte-fuera";
+
 function Inventario({ catalogo, saveCatalogo, setAviso }) {
   const [busca, setBusca] = useState("");
   const q = busca.trim().toLowerCase();
@@ -5556,6 +5562,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         if (r?.value) setCompOv(JSON.parse(r.value));
       } catch { /* sin esto la tarjeta contable se queda en "—", no miente */ }
       try {
+        const r = await window.storage?.get(REPFUERA_KEY);
+        if (r?.value) setNoReporta(new Set((JSON.parse(r.value)?.skus || []).map((x) => String(x).trim().toUpperCase())));
+      } catch { /* sin la lista, el reporte sale completo: de mas, nunca de menos */ }
+      try {
         const r = await window.storage?.get("iso3-catalogo-zoho");
         if (r?.value) setCatZoho(JSON.parse(r.value));
       } catch { /* sin venta la columna sale en "—", no en cero */ }
@@ -5612,6 +5622,14 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // aparte, en pantalla, nada mas para que no desaparezcan en silencio.
   const [rep, setRep] = useState(null);
   const [repCargando, setRepCargando] = useState(false);
+  // LOS QUE NO SE REPORTAN NUNCA, POR POLITICA.
+  // Cable a granel: se corta y se consume en varias obras a la vez, todo el
+  // tiempo. La pieza que esta en el carrete hoy ya tiene dueno aunque ninguna
+  // orden de venta la aparte, asi que declararla como existencia libre infla el
+  // reporte del contador. Arrancan APAGADOS; se pueden prender para una corrida
+  // y el reporte dice cuanto se quedo fuera. Vive en la base, compartido.
+  const [noReporta, setNoReporta] = useState(() => new Set());
+  const [orden, setOrden] = useState({ campo: "valor", dir: -1 });
   // Que SKU entran al reporte. Arranca con los que tienen existencia libre y
   // de ahi se mueve a mano: el criterio automatico acierta en la mayoria, pero
   // quien sabe si una pieza apartada en realidad ya es nuestra es el que
@@ -5675,7 +5693,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       // La seleccion arranca en el criterio automatico. Los renglones NO se
       // mueven de tabla al marcarlos: si brincaran de lista en cada clic seria
       // imposible repasar 1,149 SKU sin perder el lugar.
-      setIncluidos(new Set(filas.map((f) => f.sku)));
+      setIncluidos(new Set(filas.filter((f) => !noReporta.has(String(f.sku).toUpperCase())).map((f) => f.sku)));
     } finally { setRepCargando(false); }
   };
 
@@ -5694,7 +5712,40 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     valorVenta: seleccion.reduce((t, f) => t + (f.venta != null ? f.cant * f.venta : 0), 0),
     sinVenta: seleccion.filter((f) => f.venta == null).length,
     forzados: rep ? rep.fuera.filter((f) => incluidos.has(f.sku)).length : 0,
-    quitados: rep ? rep.filas.filter((f) => !incluidos.has(f.sku)).length : 0,
+    quitados: rep ? rep.filas.filter((f) => !incluidos.has(f.sku) && !noReporta.has(String(f.sku).toUpperCase())).length : 0,
+  };
+  // Lo que la politica deja fuera, en pesos. Va en pantalla y en el archivo:
+  // bajarle 700 mil al reporte del contador sin decir cuanto ni por que es
+  // justo lo que despues nadie puede explicar.
+  const porPolitica = rep ? rep.filas.filter((f) => noReporta.has(String(f.sku).toUpperCase()) && !incluidos.has(f.sku)) : [];
+  const valPolitica = porPolitica.reduce((t, f) => t + f.cant * f.costo, 0);
+
+  // Guardar la seleccion de HOY como la de siempre. Explicito a proposito: si
+  // cada clic escribiera en la base, una revision a media manana le cambiaria
+  // el criterio al reporte del mes que viene sin que nadie lo decidiera.
+  const guardarPolitica = async () => {
+    if (!rep) return;
+    const n = new Set(rep.filas.filter((f) => !incluidos.has(f.sku)).map((f) => String(f.sku).toUpperCase()));
+    setNoReporta(n);
+    try {
+      await window.storage?.set(REPFUERA_KEY, JSON.stringify({ fecha: hoy(), skus: [...n].sort() }));
+      setAviso({ t: "ok", m: `${mx0(n.size)} SKU quedan apagados por omisión en el reporte, desde la próxima vez.` });
+    } catch (e) { setAviso({ t: "err", m: `No se pudo guardar: ${e?.message || e}` }); }
+  };
+
+  // Ordenar la tabla. El valor de mayor a menor es el orden util -se quitan
+  // cosas de arriba hacia abajo-, pero a veces hace falta buscar por SKU.
+  const ordenar = (campo) => setOrden((o) => ({ campo, dir: o.campo === campo ? -o.dir : -1 }));
+  const aplicarOrden = (rows) => {
+    const { campo, dir } = orden;
+    const val = (f) => (campo === "sku" ? String(f.sku) : campo === "desc" ? String(f.desc)
+      : campo === "valor" ? f.cant * f.costo : campo === "cant" ? f.cant
+      : campo === "costo" ? f.costo : campo === "venta" ? (f.venta ?? -1)
+      : campo === "aMano" ? f.aMano : f.comprometido);
+    return rows.slice().sort((a, b) => {
+      const x = val(a), y = val(b);
+      return (typeof x === "string" ? x.localeCompare(y, "es") : x - y) * dir;
+    });
   };
 
   const toggleSku = (sku) => setIncluidos((prev) => {
@@ -5708,8 +5759,18 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     return n;
   });
 
-  const tablaSel = (titulo, sub, rows, extra = null) => {
+  const tablaSel = (titulo, sub, rowsRaw, extra = null) => {
+    const rows = aplicarOrden(rowsRaw);
     const nSel = rows.filter((f) => incluidos.has(f.sku)).length;
+    // Encabezado que ordena. La flecha dice por cual y hacia donde: una tabla
+    // que se reordena sin decir por que columna se lee como si cambiaran los
+    // datos.
+    const th = (campo, txt, der = true) => (
+      <th className={`${der ? "text-right" : "text-left"} cursor-pointer select-none hover:text-stone-800`}
+        onClick={() => ordenar(campo)} title="Clic para ordenar">
+        {txt}{orden.campo === campo && <span className="ml-0.5 text-emerald-700">{orden.dir < 0 ? "▼" : "▲"}</span>}
+      </th>
+    );
     return (
       <div className="mt-3 border border-stone-200 rounded-lg">
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
@@ -5728,13 +5789,16 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
             <thead className="sticky top-0 bg-white shadow-[0_1px_0_#e7e5e4]">
               <tr className="text-stone-500 text-left">
                 <th className="px-3 py-1.5 w-8"></th>
-                <th>SKU</th><th>Descripción</th>
-                <th className="text-right">A mano</th>
-                <th className="text-right">Comprom.</th>
-                <th className="text-right">Reporta</th>
-                <th className="text-right">Costo u.</th>
-                <th className="text-right">Venta u.</th>
-                <th className="text-right pr-3">Valor</th>
+                {th("sku", "SKU", false)}{th("desc", "Descripción", false)}
+                {th("aMano", "A mano")}
+                {th("comprometido", "Comprom.")}
+                {th("cant", "Reporta")}
+                {th("costo", "Costo u.")}
+                {th("venta", "Venta u.")}
+                <th className={`text-right pr-3 cursor-pointer select-none hover:text-stone-800`}
+                  onClick={() => ordenar("valor")} title="Clic para ordenar">
+                  Valor{orden.campo === "valor" && <span className="ml-0.5 text-emerald-700">{orden.dir < 0 ? "▼" : "▲"}</span>}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -5746,7 +5810,13 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
                     <td className="px-3 py-1">
                       <input type="checkbox" checked={on} onChange={() => toggleSku(f.sku)} />
                     </td>
-                    <td className="font-semibold">{f.sku}</td>
+                    <td className="font-semibold">
+                      {f.sku}
+                      {noReporta.has(String(f.sku).toUpperCase()) && (
+                        <span className="ml-1 px-1 rounded bg-stone-200 text-stone-600 text-[8px] font-bold align-middle font-sans"
+                          title="Apagado por omisión: material de uso continuo en varias obras a la vez.">FIJO</span>
+                      )}
+                    </td>
                     <td className="font-sans text-stone-600">{String(f.desc).slice(0, 40)}</td>
                     <td className="text-right">{mx0(f.aMano)}</td>
                     <td className="text-right">{mx0(f.comprometido)}</td>
@@ -5782,6 +5852,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       `Corte,${rep.fechaFisico}`,
       `Criterio,"Existencia fisica del ALMACEN CENTRAL que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
       `Costo,"Costo de adquisicion del catalogo de Importaciones (promedio ponderado). El precio de venta sale del campo rate de Zoho."`,
+      ...(porPolitica.length
+        ? [`Excluidos por politica,"${porPolitica.length} SKU de uso continuo (cable a granel, que se consume en varias obras a la vez) por ${r2(valPolitica)} al costo. No se declaran como existencia libre."`]
+        : []),
       ...(selTot.forzados || selTot.quitados
         ? [`Ajustes manuales,"${selTot.forzados} SKU incluidos a mano pese a estar comprometidos; ${selTot.quitados} quitados del criterio automatico."`]
         : []),
@@ -5893,6 +5966,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
             <div className="flex gap-1.5">
               <button onClick={bajarReporte} disabled={!selTot.skus}
                       className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">⬇ Descargar CSV</button>
+              <button onClick={guardarPolitica}
+                title="Lo que esté desmarcado ahora arranca apagado la próxima vez que se arme el reporte, para todo el equipo"
+                className="px-3 py-1.5 text-xs font-medium rounded border border-stone-300 hover:bg-stone-50">Guardar como la de siempre</button>
               <button onClick={() => setRep(null)} className="px-3 py-1.5 text-xs font-medium rounded border border-stone-300">Cerrar</button>
             </div>
           </div>
@@ -5908,6 +5984,15 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
               {selTot.quitados > 0 && ` · ${selTot.quitados} quitados a mano`}
             </p>
           </div>
+
+          {porPolitica.length > 0 && (
+            <p className="mt-2 text-[11px] text-stone-700 bg-stone-100 border border-stone-300 rounded px-2.5 py-1.5">
+              <b>{porPolitica.length} SKU</b> no entran por política de uso continuo — cable a granel que se consume en
+              varias obras a la vez. Son <b>${mx0(valPolitica)}</b> que NO se están reportando. Van marcados
+              <span className="mx-1 px-1 rounded bg-stone-200 text-stone-600 text-[8px] font-bold">FIJO</span>
+              y se pueden prender uno por uno; el CSV lo dice en su encabezado.
+            </p>
+          )}
 
           {(selTot.forzados > 0 || selTot.quitados > 0) && (
             <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
