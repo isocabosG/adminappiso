@@ -5572,22 +5572,65 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     })();
   }, []);
 
-  // Inventario contable: a mano menos TODO lo comprometido en obras activas.
-  // Cada SKU se piso en cero -si debe mas de lo que hay no aporta, y tampoco
-  // resta-, y los que quedan sin nada libre se cuentan aparte en vez de
-  // desaparecer.
+  // UNA SOLA CUENTA PARA LA TARJETA Y PARA EL REPORTE.
+  // Estaban escritas dos veces con la misma formula, y el dia que una cambio
+  // la otra no: la tarjeta decia 846 SKU y el reporte 836. Un numero que el
+  // contador ve en pantalla y otro en el archivo es peor que no tener ninguno.
+  //
+  // Inventario del contador: a mano menos TODO lo comprometido en obras
+  // activas, calendarizadas o no. Cada SKU se pisa en cero -si debe mas de lo
+  // que hay no aporta, y tampoco resta- y los que quedan sin nada libre se
+  // cuentan aparte en vez de desaparecer.
+  const armarFilas = (porSku) => {
+    const ventaDe = (sku) => {
+      const v = +catZoho?.items?.[sku]?.venta;
+      return isFinite(v) && v > 0 ? v : null;   // null, no cero: "no se sabe" no es "vale cero"
+    };
+    const filas = [], fuera = [];
+    let comprometidas = 0;
+    for (const [sku, a] of Object.entries(fis || {})) {
+      const aMano = +a?.aMano || 0;
+      const ovs = porSku?.[sku]?.ovs || [];
+      const comprometido = ovs.reduce((t, o) => t + (+o.cant || 0), 0);
+      comprometidas += comprometido;
+      const libre = aMano - comprometido;
+      const costo = +a?.cost || 0;
+      // `cant` es con cuanto se reportaria ese SKU si entra. Para los que
+      // tienen libre, el libre. Para los que no, el A MANO completo: incluir
+      // uno a mano es decir "esto en realidad si es nuestro", y entonces
+      // cuenta todo lo que hay fisicamente, no un sobrante que es negativo.
+      if (libre > 0) {
+        filas.push({ sku, desc: a?.desc || sku, aMano, comprometido, costo, venta: ventaDe(sku), libre, cant: libre, valor: libre * costo });
+      } else if (comprometido > 0 || aMano !== 0) {
+        fuera.push({
+          sku, desc: a?.desc || sku, aMano, comprometido, costo, venta: ventaDe(sku),
+          libre, cant: aMano, valor: aMano * costo,
+          falta: comprometido - aMano,
+          ovs: ovs.map((o) => `${o.ov}${o.proyecto ? " " + o.proyecto : ""} (${o.cant})`).join(" · "),
+        });
+      }
+    }
+    filas.sort((x, y) => y.valor - x.valor);
+    fuera.sort((x, y) => y.falta * y.costo - x.falta * x.costo);
+    return { filas, fuera, comprometidas };
+  };
+
   const contable = (() => {
     if (!fis || !compOv?.porSku) return null;
-    let skus = 0, piezas = 0, valor = 0, fuera = 0, comprometidas = 0;
-    for (const [sku, a] of Object.entries(fis)) {
-      const aMano = +a?.aMano || 0;
-      const comp = (compOv.porSku[sku]?.ovs || []).reduce((t, o) => t + (+o.cant || 0), 0);
-      comprometidas += comp;
-      const libre = aMano - comp;
-      if (libre > 0) { skus++; piezas += libre; valor += libre * (+a?.cost || 0); }
-      else if (comp > 0 || aMano !== 0) fuera++;
-    }
-    return { skus, piezas, valor, fuera, comprometidas, fecha: compOv.fecha || "—" };
+    const { filas, fuera, comprometidas } = armarFilas(compOv.porSku);
+    // La tarjeta respeta la MISMA politica que el reporte: el cable de uso
+    // continuo no se declara. Si la pantalla dijera 6.2 y el archivo 5.5,
+    // alguien va a mandar el numero equivocado.
+    const entran = filas.filter((f) => !noReporta.has(String(f.sku).toUpperCase()));
+    const politica = filas.length - entran.length;
+    return {
+      skus: entran.length,
+      piezas: entran.reduce((t, f) => t + f.cant, 0),
+      valor: entran.reduce((t, f) => t + f.valor, 0),
+      politica,
+      valorPolitica: filas.filter((f) => noReporta.has(String(f.sku).toUpperCase())).reduce((t, f) => t + f.valor, 0),
+      fuera: fuera.length, comprometidas, fecha: compOv.fecha || "—",
+    };
   })();
 
   const tot = fis ? Object.values(fis).reduce((a, x) => ({
@@ -5630,6 +5673,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // y el reporte dice cuanto se quedo fuera. Vive en la base, compartido.
   const [noReporta, setNoReporta] = useState(() => new Set());
   const [orden, setOrden] = useState({ campo: "valor", dir: -1 });
+  const [repQ, setRepQ] = useState("");   // buscador del reporte
   // Que SKU entran al reporte. Arranca con los que tienen existencia libre y
   // de ahi se mueve a mano: el criterio automatico acierta en la mayoria, pero
   // quien sabe si una pieza apartada en realidad ya es nuestra es el que
@@ -5650,40 +5694,10 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         setAviso({ t: "err", m: "No se pudo leer el comprometido por orden de venta. Sin eso el reporte diria que todo el almacen es nuestro." });
         return;
       }
-      const porSku = comp.porSku || {};
-      const ventaDe = (sku) => {
-        const v = +catZoho?.items?.[sku]?.venta;
-        return isFinite(v) && v > 0 ? v : null;   // null, no cero: "no se sabe" no es "vale cero"
-      };
-      const filas = [];
-      const fuera = [];
-      for (const [sku, a] of Object.entries(fis)) {
-        const aMano = +a?.aMano || 0;
-        const ovs = porSku[sku]?.ovs || [];
-        const comprometido = ovs.reduce((t, o) => t + (+o.cant || 0), 0);
-        const libre = aMano - comprometido;
-        const costo = +a?.cost || 0;
-        // `cant` es con cuanto se reportaria ese SKU si entra. Para los que
-        // tienen libre, el libre. Para los que no, el A MANO completo: incluir
-        // uno a mano es decir "esto en realidad si es nuestro", y entonces
-        // cuenta todo lo que hay fisicamente, no un sobrante que es negativo.
-        if (libre > 0) {
-          filas.push({ sku, desc: a?.desc || sku, aMano, comprometido, costo, venta: ventaDe(sku), libre, cant: libre, valor: libre * costo });
-        } else if (comprometido > 0 || aMano !== 0) {
-          // No entra al reporte del contador, pero SI se ve en pantalla: 300 y
-          // pico de SKU que desaparecen sin aviso es lo que despues nadie puede
-          // explicar. Se guarda con que obra lo aparta, que es lo unico que
-          // permite investigarlo.
-          fuera.push({
-            sku, desc: a?.desc || sku, aMano, comprometido, costo, venta: ventaDe(sku),
-            libre, cant: aMano, valor: aMano * costo,
-            falta: comprometido - aMano,
-            ovs: ovs.map((o) => `${o.ov}${o.proyecto ? " " + o.proyecto : ""} (${o.cant})`).join(" · "),
-          });
-        }
-      }
-      filas.sort((x, y) => y.valor - x.valor);
-      fuera.sort((x, y) => y.falta * y.costo - x.falta * x.costo);
+      // La MISMA cuenta que pinta la tarjeta del panel. Ver armarFilas: tener
+      // la formula escrita dos veces fue lo que hizo que una dijera 846 SKU y
+      // la otra 836.
+      const { filas, fuera } = armarFilas(comp.porSku || {});
       setRep({
         fechaFisico: fisFecha || "—",
         fechaComp: comp.fecha || "—",
@@ -5760,8 +5774,14 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   });
 
   const tablaSel = (titulo, sub, rowsRaw, extra = null) => {
-    const rows = aplicarOrden(rowsRaw);
-    const nSel = rows.filter((f) => incluidos.has(f.sku)).length;
+    // El buscador filtra lo que se VE. El conteo de marcados sigue siendo
+    // sobre el total: si dijera "3 de 5" mientras hay 818 seleccionados, el
+    // numero de arriba y el de abajo se contradicen.
+    const qq = repQ.trim().toUpperCase();
+    const rows = aplicarOrden(qq
+      ? rowsRaw.filter((f) => String(f.sku).toUpperCase().includes(qq) || String(f.desc).toUpperCase().includes(qq))
+      : rowsRaw);
+    const nSel = rowsRaw.filter((f) => incluidos.has(f.sku)).length;
     // Encabezado que ordena. La flecha dice por cual y hacia donde: una tabla
     // que se reordena sin decir por que columna se lee como si cambiaran los
     // datos.
@@ -5775,12 +5795,17 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
       <div className="mt-3 border border-stone-200 rounded-lg">
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
           <div className="min-w-0">
-            <p className="text-xs font-semibold">{titulo} · {nSel} de {rows.length}</p>
+            <p className="text-xs font-semibold">
+              {titulo} · {nSel} de {rowsRaw.length}
+              {qq && <span className="ml-1 font-normal text-emerald-700">· {rows.length} con «{repQ.trim()}»</span>}
+            </p>
             <p className="text-[11px] text-stone-500">{sub}</p>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            <button onClick={() => marcarTodos(rows, true)} className="px-2 py-1 text-[11px] rounded border border-stone-300 bg-white hover:bg-stone-50">Todos</button>
-            <button onClick={() => marcarTodos(rows, false)} className="px-2 py-1 text-[11px] rounded border border-stone-300 bg-white hover:bg-stone-50">Ninguno</button>
+            <button onClick={() => marcarTodos(rows, true)} title={qq ? "Solo los que está mostrando el buscador" : ""}
+              className="px-2 py-1 text-[11px] rounded border border-stone-300 bg-white hover:bg-stone-50">Todos{qq && " los filtrados"}</button>
+            <button onClick={() => marcarTodos(rows, false)} title={qq ? "Solo los que está mostrando el buscador" : ""}
+              className="px-2 py-1 text-[11px] rounded border border-stone-300 bg-white hover:bg-stone-50">Ninguno{qq && " de los filtrados"}</button>
             {extra}
           </div>
         </div>
@@ -5940,6 +5965,11 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
             <p className="text-[10px] text-emerald-100/90">
               {contable == null ? "falta el comprometido por orden" : `${contable.skus} SKU · ${mx0(contable.piezas)} pzas`}
             </p>
+            {contable?.politica > 0 && (
+              <p className="text-[10px] text-emerald-100/70" title="Cable a granel de uso continuo. Misma política que el reporte.">
+                sin {contable.politica} SKU de uso continuo (${mx0(contable.valorPolitica)})
+              </p>
+            )}
           </div>
           <div className={`rounded-lg p-2.5 ${contable && contable.fuera > 0 ? "bg-red-500/30 ring-1 ring-red-200/60" : "bg-white/10"}`}>
             <p className="text-[10px] uppercase tracking-widest text-emerald-100">Sin existencia libre</p>
@@ -5952,7 +5982,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
           devolución, desecho, Semi-OK, laboratorio, coordinación ni los almacenes de importación.
           <b> Inventario real para contadores</b>: lo que queda al restar todo lo comprometido en obras activas, estén
           calendarizadas o no{contable ? ` (órdenes al ${contable.fecha})` : ""} — es la cifra que va al contador,
-          con cada SKU pisado en cero.
+          con cada SKU pisado en cero y sin el material de uso continuo. Es exactamente el mismo número que el reporte.
         </p>
       </div>
 
@@ -5963,7 +5993,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
               <h3 className="text-sm font-semibold">Reporte de inventario · contadores</h3>
               <p className="text-[11px] text-stone-500">Corte al {rep.fechaFisico} · órdenes al {rep.fechaComp}</p>
             </div>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5 items-center">
+              <input value={repQ} onChange={(e) => setRepQ(e.target.value)} placeholder="Buscar SKU o descripción…"
+                className="px-2 py-1.5 border border-stone-300 rounded text-xs w-52" />
               <button onClick={bajarReporte} disabled={!selTot.skus}
                       className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">⬇ Descargar CSV</button>
               <button onClick={guardarPolitica}
