@@ -5555,6 +5555,20 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // igual, pero contra el COSTO del catalogo de Importaciones -que si es el de
   // adquisicion-: ahi la diferencia es el margen de verdad.
   const [catZoho, setCatZoho] = useState(null);
+  // LOS QUE NO SE REPORTAN NUNCA, POR POLITICA.
+  // Cable a granel: se corta y se consume en varias obras a la vez, todo el
+  // tiempo. La pieza que esta en el carrete hoy ya tiene dueno aunque ninguna
+  // orden de venta la aparte, asi que declararla como existencia libre infla el
+  // reporte del contador. Arrancan APAGADOS; se pueden prender para una corrida
+  // y el reporte dice cuanto se quedo fuera. Vive en la base, compartido.
+  const [noReporta, setNoReporta] = useState(() => new Set());
+  //
+  // VA AQUI ARRIBA A PROPOSITO, no abajo con el resto del estado del reporte:
+  // `armarFilas` y `contable` lo leen, y en JS un `const` declarado despues de
+  // donde se usa truena con "Cannot access before initialization". Paso en
+  // produccion el 20-oct y tumbo la pantalla completa de Inventario. El linter
+  // no lo vio porque `no-undef` busca variables que no existen, no variables
+  // que existen mas abajo.
   useEffect(() => {
     (async () => {
       try {
@@ -5665,13 +5679,6 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // aparte, en pantalla, nada mas para que no desaparezcan en silencio.
   const [rep, setRep] = useState(null);
   const [repCargando, setRepCargando] = useState(false);
-  // LOS QUE NO SE REPORTAN NUNCA, POR POLITICA.
-  // Cable a granel: se corta y se consume en varias obras a la vez, todo el
-  // tiempo. La pieza que esta en el carrete hoy ya tiene dueno aunque ninguna
-  // orden de venta la aparte, asi que declararla como existencia libre infla el
-  // reporte del contador. Arrancan APAGADOS; se pueden prender para una corrida
-  // y el reporte dice cuanto se quedo fuera. Vive en la base, compartido.
-  const [noReporta, setNoReporta] = useState(() => new Set());
   const [orden, setOrden] = useState({ campo: "valor", dir: -1 });
   const [repQ, setRepQ] = useState("");   // buscador del reporte
   // Que SKU entran al reporte. Arranca con los que tienen existencia libre y
