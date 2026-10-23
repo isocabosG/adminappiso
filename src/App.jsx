@@ -3902,6 +3902,16 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const avanceEntrega = ordenadoGoods ? (entregadoGoods / ordenadoGoods) * 100 : 0;
   const costos = (datos.costos || []).map((c) => ({ ...c, monto: +c.monto || 0 }));                   // otros costos manuales (fletes, viáticos…)
   const manualCostos = costos.reduce((a, b) => a + b.monto, 0);
+  // Subtotal por tipo. Siete renglones de viaticos de 7,500 no se suman de
+  // cabeza, y el unico numero que habia era el total mezclado con fletes y
+  // herramienta. Se arma en el orden en que aparecen, no alfabetico: asi el
+  // tipo que mas renglones tiene queda arriba.
+  const costosPorTipo = costos.reduce((m, c) => {
+    const t = c.tipo || "Otro";
+    m[t] = (m[t] || 0) + c.monto;
+    return m;
+  }, {});
+  const tiposCosto = Object.entries(costosPorTipo).sort((a, b) => b[1] - a[1]);
   const obra = datos.obra || { dias: "", costoDia: "" };
   const costoObra = (+obra.dias || 0) * (+obra.costoDia || 0);
   const ingresoBase = +so.sub_total || contratadoBase;                                                // ingreso del proyecto SIN IVA
@@ -4338,6 +4348,26 @@ ${porPagar >= 0
                 <tr key={c.id} className="border-b border-stone-100"><td className="px-3 py-1.5">{c.fecha}</td><td className="px-3 py-1.5">{c.tipo}</td><td className="px-3 py-1.5">{c.concepto}</td><td className="px-3 py-1.5 text-right font-mono">${mx(c.monto)}</td><td className="px-2"><button onClick={() => quitarCosto(c.id)} className="text-stone-400 hover:text-red-600">×</button></td></tr>
               ))}
               </tbody>
+              {costos.length > 0 && (
+                <tfoot className="border-t-2 border-stone-300">
+                  {tiposCosto.length > 1 && tiposCosto.map(([t, monto]) => (
+                    <tr key={t} className="text-stone-600">
+                      <td className="px-3 py-1" colSpan={2}></td>
+                      <td className="px-3 py-1 text-right text-[11px]">{t}</td>
+                      <td className="px-3 py-1 text-right font-mono">${mx(monto)}</td>
+                      <td></td>
+                    </tr>
+                  ))}
+                  <tr className="bg-stone-50 font-semibold">
+                    <td className="px-3 py-2" colSpan={2}></td>
+                    <td className="px-3 py-2 text-right text-[10px] uppercase tracking-widest text-stone-500">
+                      Total · {costos.length} {costos.length === 1 ? "cargo" : "cargos"}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-sm">${mx(manualCostos)}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              )}
             </table></div>
             <div className="p-3 border-t border-stone-200 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
               <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={nuevoCosto.fecha} onChange={(e) => setNuevoCosto({ ...nuevoCosto, fecha: e.target.value })} /></div>
