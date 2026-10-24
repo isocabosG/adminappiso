@@ -6,14 +6,24 @@ import { supabase } from './supabaseClient.js'
 
 installSupabaseStorage()
 
+// Aplana un error que puede venir como texto o como objeto. Anthropic y Zoho
+// contestan { error: { type, message } }; concatenar ese objeto daba el
+// famoso "[object Object]" que escondia el motivo real (p.ej. saldo agotado).
+function textoError(e) {
+  if (e == null) return 'Error desconocido'
+  if (typeof e === 'string') return e
+  if (typeof e === 'object') return e.message || e.error_msg || e.type || JSON.stringify(e)
+  return String(e)
+}
+
 // Saca el motivo REAL de un error de Edge Function. Supabase tira un error
 // genérico ("non-2xx status code") y esconde el detalle en error.context (la
 // Response). Aquí lo leemos para que el toast muestre la causa verdadera.
 async function detalleError(error) {
   try {
     const body = await error?.context?.json?.()
-    if (body?.error) return body.error
-    if (body?.message) return body.message
+    if (body?.error) return textoError(body.error)
+    if (body?.message) return textoError(body.message)
   } catch {}
   return error?.message || String(error)
 }
@@ -23,7 +33,7 @@ async function detalleError(error) {
 window.aiExtract = async (payload) => {
   const { data, error } = await supabase.functions.invoke('ai-extract', { body: payload })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.error) throw new Error(data.error)
+  if (data && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -31,7 +41,7 @@ window.aiExtract = async (payload) => {
 window.zohoBooks = async (payload) => {
   const { data, error } = await supabase.functions.invoke('zoho-books', { body: payload })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.error) throw new Error(data.error)
+  if (data && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -41,7 +51,7 @@ window.zohoBooks = async (payload) => {
 window.zohoEscribir = async (payload) => {
   const { data, error } = await supabase.functions.invoke('zoho-write', { body: payload })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.ok === false && data.error) throw new Error(data.error)
+  if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -63,7 +73,7 @@ window.soLimpieza = async (payload) => {
 window.preguntar = async (payload) => {
   const { data, error } = await supabase.functions.invoke('preguntar', { body: payload })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.ok === false && data.error) throw new Error(data.error)
+  if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -73,7 +83,7 @@ window.preguntar = async (payload) => {
 window.acceso = async (payload) => {
   const { data, error } = await supabase.functions.invoke('acceso', { body: payload })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.ok === false && data.error) throw new Error(data.error)
+  if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -85,7 +95,7 @@ window.acceso = async (payload) => {
 window.soAjuste = async (payload) => {
   const { data, error } = await supabase.functions.invoke('so-ajuste', { body: payload })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.ok === false && data.error) throw new Error(data.error)
+  if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -102,14 +112,14 @@ window.sincronizar = async (nombre) => {
   if (!SYNCS.includes(nombre)) throw new Error(`Sincronía no permitida: ${nombre}`)
   const { data, error } = await supabase.functions.invoke(nombre, { body: {} })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.ok === false && data.error) throw new Error(data.error)
+  if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
   return data
 }
 
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))
-  if (data && data.error) throw new Error(data.error)
+  if (data && data.error) throw new Error(textoError(data.error))
   return data
 }
 
@@ -124,7 +134,7 @@ window.mrpEditar = async (cambio) => {
     // IS-PMT manda { ok:false, codigo, error }. El texto es para la pantalla;
     // el `codigo` es lo estable, y es con lo que la UI decide qué ofrecer
     // (p. ej. proponer el SKU vigente cuando el capturado está de baja).
-    const e = new Error(data.error || 'No se pudo guardar el cambio.')
+    const e = new Error(textoError(data.error) || 'No se pudo guardar el cambio.')
     e.codigo = data.codigo || null
     throw e
   }
