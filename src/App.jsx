@@ -68,7 +68,7 @@ const fileToB64 = (file) =>
 // carpeta. Ahora se arrastran todos juntos y la app los clasifica por el nombre.
 // La adivinanza se equivoca a veces, asi que CADA archivo trae su selector a la
 // vista: adivinar sin poder corregir seria peor que preguntar.
-const TIPOS_PDF = { pedimento: "Pedimento", cotizacion: "Cotizacion", factura: "Factura" };
+const TIPOS_PDF = { pedimento: "Pedimento", cotizacion: "Cotizacion", factura: "Factura", oc: "OC" };
 
 const adivinaTipoPDF = (nombre = "") => {
   const n = nombre.toLowerCase();
@@ -202,10 +202,10 @@ function matchRenonSku(modelo, desc) {
   return null;
 }
 
-const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes uno o dos PDFs: (1) un PEDIMENTO de importación y, si viene, (2) una COTIZACIÓN de la Agencia Aduanal Perezgrovas. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
+const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes de uno a tres PDFs: (1) un PEDIMENTO de importación, (2) si viene, una COTIZACIÓN de la Agencia Aduanal Perezgrovas y (3) si viene, la ORDEN DE COMPRA de Innovación Solar, que es el único documento donde el SKU viene escrito. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
 
 Esquema exacto:
-{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"igiMXN":0}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
+{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","pesoBrutoKg":0,"oc":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"igiMXN":0,"sku":""}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
 
 Reglas:
 - numero, fecha, aduana: del PEDIMENTO. tc = TIPO DE CAMBIO oficial del PEDIMENTO (NO el de la cotización, que suele ser distinto).
@@ -215,9 +215,12 @@ Reglas:
 - partidas: una por cada renglón. Para CADA partida:
    · cantidad = CANTIDAD UMC = número de PIEZAS (la PRIMERA cantidad de la línea 1). NUNCA uses la CANTIDAD UMT: ESA ES EL PESO EN KILOS, no piezas ni precio.
    · fobUnitUSD = PRECIO UNITARIO en pesos (línea 2) ÷ tc. Equivale a (IMP. PRECIO PAGADO ÷ tc ÷ piezas). NO es la cantidad UMT.
-   · pesoPartidaKg = CANTIDAD UMT tal cual viene impresa (los kilos TOTALES de esa partida). NO la dividas entre nada: cópiala como está. La app saca el peso por pieza sola.
+   · pesoPartidaKg = SOLO cuando el código UMT de ESA partida es de peso (KG, KGS, KILO). Entonces CANTIDAD UMT son los kilos TOTALES de la partida: cópiala tal cual, sin dividir. Si el UMT es PZA, PIEZA, JUEGO, PAR, METRO o cualquier unidad que NO sea peso, pon null — esa cantidad son piezas, no kilos. NUNCA repitas en este campo el mismo número que pusiste en la cantidad de piezas.
+   · sku = SOLO si viene la ORDEN DE COMPRA y en ella hay un renglón con la MISMA cantidad y el MISMO precio unitario que esta partida: copia su SKU exacto (en la OC aparece como "SKU : XXXX"). Si no viene OC, o si no empata con claridad, deja "".
    · igiMXN = importe de IGI de esa partida en pesos (0 si la tasa IGI es 0%).
    · desc = descripción CORTA (máximo 40 caracteres, sin repetir texto).
+- pesoBrutoKg = el PESO BRUTO impreso en el ENCABEZADO del pedimento (ej. "PESO BRUTO: 19,824.220"). Son los kilos de TODO el embarque, no de una partida.
+- oc = número de la orden de compra (ej. PO-02601) si viene ese PDF; si no, "".
 - fleteInternacionalMXN = renglón FLETES del pedimento — SIEMPRE EN PESOS, nunca en dólares. iccMXN = OTROS INCREMENTABLES del pedimento (pesos). dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento (pesos).
 - honorariosMXN = "Total de Honorarios más Servicios Complementarios" de la cotización Perezgrovas (en pesos). cruceSDTJusd = "Flete de San Diego a Tijuana" de la cotización, en DÓLARES (columna Dlls).
 - Responde solo el JSON.`;
@@ -4625,6 +4628,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
   };
   const pdfPed = useMemo(() => archivos.find((a) => a.tipo === "pedimento")?.b64 || null, [archivos]);
   const pdfCot = useMemo(() => archivos.find((a) => a.tipo === "cotizacion")?.b64 || null, [archivos]);
+  const pdfOc = useMemo(() => archivos.find((a) => a.tipo === "oc")?.b64 || null, [archivos]);
   const pdfFacturas = useMemo(() => archivos.filter((a) => a.tipo === "factura").map((a) => a.b64), [archivos]);
   const [extrayendo, setExtrayendo] = useState(false);
   const [errExtrac, setErrExtrac] = useState(null);
@@ -4693,7 +4697,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
   // Asigna un SKU a una partida y jala su categoría del catálogo
   const asignarSku = (partId, sku) => {
     const known = catalogo[sku];
-    setPartidas((s) => s.map((x) => (x.id === partId ? { ...x, sku, ...(known ? { categoria: known.categoria } : {}) } : x)));
+    setPartidas((s) => s.map((x) => (x.id === partId ? { ...x, sku, ...(known ? { categoria: known.categoria, desc: known.descripcion } : {}) } : x)));
   };
 
   // Empata cada partida contra el catálogo (sincronizado de Books) usando IA.
@@ -4772,7 +4776,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
         const forzado = matchRenonSku(l.modelo, l.desc);
         const skuOk = forzado && catalogo[forzado] ? forzado : (l.sku && catalogo[l.sku] ? l.sku : "");
         const conf = forzado ? 0.96 : (l.confianza ?? 0);
-        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoPartida: l.pesoPartidaKg || "", _conf: conf, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
+        return { id: uid(), oc: "", factura: l._factura || "", sku: skuOk, desc: catalogo[skuOk]?.descripcion || l.desc || l.modelo || "", categoria: catalogo[skuOk]?.categoria || adivinaCategoria(l.desc || l.modelo || ""), cantidad: l.cantidad || "", fobUnit: l.fobUnitUSD || "", pesoPartida: l.pesoPartidaKg || "", _conf: conf, _alt: (l.alternativas || []).filter((s) => catalogo[s]) };
       });
       setPartidas(nuevas.map(({ _conf, _alt, ...p }) => p));
       const pend = nuevas.filter((p) => !p.sku || (p._conf ?? 0) < 0.8).map((p) => ({ id: p.id, desc: p.desc, cantidad: p.cantidad, costoAprox: Math.round((+p.fobUnit || 0) * tc), confianza: p._conf ?? 0, alternativas: p._alt, chosen: p.sku || "" }));
@@ -4849,6 +4853,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
     try {
       const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfPed } }];
       if (pdfCot) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfCot } });
+      // La OC es el unico documento que trae el SKU escrito. La factura del
+      // proveedor dice "Monocrystalline module 460W"; la OC dice "SKU: PSP7460".
+      if (pdfOc) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfOc } });
       content.push({ type: "text", text: PROMPT_EXTRACCION });
       const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 16000, messages: [{ role: "user", content }] });
       if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
@@ -4859,7 +4866,30 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
       setPed((old) => ({ ...old, numero: p.numero || old.numero, fecha: p.fecha || old.fecha, tc: p.tc || old.tc, aduana: p.aduana || "", proveedorExt: p.proveedorExt || old.proveedorExt }));
 
       if (Array.isArray(p.partidas) && p.partidas.length) {
-        setPartidas(p.partidas.map((x) => ({ id: uid(), sku: "", desc: x.desc || "", categoria: adivinaCategoria(x.desc), cantidad: x.cantidad || "", fobUnit: x.fobUnitUSD || "", pesoPartida: x.pesoPartidaKg || "", _igi: x.igiMXN || 0 })));
+        // Si el pedimento trae UNA sola partida y la UMT no era de peso, el unico
+        // peso confiable es el PESO BRUTO del encabezado. Con varias partidas no
+        // se reparte a ciegas: se deja vacio y se captura a mano.
+        const unaSola = p.partidas.length === 1;
+        setPartidas(p.partidas.map((x) => {
+          const sk = String(x.sku || "").toUpperCase();
+          const enCat = catalogo[sk];
+          const peso = x.pesoPartidaKg != null && +x.pesoPartidaKg > 0
+            ? x.pesoPartidaKg
+            : (unaSola && +p.pesoBrutoKg > 0 ? p.pesoBrutoKg : "");
+          return {
+            id: uid(),
+            oc: p.oc || "",
+            sku: enCat ? sk : "",
+            // Con SKU asignado manda la descripcion del catalogo: la aduanal
+            // ("Monocrystalline module 460W") no es como le llamamos al equipo.
+            desc: enCat ? enCat.descripcion : (x.desc || ""),
+            categoria: enCat ? enCat.categoria : adivinaCategoria(x.desc),
+            cantidad: x.cantidad || "",
+            fobUnit: x.fobUnitUSD || "",
+            pesoPartida: peso,
+            _igi: x.igiMXN || 0,
+          };
+        }));
       }
 
       // Volcar incrementables leídos a sus renglones (el flete internacional y el ICC del pedimento SIEMPRE son pesos)
@@ -5014,7 +5044,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
               {partidas.map((p) => (
                 <tr key={p.id} className="border-b border-stone-100">
                   <td className="px-2 py-1.5 w-32">
-                    <input list="skus" className={inp + " font-mono"} value={p.sku} onChange={(e) => { const v = e.target.value.toUpperCase(); const known = catalogo[v]; upd(setPartidas)(p.id, "sku", v); if (known) { upd(setPartidas)(p.id, "categoria", known.categoria); } }} />
+                    <input list="skus" className={inp + " font-mono"} value={p.sku} onChange={(e) => { const v = e.target.value.toUpperCase(); const known = catalogo[v]; upd(setPartidas)(p.id, "sku", v); if (known) { upd(setPartidas)(p.id, "categoria", known.categoria); upd(setPartidas)(p.id, "desc", known.descripcion); } }} />
                   </td>
                   <td className="px-2 py-1.5"><input className={inp} value={p.desc} onChange={(e) => upd(setPartidas)(p.id, "desc", e.target.value)} /></td>
                   <td className="px-2 py-1.5 text-xs text-stone-500 max-w-[200px] truncate">{catalogo[p.sku]?.descripcion || <span className="text-stone-300">—</span>}</td>
