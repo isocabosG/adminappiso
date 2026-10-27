@@ -2211,7 +2211,7 @@ function App({ perfil, correo }) {
           <Preguntar />
 
           <nav className="flex flex-wrap items-center justify-end gap-1 w-full sm:w-auto">
-            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0],
+            {[["proyectos", "Proyectos", 0], ["articulos", "Costos", pendientes], ["importaciones", "Importaciones", 0], ["tesoreria", "Tesorería", 0], ["flujo", "Flujo", 0], ["inventario", "Inventario", 0], ["mrp", "MRP", 0], ["limpieza", "Limpieza", 0], ["mas", "Más", 0],
               // La pestana solo aparece para quien administra accesos. Esconderla
               // es comodidad, no permiso: quien impide es la Edge Function.
               ...(perfil?.admin_accesos ? [["usuarios", "Usuarios", 0]] : [])].filter(([k]) => puedeVer(k)).map(([k, t, badge]) => (
@@ -2256,6 +2256,7 @@ function App({ perfil, correo }) {
         {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} />}
+        {vistaSegura === "flujo" && <Flujo tcFix={tcFix} setAviso={setAviso} />}
         {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vistaSegura === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
         {vistaSegura === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
@@ -7535,6 +7536,298 @@ function Roadmap() {
 
 /* ===================== MÓDULO · TESORERÍA / OPERACIÓN DIARIA ===================== */
 const enUSD = (monto, moneda, tc) => (moneda === "USD" ? monto : (tc ? monto / tc : 0));
+/* ---------- Flujo de efectivo semanal ---------- */
+//
+// Las 52 semanas del año: saldo inicial, entradas, salidas, traspasos y saldo
+// final, en pesos y en dólares por separado.
+//
+// POR QUÉ EL SALDO SE CAMINA HACIA ATRÁS
+// De Zoho sabemos el saldo de HOY, no el de cada viernes del año. Así que la
+// semana en curso se ancla en el saldo real de los bancos y de ahí se camina
+// hacia atrás: saldoInicial = saldoFinal − entradas + salidas − traspasos, y el
+// inicial de una semana es el final de la anterior. El único saldo medido es el
+// de hoy; los demás son derivados y la pantalla lo dice. Fingir que el de marzo
+// salió del banco sería inventar.
+//
+// POR QUÉ LOS TRASPASOS VAN EN SU PROPIO RENGLÓN
+// Decisión de Fran (19-oct): el cambio de divisas no es flujo. Pero si se
+// borran, saldo inicial + entradas − salidas deja de dar el saldo final y la
+// tabla no cuadra contra el banco. Se marcan y se enseñan aparte.
+//
+// POR QUÉ LOS DÓLARES NO SE MEZCLAN
+// Más de la mitad del efectivo está en dólares. Convertir todo a un solo tipo
+// de cambio esconde la exposición cambiaria, que es justo lo que se quiere ver.
+// El consolidado existe, pero como una vista más, no como la vista.
+//
+// LO QUE ESTA PANTALLA NO HACE TODAVÍA
+// Pronosticar. Las semanas futuras salen vacías a propósito hasta que entren
+// los dos motores (recurrente y proyectos). Una línea plana hacia el futuro se
+// leería como "no va a pasar nada", que es peor que no dibujar nada.
+
+// Validada con el script de la guía de visualización en claro y en oscuro.
+// Emerald contra ámbar reprobaba la separación para daltonismo (ΔE 7.9, abajo
+// del piso de 8), así que las entradas van en azul y no en el verde de la
+// marca. El saldo es tinta, no un cuarto color: es la línea que se lee.
+const FLUJO_COLOR = {
+  claro:  { entradas: "#0369a1", salidas: "#d97706", traspasos: "#7c3aed", saldo: "#1c1917", grid: "#e7e5e4" },
+  oscuro: { entradas: "#0284c7", salidas: "#d97706", traspasos: "#8b5cf6", saldo: "#f5f5f4", grid: "#44403c" },
+};
+
+const lunesDeISO = (iso) => {
+  const d = new Date(String(iso).slice(0, 10) + "T00:00:00Z");
+  if (isNaN(+d)) return null;
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+};
+const diaCorto = (iso) => {
+  const d = new Date(iso + "T00:00:00Z");
+  return `${d.getUTCDate()} ${["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"][d.getUTCMonth()]}`;
+};
+
+function Flujo({ tcFix, setAviso }) {
+  const [bancos, setBancos] = useState(null);
+  const [pagos, setPagos] = useState(null);
+  const [gastos, setGastos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [moneda, setMoneda] = useState("MXN");       // MXN · USD · CONS
+  const [dark, setDark] = useState(false);
+
+  useEffect(() => { setDark(document.documentElement.classList.contains("dark")); }, []);
+
+  const leer = async (k) => {
+    try { const r = await window.storage?.get(k); return r?.value ? JSON.parse(r.value) : null; }
+    catch { return null; }
+  };
+  const cargar = async () => {
+    setCargando(true);
+    const [b, p, g] = await Promise.all([leer("iso3-bancos-zoho"), leer("iso3-pagos-zoho"), leer("iso3-gastos-zoho")]);
+    setBancos(b); setPagos(p); setGastos(g); setCargando(false);
+  };
+  useEffect(() => { cargar(); }, []);
+
+  const C = dark ? FLUJO_COLOR.oscuro : FLUJO_COLOR.claro;
+  const anio = new Date().getFullYear();
+  const tc = +tcFix || 18.43;
+
+  // Las 52 semanas del año, por la fecha de su lunes.
+  const semanas = useMemo(() => {
+    const out = [];
+    let d = new Date(Date.UTC(anio, 0, 1));
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    for (let i = 0; i < 53; i++) {
+      const iso = d.toISOString().slice(0, 10);
+      if (+iso.slice(0, 4) > anio) break;
+      out.push(iso);
+      d.setUTCDate(d.getUTCDate() + 7);
+    }
+    return out;
+  }, [anio]);
+
+  const semanaHoy = lunesDeISO(new Date().toISOString());
+
+  // Saldo de hoy por moneda. Solo cuentas activas: una cuenta dada de baja con
+  // saldo residual no es dinero con el que se pueda pagar nómina.
+  const saldoHoy = useMemo(() => {
+    const s = { MXN: 0, USD: 0 };
+    for (const c of bancos?.cuentas || []) {
+      if (!c.activa) continue;
+      const m = String(c.moneda || "MXN").toUpperCase();
+      if (s[m] != null) s[m] += +c.saldo || 0;
+    }
+    return s;
+  }, [bancos]);
+
+  // Entradas y salidas por semana y moneda.
+  const movs = useMemo(() => {
+    const m = {};
+    const slot = (sem) => (m[sem] = m[sem] || { entMXN: 0, entUSD: 0, salMXN: 0, salUSD: 0, traMXN: 0, traUSD: 0 });
+    for (const p of pagos?.pagos || []) {
+      const sem = lunesDeISO(p.fecha); if (!sem) continue;
+      const s = slot(sem);
+      if (String(p.cur).toUpperCase() === "USD") s.entUSD += +p.monto || 0; else s.entMXN += +p.monto || 0;
+    }
+    for (const g of gastos?.gastos || []) {
+      const sem = g.semana || lunesDeISO(g.fecha); if (!sem) continue;
+      const s = slot(sem);
+      const usd = String(g.moneda).toUpperCase() === "USD";
+      if (g.traspaso) { if (usd) s.traUSD += +g.total || 0; else s.traMXN += +g.totalMXN || 0; }
+      else if (usd) s.salUSD += +g.total || 0;
+      else s.salMXN += +g.totalMXN || 0;
+    }
+    return m;
+  }, [pagos, gastos]);
+
+  // La caminata hacia atrás desde el saldo real de hoy.
+  const filas = useMemo(() => {
+    const cur = moneda === "USD" ? "USD" : "MXN";
+    const vacio = { ent: 0, sal: 0, tra: 0 };
+    const de = (sem) => {
+      const s = movs[sem] || vacio;
+      if (moneda === "CONS") return { ent: (s.entMXN || 0) + (s.entUSD || 0) * tc, sal: (s.salMXN || 0) + (s.salUSD || 0) * tc, tra: (s.traMXN || 0) + (s.traUSD || 0) * tc };
+      return cur === "USD" ? { ent: s.entUSD || 0, sal: s.salUSD || 0, tra: s.traUSD || 0 }
+                           : { ent: s.entMXN || 0, sal: s.salMXN || 0, tra: s.traMXN || 0 };
+    };
+    const ancla = moneda === "CONS" ? saldoHoy.MXN + saldoHoy.USD * tc : saldoHoy[cur];
+
+    const out = semanas.map((sem) => ({ sem, ...de(sem), ini: null, fin: null, futura: sem > semanaHoy }));
+    const iHoy = out.findIndex((f) => f.sem === semanaHoy);
+    if (iHoy < 0) return out;
+
+    // La semana en curso cierra en el saldo medido.
+    out[iHoy].fin = ancla;
+    out[iHoy].ini = ancla - out[iHoy].ent + out[iHoy].sal - out[iHoy].tra;
+    for (let i = iHoy - 1; i >= 0; i--) {
+      out[i].fin = out[i + 1].ini;
+      out[i].ini = out[i].fin - out[i].ent + out[i].sal - out[i].tra;
+    }
+    return out;
+  }, [semanas, movs, saldoHoy, moneda, tc, semanaHoy]);
+
+  // El valle: la semana más baja. Un año que cierra en positivo puede tocar
+  // fondo en marzo, y ésa es la semana que quiebra.
+  const valle = useMemo(() => {
+    const conDato = filas.filter((f) => f.fin != null && !f.futura);
+    if (!conDato.length) return null;
+    return conDato.reduce((a, b) => (b.fin < a.fin ? b : a));
+  }, [filas]);
+
+  const sinGastos = !gastos;
+  const simbolo = moneda === "USD" ? "USD" : "MXN";
+
+  /* -------- gráfica -------- */
+  const W = 1040, H = 230, P = { t: 14, r: 10, b: 20, l: 64 };
+  const conDato = filas.filter((f) => !f.futura);
+  const maxBarra = Math.max(1, ...conDato.map((f) => Math.max(f.ent, f.sal)));
+  const finitos = conDato.map((f) => f.fin).filter((v) => v != null);
+  const sMin = Math.min(0, ...finitos), sMax = Math.max(0, ...finitos);
+  const anchoCol = (W - P.l - P.r) / Math.max(1, conDato.length);
+  const anchoBarra = Math.max(2, Math.min(9, anchoCol * 0.34));
+  const yBase = H - P.b - 54;                                   // eje cero de las barras
+  const hBarra = (v) => (v / maxBarra) * (yBase - P.t);
+  const yLinea = (v) => {
+    const rango = sMax - sMin || 1;
+    return H - P.b - ((v - sMin) / rango) * 46;
+  };
+  const x = (i) => P.l + anchoCol * (i + 0.5);
+  const lineaSaldo = conDato.filter((f) => f.fin != null).map((f, i, arr) => `${i ? "L" : "M"}${x(conDato.indexOf(f))},${yLinea(f.fin)}`).join(" ");
+
+  return (
+    <section className="space-y-4">
+      {/* El valle primero: es el número con el que se decide. */}
+      <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-stone-500 font-semibold">Semana más baja del año</p>
+            {/* De dónde sale. Tesorería tiene su propio flujo, armado con
+                movimientos capturados a mano; éste no se captura, se lee.
+                Dos pantallas que dicen "flujo" y no coinciden erosionan la
+                confianza en las dos, así que cada una dice su fuente. */}
+            <p className="text-[10px] text-stone-400">Leído de Zoho · pagos, gastos y saldos de banco · sin capturar nada</p>
+            {valle ? (
+              <p className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: valle.fin < 0 ? C.salidas : undefined }}>
+                ${mx0(valle.fin)} <span className="text-sm font-normal text-stone-500">{simbolo} · semana del {diaCorto(valle.sem)}</span>
+              </p>
+            ) : <p className="mt-1 text-sm text-stone-500">Sin datos suficientes todavía.</p>}
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-widest text-stone-500 font-semibold">Saldo hoy</p>
+              <p className="text-sm font-mono">${mx0(saldoHoy.MXN)} MXN</p>
+              <p className="text-sm font-mono">{mx0(saldoHoy.USD)} USD</p>
+            </div>
+            <div className="flex rounded border border-stone-300 dark:border-stone-600 overflow-hidden text-xs">
+              {[["MXN", "Pesos"], ["USD", "Dólares"], ["CONS", `Consolidado @${tc}`]].map(([k, t]) => (
+                <button key={k} onClick={() => setMoneda(k)}
+                  className={`px-2.5 py-1 ${moneda === k ? "bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900" : "text-stone-600 dark:text-stone-300"}`}>{t}</button>
+              ))}
+            </div>
+            <button onClick={cargar} className="text-xs underline text-stone-500">Actualizar</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Un cero que no se explica se lee como un cero real. Si el blob de
+          egresos no existe, se dice en vez de pintar la tabla en blanco. */}
+      {sinGastos && (
+        <div className="px-3 py-2 rounded text-xs border bg-amber-50 border-amber-300 text-amber-900">
+          <b>Los egresos todavía no se sincronizan.</b> Las salidas salen en cero porque <code>iso3-gastos-zoho</code> no existe —
+          falta desplegar <code>gastos-sync</code> y correrla. Lo que ves abajo son entradas y saldos, no un flujo completo.
+        </div>
+      )}
+
+      {/* Barras: entradas arriba, salidas abajo. La línea es el saldo final, que
+          es lo que se decide; las barras explican por qué se mueve. */}
+      <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-3 overflow-x-auto">
+        <div className="flex items-center gap-4 mb-2 text-[11px] text-stone-600 dark:text-stone-300">
+          {[["entradas", "Entradas"], ["salidas", "Salidas"], ["traspasos", "Traspasos"]].map(([k, t]) => (
+            <span key={k} className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: C[k] }} />{t}
+            </span>
+          ))}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-0.5 w-4" style={{ background: C.saldo }} />Saldo final
+          </span>
+        </div>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 640 }} role="img"
+             aria-label="Entradas, salidas y saldo final por semana">
+          <line x1={P.l} y1={yBase} x2={W - P.r} y2={yBase} stroke={C.grid} strokeWidth="1" />
+          {conDato.map((f, i) => (
+            <g key={f.sem}>
+              {f.ent > 0 && <rect x={x(i) - anchoBarra - 1} y={yBase - hBarra(f.ent)} width={anchoBarra} height={hBarra(f.ent)} rx="2" fill={C.entradas} />}
+              {f.sal > 0 && <rect x={x(i) + 1} y={yBase} width={anchoBarra} height={hBarra(f.sal)} rx="2" fill={C.salidas} />}
+              {f.tra > 0 && <rect x={x(i) + 1} y={yBase + hBarra(f.sal)} width={anchoBarra} height={Math.max(1, hBarra(f.tra))} rx="2" fill={C.traspasos} opacity="0.75" />}
+              <title>{`Semana del ${diaCorto(f.sem)}\nEntradas $${mx0(f.ent)}\nSalidas $${mx0(f.sal)}\nTraspasos $${mx0(f.tra)}\nSaldo final $${mx0(f.fin)}`}</title>
+            </g>
+          ))}
+          {lineaSaldo && <path d={lineaSaldo} fill="none" stroke={C.saldo} strokeWidth="2" strokeLinejoin="round" />}
+          {valle && <circle cx={x(conDato.indexOf(valle))} cy={yLinea(valle.fin)} r="4" fill={C.saldo} stroke={dark ? "#1c1917" : "#fff"} strokeWidth="2" />}
+        </svg>
+      </div>
+
+      {/* La tabla: semanas en columnas, como el formato que se pidió. */}
+      <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 overflow-x-auto">
+        <table className="text-[11px] font-mono border-collapse">
+          <thead>
+            <tr className="bg-stone-100 dark:bg-stone-800">
+              <th className="sticky left-0 z-10 bg-stone-100 dark:bg-stone-800 px-3 py-2 text-left font-sans font-semibold">Semana</th>
+              {conDato.map((f) => (
+                <th key={f.sem} className={`px-2 py-2 text-right whitespace-nowrap ${f.sem === semanaHoy ? "bg-stone-200 dark:bg-stone-700" : ""}`}>{diaCorto(f.sem)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ["Saldo inicial", (f) => f.ini, null],
+              ["Entradas", (f) => f.ent, C.entradas],
+              ["Salidas", (f) => f.sal, C.salidas],
+              ["Traspasos", (f) => f.tra, C.traspasos],
+              ["Saldo final", (f) => f.fin, null],
+            ].map(([t, get, color], ri) => (
+              <tr key={t} className={`border-t border-stone-200 dark:border-stone-700 ${ri === 4 ? "font-semibold bg-stone-50 dark:bg-stone-800/50" : ""}`}>
+                <td className="sticky left-0 z-10 bg-white dark:bg-stone-900 px-3 py-1.5 font-sans whitespace-nowrap">
+                  {color && <span className="inline-block h-2 w-2 rounded-sm mr-1.5 align-middle" style={{ background: color }} />}{t}
+                </td>
+                {conDato.map((f) => {
+                  const v = get(f);
+                  return <td key={f.sem} className={`px-2 py-1.5 text-right tabular-nums ${v != null && v < 0 ? "text-red-600" : ""} ${f.sem === semanaHoy ? "bg-stone-100 dark:bg-stone-800" : ""}`}>{v == null ? "—" : mx0(v)}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-[11px] text-stone-500 leading-relaxed">
+        El único saldo medido es el de hoy, que sale de los bancos de Zoho. Los de las semanas anteriores se
+        derivan caminando hacia atrás desde ése, así que arrastran cualquier movimiento que no esté capturado en
+        Zoho. Los traspasos —cambio de divisa y ajustes contables— se muestran aparte y no cuentan como salida,
+        por acuerdo del 19-oct. Las semanas futuras van vacías hasta que entre el pronóstico.
+        {cargando && " · cargando…"}
+      </p>
+    </section>
+  );
+}
+
 function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }) {
   const [modo, setModo] = useState("resumen"); // resumen | nueva | movimientos
   const [editando, setEditando] = useState(null);
