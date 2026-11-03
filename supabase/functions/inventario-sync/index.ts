@@ -52,7 +52,24 @@ const INTENTOS_MAX = 2;
 // importación en San Diego. El total global los suma todos. SARK30K tenía 15
 // globales: 9 en Central y 6 en RMA — seis inversores apartados para devolver,
 // contados como vendibles. Lo cachó Fran el 26-sep.
-const ALMACEN = Deno.env.get("ZOHO_ALMACEN_ID") || "4053294000001024003";
+// Los almacenes cuyo contenido ES NUESTRO INVENTARIO DISPONIBLE. Era uno solo
+// (Central) hasta que el 3-nov-2026 se dio de alta "Almacén Logístico" y los
+// 864 paneles del pedimento 6004655 aterrizaron ahí: 1.5 M de material que la
+// app no veía, porque un `find` de un solo id devuelve el primero y punto.
+//
+// Es una LISTA a proposito. El error no fue el id, fue asumir que siempre
+// habria un almacen. Agregar uno nuevo ahora es una coma en el secreto
+// ZOHO_ALMACENES_ID, no un despliegue.
+//
+// Los que NO entran siguen fuera y por las mismas razones: RMA y Desecho no se
+// pueden vender, Semi-OK no esta verificado, Laboratorio y Coordinacion no son
+// almacen, y los de importacion (Perezgrovas, Cargo Baja) son material que
+// todavia no llega.
+const ALMACENES = new Set(
+  (Deno.env.get("ZOHO_ALMACENES_ID") || Deno.env.get("ZOHO_ALMACEN_ID") ||
+   "4053294000001024003,4053294000001520157")
+    .split(",").map((s) => s.trim()).filter(Boolean),
+);
 const FORMATO = 4;             // sube si cambia la forma del parcial, o si cambia como se valua
 const HUECOS_TOLERADOS = 0.02; // 2% de artículos sin leer y ya no se publica
 
@@ -213,16 +230,19 @@ Deno.serve(async (req) => {
           const it = d.item || {};
           // `warehouses[]` solo viene en get_item, no en el listado. Por eso el
           // "a mano" se toma aquí y no en la pasada barata de arriba.
-          const alm = (it.warehouses || []).find((w: any) => String(w.warehouse_id) === ALMACEN);
-          const aManoAlm = alm ? Math.max(0, +alm.warehouse_actual_available_stock || 0) : 0;
-          const comp = alm
-            ? Math.max(0, +alm.warehouse_actual_committed_stock || 0)
+          const alms = (it.warehouses || []).filter((w: any) => ALMACENES.has(String(w.warehouse_id)));
+          const aManoAlm = alms.reduce((a: number, w: any) => a + Math.max(0, +w.warehouse_actual_available_stock || 0), 0);
+          const comp = alms.length
+            ? alms.reduce((a: number, w: any) => a + Math.max(0, +w.warehouse_actual_committed_stock || 0), 0)
             : Math.max(0, +it.actual_committed_stock || 0);
           // El disponible NO se aplasta a cero: un negativo significa que hay
           // más comprometido que existencia, y esa es justo la señal que
           // interesa. Taparla convierte un problema en un cero tranquilo.
-          const disp = alm && alm.warehouse_actual_available_for_sale_stock != null
-            ? +alm.warehouse_actual_available_for_sale_stock
+          // Se SUMAN los disponibles de cada almacen, no se toma el de uno. Hoy
+          // PSP7460 trae -705 en Central (todo comprometido) y 864 en Logistico:
+          // el neto real es 159, y cualquiera de los dos solo mentiria.
+          const disp = alms.some((w: any) => w.warehouse_actual_available_for_sale_stock != null)
+            ? alms.reduce((a: number, w: any) => a + (+w.warehouse_actual_available_for_sale_stock || 0), 0)
             : (aManoAlm - comp);
           parcial.items[x.sku] = { itemId: x.itemId, desc: x.desc, activo: true, aMano: aManoAlm, comprometido: comp, disponible: disp, cost: x.cost, dispZoho: disp };
           parcial.preguntados = (parcial.preguntados || 0) + 1;

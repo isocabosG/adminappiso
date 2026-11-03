@@ -5448,9 +5448,10 @@ async function leerAManoFisico(catalogo, onProg) {
 }
 
 // Pasada 2 (1 llamada por SKU, en lotes paralelos): comprometidas y disponible.
-// SOLO EL ALMACEN CENTRAL (18-oct-2026, a peticion de los contadores).
+// SOLO LOS ALMACENES PROPIOS (18-oct-2026, a peticion de los contadores;
+// ampliado el 3-nov-2026 cuando se dio de alta Almacen Logistico).
 //
-// Zoho tiene diez almacenes: RMA -lo que se devuelve al proveedor por
+// Zoho tiene once almacenes: RMA -lo que se devuelve al proveedor por
 // garantia-, Devolucion, Desecho, Semi-OK, Laboratorio, Coordinacion y dos de
 // importacion. El total global los suma todos. SARK30K: 16 globales contra 7
 // en Central; los otros nueve son garantias por devolver y laboratorio, que ni
@@ -5458,11 +5459,15 @@ async function leerAManoFisico(catalogo, onProg) {
 //
 // Esta funcion YA pedia get_item por SKU, que es lo unico que trae
 // `warehouses[]`, pero tomaba el global de esa misma respuesta. El Edge
-// Function `inventario-sync` escribe el MISMO blob filtrando Central, asi que
+// Function `inventario-sync` escribe el MISMO blob con la misma lista, asi que
 // el archivo quedaba con dos definiciones y mandaba quien escribiera al final:
 // apretar "Actualizar" en la pantalla le metia al reporte del contador el
 // material de RMA y laboratorio, en silencio.
-const ALMACEN_CENTRAL = "4053294000001024003";
+// Los almacenes que SON nuestro inventario disponible. Era solo Central hasta
+// que el 3-nov-2026 se dio de alta "Almacen Logistico" y los 864 paneles del
+// pedimento 6004655 aterrizaron ahi: 1.5 M que esta pantalla no veia.
+// Es una lista a proposito; agregar uno es una coma, no un cambio de logica.
+const ALMACENES_NUESTROS = ["4053294000001024003", "4053294000001520157"];
 
 async function completarComprometido(items, orden, onProg) {
   // Se pregunta por los activos Y por los de baja que traigan existencia: un
@@ -5477,18 +5482,18 @@ async function completarComprometido(items, orden, onProg) {
       try {
         const d = await window.zohoBooks({ action: "get_item", params: { item_id: items[sku].itemId } });
         const it = d.item || {};
-        const alm = (it.warehouses || []).find((w) => String(w.warehouse_id) === ALMACEN_CENTRAL);
+        const alms = (it.warehouses || []).filter((w) => ALMACENES_NUESTROS.includes(String(w.warehouse_id)));
         // El "a mano" se CORRIGE aqui: el de la pasada barata es el global,
         // porque el listado de Zoho no desglosa por almacen.
-        if (alm) items[sku].aMano = Math.max(0, +alm.warehouse_actual_available_stock || 0);
-        const comp = alm
-          ? Math.max(0, +alm.warehouse_actual_committed_stock || 0)
+        if (alms.length) items[sku].aMano = alms.reduce((a, w) => a + Math.max(0, +w.warehouse_actual_available_stock || 0), 0);
+        const comp = alms.length
+          ? alms.reduce((a, w) => a + Math.max(0, +w.warehouse_actual_committed_stock || 0), 0)
           : Math.max(0, +it.actual_committed_stock || 0);
         items[sku].comprometido = comp;
         // OJO: el disponible PUEDE SER NEGATIVO (comprometido de mas). No envolver
         // en Math.max(0, ...): ese negativo es justo la senal util de la pantalla.
-        items[sku].disponible = alm && alm.warehouse_actual_available_for_sale_stock != null
-          ? +alm.warehouse_actual_available_for_sale_stock
+        items[sku].disponible = alms.some((w) => w.warehouse_actual_available_for_sale_stock != null)
+          ? alms.reduce((a, w) => a + (+w.warehouse_actual_available_for_sale_stock || 0), 0)
           : (items[sku].aMano - comp);
       } catch { /* si un SKU falla queda en null y la tabla muestra "-" */ }
     }));
@@ -5943,7 +5948,7 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
     const csv = "\uFEFF" + [
       "Reporte de inventario - Innovacion Solar",
       `Corte,${rep.fechaFisico}`,
-      `Criterio,"Existencia fisica del ALMACEN CENTRAL que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
+      `Criterio,"Existencia fisica de los almacenes propios (ALMACEN CENTRAL y ALMACEN LOGISTICO) que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
       `Costo,"Costo de adquisicion del catalogo de Importaciones (promedio ponderado). El precio de venta sale del campo rate de Zoho."`,
       ...(porPolitica.length
         ? [`Excluidos por politica,"${porPolitica.length} SKU de uso continuo (cable a granel, que se consume en varias obras a la vez) por ${r2(valPolitica)} al costo. No se declaran como existencia libre."`]

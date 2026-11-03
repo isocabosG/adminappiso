@@ -35,7 +35,24 @@ const KEY_INV = "iso3-inventario-fisico";
 const GAP_MS = 350;
 // Solo lo apartado en el Almacén Central. Un renglón surtido desde RMA o desde
 // un almacén de importación no compromete el material con el que se trabaja.
-const ALMACEN = Deno.env.get("ZOHO_ALMACEN_ID") || "4053294000001024003";
+// Los almacenes cuyo contenido ES NUESTRO INVENTARIO DISPONIBLE. Era uno solo
+// (Central) hasta que el 3-nov-2026 se dio de alta "Almacén Logístico" y los
+// 864 paneles del pedimento 6004655 aterrizaron ahí: 1.5 M de material que la
+// app no veía, porque un `find` de un solo id devuelve el primero y punto.
+//
+// Es una LISTA a proposito. El error no fue el id, fue asumir que siempre
+// habria un almacen. Agregar uno nuevo ahora es una coma en el secreto
+// ZOHO_ALMACENES_ID, no un despliegue.
+//
+// Los que NO entran siguen fuera y por las mismas razones: RMA y Desecho no se
+// pueden vender, Semi-OK no esta verificado, Laboratorio y Coordinacion no son
+// almacen, y los de importacion (Perezgrovas, Cargo Baja) son material que
+// todavia no llega.
+const ALMACENES = new Set(
+  (Deno.env.get("ZOHO_ALMACENES_ID") || Deno.env.get("ZOHO_ALMACEN_ID") ||
+   "4053294000001024003,4053294000001520157")
+    .split(",").map((s) => s.trim()).filter(Boolean),
+);
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -93,7 +110,7 @@ Deno.serve(async (req) => {
           // nuestro. Si no lo dice (renglones viejos), se cuenta: dejarlo fuera
           // reportaría menos comprometido del que hay, y eso se lee como
           // material libre.
-          if (l.warehouse_id && String(l.warehouse_id) !== ALMACEN) continue;
+          if (l.warehouse_id && !ALMACENES.has(String(l.warehouse_id))) continue;
           const sku = up(l.sku);
           if (!sku) continue;
           const comp = num(l.quantity) - num(l.quantity_delivered);
