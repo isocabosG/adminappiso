@@ -61,7 +61,7 @@ Viven en `public.profiles`. El rol gobierna qué pestañas se ven; las banderas 
 | Vercel | despliegue automático al empujar a `main` |
 | URL | `adminappiso.vercel.app` |
 | Zoho Books | organización `809693641` |
-| Carpeta en la Mac | `~/Desktop/adminappiso` |
+| Carpeta en la Mac | `~/Desktop/ISO-ERP/adminappiso` |
 | Build | Vite 5 + React 18 |
 
 ### Crons (`pg_cron` + `pg_net`)
@@ -285,7 +285,7 @@ Si un cambio toca otra app, dilo y no la modifiques desde este repo.
 ## 8 · Cómo se despliega
 
 ```bash
-cd ~/Desktop/adminappiso
+cd ~/Desktop/ISO-ERP/adminappiso
 ./subir.sh
 ```
 
