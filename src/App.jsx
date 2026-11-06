@@ -4234,6 +4234,19 @@ ${porPagar >= 0
         <Section n="4" t="Materiales por hito"
           r={<span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-800">obra {feedProy.fecha_instalacion || "—"}</span>}>
           {(() => {
+            // LO QUE LA ORDEN DE VENTA TODAVIA DEBE, leido de la OV misma.
+            // cantidad − entregado, solo articulos de inventario (un renglon de
+            // servicio no aparta nada). Se incluyen los SKU con 0: un 0 dice
+            // «ya se entrego completo», que no es lo mismo que «no esta en la
+            // orden», y el MRP tiene que poder distinguirlos.  [6-nov-2026]
+            const apartadoOV = {};
+            for (const l of (so.line_items || [])) {
+              const esInv = String(l.item_type || "") === "inventory" || String(l.product_type || "") === "goods";
+              if (!esInv) continue;
+              const k = String(l.sku || "").trim().toUpperCase();
+              if (!k) continue;
+              apartadoOV[k] = (apartadoOV[k] || 0) + Math.max(0, (+l.quantity || 0) - (+l.quantity_delivered || 0));
+            }
             // Lo que se acaba de editar se pinta encima del feed, que solo se
             // vuelve a leer al recargar. Sin esto el renglón regresaría al
             // valor viejo justo después de guardarlo.
@@ -4243,7 +4256,7 @@ ${porPagar >= 0
                 const e = matEdit[x.id];
                 return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked, locked_at: e.lockedAt } : x;
               }),
-            }, feedHitos);
+            }, feedHitos, apartadoOV);
             // Lo diseñado que NADIE subió a la orden de venta. No entra al
             // cálculo —la OV manda— pero se enseña, porque si no, el material
             // desaparece sin que nadie sepa que falta un paso.  [6-nov-2026]
@@ -4253,21 +4266,23 @@ ${porPagar >= 0
                 const e = matEdit[x.id];
                 return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked, locked_at: e.lockedAt } : x;
               }),
-            });
+            }, apartadoOV);
             const avisoFuera = fuera.length ? (
               <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
                 <p className="text-xs font-semibold text-amber-900">
-                  {fuera.length} renglón(es) diseñados que NO están en la orden de venta
+                  {fuera.length} renglón(es) diseñados que la orden de venta no cubre ({nfMrp.format(fuera.reduce((s, l) => s + l.falta, 0))} pzas)
                 </p>
                 <p className="text-[11px] text-amber-800 mt-0.5">
-                  El MRP no los pide: solo compra contra lo que tiene respaldo en la OV.
+                  El MRP no los compra: solo compra contra lo que la OV todavía debe.
                   Para que entren, hay que subirlos a la orden desde IS-PMT.
+                  Lo que ya se entregó no aparece aquí ni en el MRP — eso no es un hueco.
                 </p>
                 <div className="mt-2 space-y-0.5">
                   {fuera.slice(0, 12).map((l) => (
                     <div key={l.id} className="text-[11px] text-amber-900">
-                      <span className="font-medium">{l.requerido}</span> · {l.descripcion}
+                      <span className="font-medium">{l.falta}</span> · {l.descripcion}
                       <span className="opacity-60"> · {l.sku || "sin SKU"}</span>
+                      <span className="opacity-60"> · {l.estadoOV === "parcial" ? `la orden solo trae ${l.planear} de ${l.requerido}` : "no está en la orden"}</span>
                     </div>
                   ))}
                   {fuera.length > 12 && (
@@ -4311,7 +4326,7 @@ ${porPagar >= 0
                           {" · "}Hito {g.hito}
                         </p>
                         <p className="text-[10px] font-mono text-stone-500">
-                          {nfMrp.format(g.piezas)} pzas · pedir antes de <b className={tarde ? "text-red-700" : "text-stone-700"}>{g.fechaCompra || "—"}</b>
+                          {nfMrp.format(g.piezas)} pzas{g.disenado !== g.piezas ? <span className="text-stone-400"> de {nfMrp.format(g.disenado)} diseñadas</span> : null} · pedir antes de <b className={tarde ? "text-red-700" : "text-stone-700"}>{g.fechaCompra || "—"}</b>
                           <span className="text-stone-400"> (lead {g.lead} d)</span>
                         </p>
                       </div>
@@ -6557,7 +6572,7 @@ function MrpCompras({ setAviso }) {
   const [soloQty, setSoloQty] = useState(false);
   // Un solo control con tres estados, en vez de dos casillas que puestas una
   // al lado de la otra se leían como el mismo filtro repetido.
-  const [obraFiltro, setObraFiltro] = useState(null);   // null | "todas" | "confecha"
+  const [soloConFecha, setSoloConFecha] = useState(false);  // solo lo que alguna obra calendarizada tiene apartado
   const [soloDiscrepa, setSoloDiscrepa] = useState(false);
   const [mesesGuardados, setMesesGuardados] = useState(null);
   const [ocultaBaja, setOcultaBaja] = useState(false);
@@ -6690,36 +6705,35 @@ function MrpCompras({ setAviso }) {
       const lotes = (oc?.lotes?.[sku] || []).slice().sort((a, b) => String(a.eta || "9999").localeCompare(String(b.eta || "9999")));
       const eta = lotes.find((l) => l.eta)?.eta || null;
       const nuestroSinTransito = stock - porSurtir;
+      // IS-PMT ya NO aporta cantidades.  [6-nov-2026]
+      // Fran: «se quita entonces PIDE OBRA, porque solo vemos Zoho». Las
+      // cantidades salen todas de la orden de venta (POR SURTIR = pedido menos
+      // entregado). De IS-PMT se conserva una sola cosa, que Zoho no tiene y
+      // nadie más puede dar: LA FECHA DE INSTALACIÓN de la obra. Cantidades de
+      // Zoho, calendario de IS-PMT.
       const obras = pmt[sku] || [];
-      // Lo que las obras piden y todavía no se les entrega, según la lista de
-      // materiales de IS-PMT. NO es lo mismo que POR SURTIR, que es lo apartado
-      // en la orden de venta de Zoho: son dos fuentes distintas y donde no
-      // coinciden está el material que va a faltar.
-      const pideObra = obras.reduce((a, o) => a + o.falta, 0);
 
-      // El desglose por obra, juntando las dos fuentes por número de OV:
-      //   · lo APARTADO en la orden de venta de Zoho (comprometido-ov)
-      //   · lo que PIDE la obra en su lista de materiales de IS-PMT
-      // Se juntan a propósito: donde no coinciden está lo interesante. Si la
-      // obra pide algo que nadie apartó, es material que va a faltar y que POR
-      // SURTIR no ve. Al revés, algo apartado que la obra ya no pide es
-      // material retenido sin dueño.
+      // El desglose por obra sale de UNA fuente: lo apartado en la orden de
+      // venta de Zoho. La obra solo presta su fecha de instalación.
       const porOv = {};
-      const meter = (llave, base) => (porOv[llave] = porOv[llave] || { ov: "", proyecto: "", fecha: null, apartado: 0, pide: 0, entregado: 0, ...base });
+      const meter = (llave, base) => (porOv[llave] = porOv[llave] || { ov: "", proyecto: "", fecha: null, apartado: 0, ...base });
       for (const o of (c?.ovs || [])) {
         const k = String(o.ov || "").trim().toUpperCase() || `P:${o.proyecto}`;
         const e = meter(k, { ov: o.ov || "", proyecto: o.proyecto || "" });
         e.apartado += o.cant;
         if (!e.fecha) e.fecha = fechaOv[String(o.ov || "").trim().toUpperCase()] || null;
       }
+      // La fecha de instalación de IS-PMT, pegada por número de OV. Solo eso:
+      // si IS-PMT conoce una obra que la orden no tiene apartada, no se agrega
+      // un renglón — ese material no se compra.
       for (const o of obras) {
-        const k = String(o.ov || "").trim().toUpperCase() || `P:${o.proyecto}`;
-        const e = meter(k, { ov: o.ov || "", proyecto: o.proyecto || "" });
-        e.pide += o.pide; e.entregado += o.entregado;
+        const k = String(o.ov || "").trim().toUpperCase();
+        const e = k && porOv[k];
+        if (!e) continue;
         if (!e.fecha) e.fecha = o.fecha || null;
         if (!e.proyecto) e.proyecto = o.proyecto || "";
       }
-      const lineas = Object.values(porOv).sort((a, b) =>
+      const lineas = Object.values(porOv).filter((o) => o.apartado > 0).sort((a, b) =>
         String(a.fecha || "9999").localeCompare(String(b.fecha || "9999")) || String(a.ov).localeCompare(String(b.ov)));
 
       // CUÁNDO HAY QUE PEDIRLO.
@@ -6733,7 +6747,10 @@ function MrpCompras({ setAviso }) {
         seccion: obras.find((o) => o.seccion)?.seccion || null,
       };
       const lead = leadDe(paraLead);
-      const obrasPendientes = obras.filter((o) => o.falta > 0 && o.fecha).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+      // La obra más próxima que TODAVÍA LO TIENE APARTADO en su orden. Antes se
+      // medía contra `o.falta` de IS-PMT; eso hacía que una obra con el material
+      // ya entregado siguiera jalando la fecha límite hacia atrás.
+      const obrasPendientes = lineas.filter((o) => o.apartado > 0 && o.fecha).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
       const obraProxima = obrasPendientes[0] || null;
       const pedirAntes = obraProxima ? fechaPedido(obraProxima.fecha, lead) : null;
       return {
@@ -6743,12 +6760,13 @@ function MrpCompras({ setAviso }) {
         stockFinal: backOrder + stock - porSurtir,
         dispZoho: dz ?? null,
         discrepa: dz != null && Math.abs(+dz - nuestroSinTransito) > 0.01,
-        obras, lineas, pideObra, dif: pideObra - porSurtir,
+        obras, lineas,
         lead, leadPorque: porqueLead(paraLead), pedirAntes,
         obraProxima: obraProxima ? obraProxima.proyecto : null,
         instalaProxima: obraProxima ? obraProxima.fecha : null,
-        // Calendarizado = al menos una de las obras que lo piden tiene fecha.
-        calendarizado: obras.some((o) => !!o.fecha),
+        // Calendarizado = al menos una orden que lo tiene apartado ya trae
+        // fecha de instalación.
+        calendarizado: lineas.some((o) => o.apartado > 0 && !!o.fecha),
         porMes,
       };
     }).sort((a, b) => a.desc.localeCompare(b.desc, "es"));
@@ -6797,7 +6815,7 @@ function MrpCompras({ setAviso }) {
   // material que alguien necesita: APL00038 estaba dado de baja, nadie lo veía,
   // y tenía 393 piezas apartadas en 16 obras. Esconderlo habría dejado a esas
   // 16 sin arandela y sin aviso.
-  const reclamado = (f) => f.pideObra > 0 || f.porSurtir > 0;
+  const reclamado = (f) => f.porSurtir > 0;
   const esFuera = (f) => fuera.has(f.sku) && !reclamado(f);
   const colado = (f) => fuera.has(f.sku) && reclamado(f);
 
@@ -6809,20 +6827,19 @@ function MrpCompras({ setAviso }) {
     if (q && !(f.sku.includes(q) || f.desc.toUpperCase().includes(q) || f.prov.toUpperCase().includes(q))) return false;
     if (soloFalta && f.stockFinal >= 0) return false;
     if (soloQty && !(qty[f.sku] > 0)) return false;
-    if (obraFiltro === "todas" && !f.obras.length) return false;
-    if (obraFiltro === "confecha" && !f.calendarizado) return false;
+    if (soloConFecha && !f.calendarizado) return false;
     if (soloDiscrepa && !f.discrepa) return false;
     if (ocultaBaja && !f.activo) return false;
     return true;
-  }), [filas, q, soloFalta, soloQty, obraFiltro, soloDiscrepa, ocultaBaja, qty, fuera, verFuera]);
+  }), [filas, q, soloFalta, soloQty, soloConFecha, soloDiscrepa, ocultaBaja, qty, fuera, verFuera]);
 
   // La lista de excluidos puede traer SKU que ya no están en el catálogo; lo
   // que cuenta aquí es cuántos de los de HOY está escondiendo.
-  const nFuera = useMemo(() => filas.filter((f) => fuera.has(f.sku) && !(f.pideObra > 0 || f.porSurtir > 0)).length, [filas, fuera]);
+  const nFuera = useMemo(() => filas.filter((f) => fuera.has(f.sku) && !(f.porSurtir > 0)).length, [filas, fuera]);
   // Los que están en la lista pero alguna obra los reclama. Si esto no es cero,
   // hay SKU muerto vivo en las órdenes de venta y hay que corregir el SKU, no
   // esconderlo.
-  const nColados = useMemo(() => filas.filter((f) => fuera.has(f.sku) && (f.pideObra > 0 || f.porSurtir > 0)).length, [filas, fuera]);
+  const nColados = useMemo(() => filas.filter((f) => fuera.has(f.sku) && f.porSurtir > 0).length, [filas, fuera]);
   const universo = verFuera ? nFuera : filas.length - nFuera;
   const escondidos = universo - vistas.length;
   const totQty = useMemo(() => vistas.reduce((a, f) => a + (+qty[f.sku] || 0), 0), [vistas, qty]);
@@ -6858,19 +6875,17 @@ function MrpCompras({ setAviso }) {
     a.download = nombre; a.click();
   };
 
-  // PIDE OBRA va pegado a POR SURTIR, con la diferencia al lado: separados por
-  // ocho columnas nadie los compara, y la comparación es el punto.
   //
   // OTROS MESES existe porque los meses apagados NO salen en el archivo, y sin
   // esa columna el renglón no cuadra: POR SURTIR decía 272 y los meses sumaban
   // 115 sin que nada explicara el hueco. Con ella, POR SURTIR = suma de los
   // meses + otros meses, siempre.
   const exportar = () => bajar(`MRP_${hoy()}.csv`,
-    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "PIDE OBRA", "DIF", "STOCK AL DIA", "STOCK FINAL", "QTY", "PEDIR ANTES DE", "DIAS DE ENTREGA", "DISPONIBLE SEGUN ZOHO",
+    ["SKU", "DESCRIPCION", "PROVEEDOR", "BACK ORDER", "POR SURTIR", "STOCK AL DIA", "STOCK FINAL", "QTY", "PEDIR ANTES DE", "DIAS DE ENTREGA", "DISPONIBLE SEGUN ZOHO",
      ...mesesVisibles.map((m) => `${mesTitulo(m)} (APARTADO)`), "OTROS MESES"],
     vistas.map((f) => {
       const enVista = mesesVisibles.reduce((a, m) => a + (f.porMes[m] || 0), 0);
-      return [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.pideObra || "", f.dif || "", f.stock, f.stockFinal,
+      return [f.sku, f.desc, f.prov, f.backOrder, f.porSurtir, f.stock, f.stockFinal,
         qty[f.sku] ?? "", f.pedirAntes || "", f.lead, f.dispZoho ?? "",
         ...mesesVisibles.map((m) => f.porMes[m] || 0), f.porSurtir - enVista];
     }));
@@ -7103,10 +7118,9 @@ function MrpCompras({ setAviso }) {
             <p><b className="text-white">STOCK AL DÍA</b> — existencia física en Almacén Central según Zoho, sin descontar apartados.</p>
             <p><b className="text-white">STOCK FINAL</b> — back order + stock al día − por surtir. En rojo cuando da negativo: eso es lo que falta comprar.</p>
             <p><b className="text-white">QTY</b> — la cantidad que tú decides pedir. Se escribe a mano, se guarda y alimenta la orden de compra.</p>
-            <p><b className="text-white">PIDE OBRA y DIF</b> — lo que las obras piden en IS-PMT menos lo entregado, y su diferencia contra POR SURTIR. Son dos fuentes distintas y no tienen por qué coincidir: DIF en rojo es material que la obra pide y que nadie apartó en la orden de venta.</p>
-            <p><b className="text-white">Columnas por mes</b> — el mismo material <b>apartado</b> (POR SURTIR, no PIDE OBRA), repartido por la fecha de instalación que trae el calendario de IS-PMT. Los meses se prenden y apagan; lo que no está calendarizado cae en «sin fecha».</p>
-            <p className="sm:col-span-2"><b className="text-white">Recuadro morado</b> — IS-PMT lo pide para una obra: continuo si la obra ya tiene fecha, punteado si aún no está calendarizada.
-              Clic en cualquier renglón abre el desglose por obra, con lo apartado en Zoho al lado de lo que pide la obra; donde no coinciden está el material que va a faltar.</p>
+            <p><b className="text-white">Columnas por mes</b> — el mismo material <b>apartado</b>, repartido por la fecha de instalación que trae el calendario de IS-PMT. Los meses se prenden y apagan; lo que no está calendarizado cae en «sin fecha».</p>
+            <p className="sm:col-span-2"><b className="text-white">Una sola fuente</b> — las cantidades salen todas de la orden de venta de Zoho: pedido menos entregado. Lo que ya se entregó desaparece de POR SURTIR y del MRP. De IS-PMT se usa una sola cosa, la que Zoho no tiene: la <b>fecha de instalación</b> de cada obra.
+              Clic en cualquier renglón abre el desglose: qué órdenes lo tienen apartado, de qué obra y para cuándo.</p>
             <p className="sm:col-span-2 text-teal-200">Todo se actualiza solo de madrugada: catálogo 5:00, órdenes de compra 5:10, apartados 5:15, calendario de IS-PMT 5:30, inventario 5:40. Nada se captura a mano. <b className="text-white">Actualizar de Zoho</b> trae catálogo, apartados y órdenes de compra en el momento — para un SKU recién creado o una orden levantada hace un rato. El inventario físico no entra ahí: ése solo corre de madrugada.</p>
           </div>
         </details>
@@ -7137,17 +7151,7 @@ function MrpCompras({ setAviso }) {
           placeholder="Buscar SKU, descripción o proveedor…" className="px-2 py-1.5 border border-stone-300 rounded text-xs w-64" />
         {chip(soloFalta, setSoloFalta, "Solo faltantes")}
         {chip(soloQty, setSoloQty, "Solo con QTY")}
-        <span className="inline-flex items-center rounded border border-purple-400 overflow-hidden">
-          <span className="px-2 py-1 text-[10px] uppercase tracking-widest text-purple-700 bg-purple-50">Pide obra</span>
-          {[["todas", "todas"], ["confecha", "con fecha"]].map(([k, t]) => (
-            <button key={k} onClick={() => setObraFiltro(obraFiltro === k ? null : k)}
-              title={k === "todas" ? "Todo lo que IS-PMT pide para alguna obra" : "Solo donde la obra ya tiene fecha de instalación"}
-              className={`px-2 py-1 text-[11px] font-medium border-l border-purple-300 ${
-                obraFiltro === k ? "bg-purple-700 text-white" : "text-purple-700 hover:bg-purple-50"}`}>
-              {t}
-            </button>
-          ))}
-        </span>
+        {chip(soloConFecha, setSoloConFecha, "Solo obras con fecha")}
         {chip(ocultaBaja, setOcultaBaja, "Ocultar dados de baja")}
         {(nFuera > 0 || verFuera) && (
           <button onClick={() => { setVerFuera(!verFuera); setSel(new Set()); }}
@@ -7237,8 +7241,6 @@ function MrpCompras({ setAviso }) {
               <th className="text-left px-2 py-2">PROVEEDOR</th>
               <th className="text-right px-2 py-2">BACK ORDER</th>
               <th className="text-right px-2 py-2" title="Apartado en órdenes de venta abiertas de Zoho. Es lo que reparten las columnas por mes.">POR SURTIR</th>
-              <th className="text-right px-2 py-2 bg-purple-50 text-purple-800" title="Lo que las obras piden en su lista de materiales de IS-PMT, menos lo ya entregado. Otra fuente: NO tiene por qué coincidir con POR SURTIR.">PIDE OBRA</th>
-              <th className="text-right px-2 py-2 bg-purple-50 text-purple-800" title="PIDE OBRA − POR SURTIR. En rojo: la obra lo pide y nadie lo apartó en la orden de venta — ése es el material que va a faltar.">DIF</th>
               <th className="text-right px-2 py-2">STOCK AL DIA</th>
               <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
               <th className="text-right px-2 py-2">QTY</th>
@@ -7250,8 +7252,6 @@ function MrpCompras({ setAviso }) {
               <td className="px-2 py-1.5"></td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("backOrder"))}</td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("porSurtir"))}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-purple-50 text-purple-900">{mx0(tot("pideObra"))}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-purple-50 text-purple-900">{mx0(tot("dif"))}</td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
               <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
               <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
@@ -7260,7 +7260,7 @@ function MrpCompras({ setAviso }) {
             </tr>
           </thead>
           <tbody>
-            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={13 + mesesVisibles.length} /></tr>}
+            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
             {enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
@@ -7294,14 +7294,6 @@ function MrpCompras({ setAviso }) {
                   {f.eta && <span className="block text-[9px] text-stone-400 font-normal">{f.eta.slice(5)}</span>}
                 </td>
                 <td className="px-2 text-right font-mono">{f.porSurtir || ""}</td>
-                <td className="px-2 text-right font-mono bg-purple-50/40">{f.pideObra || ""}</td>
-                {/* La diferencia solo es alarma cuando la obra pide MÁS de lo
-                    apartado: eso falta y POR SURTIR no lo ve. Al revés es
-                    material retenido, que molesta pero no para una obra. */}
-                <td className={`px-2 text-right font-mono bg-purple-50/40 ${f.dif > 0 ? "text-red-600 font-semibold" : "text-stone-400"}`}
-                  title={f.dif > 0 ? `La obra pide ${f.dif} más de lo apartado en la orden de venta` : (f.dif < 0 ? `Hay ${-f.dif} apartadas que ninguna obra pide` : "")}>
-                  {f.dif || ""}
-                </td>
                 <td className="px-2 text-right font-mono">{f.stock || ""}</td>
                 <td className={`px-2 text-right font-mono font-semibold bg-stone-50 ${f.stockFinal < 0 ? "text-red-600" : ""}`}>
                   {f.discrepa && <span className="text-amber-600 mr-1" title={`Zoho reporta ${f.dispZoho} disponible; nosotros ${f.stock - f.porSurtir}. Sin contar el back order.`}>▲</span>}
@@ -7326,37 +7318,25 @@ function MrpCompras({ setAviso }) {
               </tr>
               {detalle === f.sku && (
                 <tr style={{ outline: "2px solid #7e22ce", outlineOffset: "-2px" }} className="bg-purple-50">
-                  <td colSpan={13 + mesesVisibles.length} className="px-3 py-2">
+                  <td colSpan={11 + mesesVisibles.length} className="px-3 py-2">
                     {f.lineas.length === 0 ? (
-                      <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta ni lo pide ninguna obra en IS-PMT.</p>
+                      <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta.</p>
                     ) : (
                       <table className="w-full text-[11px]">
                         <thead className="text-[9px] uppercase tracking-wider text-purple-500">
                           <tr>
                             <th className="text-left py-0.5">OV</th><th className="text-left">Proyecto</th><th className="text-left">Instala</th>
-                            <th className="text-right">Apartado en Zoho</th><th className="text-right">Pide la obra</th>
-                            <th className="text-right">Entregado</th><th className="text-left pl-3"></th>
+                            <th className="text-right">Apartado en Zoho</th>
                           </tr>
                         </thead>
                         <tbody>
                           {f.lineas.map((o, k) => {
-                            // Donde las dos fuentes no coinciden es donde hay
-                            // trabajo: material que va a faltar, o retenido que
-                            // ya nadie necesita.
-                            const faltaApartar = o.pide > 0 && o.apartado === 0;
-                            const soloApartado = o.apartado > 0 && o.pide === 0;
                             return (
                               <tr key={k} className="border-t border-purple-100">
                                 <td className="py-0.5 font-mono text-purple-700">{o.ov || "—"}</td>
                                 <td className="text-purple-900">{o.proyecto || "(sin proyecto)"}</td>
                                 <td className={o.fecha ? "text-purple-700" : "text-stone-400"}>{o.fecha || "sin calendarizar"}</td>
                                 <td className="text-right font-mono">{o.apartado || ""}</td>
-                                <td className="text-right font-mono">{o.pide || ""}</td>
-                                <td className="text-right font-mono text-stone-500">{o.entregado || ""}</td>
-                                <td className="pl-3 text-[10px]">
-                                  {faltaApartar && <span className="text-red-600">La obra lo pide y no está apartado en la OV</span>}
-                                  {soloApartado && <span className="text-stone-400">Apartado en la OV; la obra no lo tiene en su lista</span>}
-                                </td>
                               </tr>
                             );
                           })}
@@ -7368,7 +7348,7 @@ function MrpCompras({ setAviso }) {
               )}
               </Fragment>
             ))}
-            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={13 + mesesVisibles.length} /></tr>}
+            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
           </tbody>
         </table>
       </div>

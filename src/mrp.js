@@ -32,9 +32,13 @@ const num = (v) => Number(v) || 0
 const reqDe = (m) => num(m.cant_disenada != null ? m.cant_disenada : m.qty)
 const Dde = (p) => (p.fecha_instalacion ? String(p.fecha_instalacion).slice(0, 10) : null)
 
-export function lineasDeProyecto(p) {
+// `apartado`: { [SKU]: piezas que la orden de venta TODAVIA debe } = cantidad
+// menos entregado, leido de la OV de Zoho. Todo SKU que este en la orden
+// aparece, aunque sea con 0: un 0 significa «ya se entrego completo», y eso es
+// distinto de «no esta en la orden».  [6-nov-2026]
+export function lineasDeProyecto(p, apartado) {
   const D = Dde(p)
-  return (p.materiales || []).map((m) => {
+  const lineas = (p.materiales || []).map((m) => {
     const hito = hitoDe(m)
     const sistema = sistemaDe(m)
     const lead = leadDe(m)
@@ -75,13 +79,52 @@ export function lineasDeProyecto(p) {
       etaAlmacen: m.eta_almacen || null,
       etaOrigen: m.eta_origen || null,
       etaLocked: !!m.eta_locked,
-      // ¿Tiene respaldo en la orden de venta?  [6-nov-2026]
-      // Lo manda el feed de IS-PMT como `en_orden`. Un feed viejo no trae el
-      // campo: `undefined` se trata como SÍ, para no vaciar el MRP entero el
-      // día que IS-PMT se despliegue después que esta app.
-      enOrden: m.en_orden === undefined ? true : !!m.en_orden,
+      // Se resuelven abajo, contra la orden de venta.
+      //   planear   lo que el MRP va a comprar (sale de Zoho)
+      //   falta     lo diseñado que la orden no cubre
+      //   estadoOV  pendiente · parcial · entregado · fuera
+      enOrden: true, planear: reqDe(m), falta: 0, estadoOV: 'pendiente',
     }
   })
+
+  // LA ORDEN DE VENTA MANDA — Y LA ORDEN ES ZOHO.  [6-nov-2026]
+  //
+  // Fran: «se quita entonces PIDE OBRA, porque solo vemos Zoho. Si ya se
+  // entregaron equipos y materiales ya no deben salir en el MRP y se quitan de
+  // lo pendiente de compra. No hay cantidad apartada: o esta en la orden, o
+  // esta empaquetado, o esta empaquetado y surtido».
+  //
+  // La version anterior preguntaba `zoho_line_id` de IS-PMT. Ese campo no dice
+  // si la linea esta en la orden: dice si IS-PMT la empujo. LA NORIA 100 tiene
+  // 96 m de CC3/0NEG en SO-01072 y los ocho renglones de IS-PMT traian el campo
+  // vacio, porque IS-PMT partio 96 en ocho de 12 y Zoho tiene una sola linea.
+  // Preguntarle a Zoho directamente no tiene ese problema.
+  if (apartado) {
+    const resto = Object.create(null)
+    for (const k of Object.keys(apartado)) resto[k] = num(apartado[k])
+    // Se reparte empezando por el renglon que se necesita PRIMERO: si la orden
+    // ya no alcanza para todos, el que se queda descubierto es el mas lejano,
+    // que es el que todavia da tiempo de corregir.
+    const porFecha = [...lineas].sort((a, b) =>
+      String(a.fechaCompra || '9999-99-99').localeCompare(String(b.fechaCompra || '9999-99-99')))
+    for (const l of porFecha) {
+      const k = String(l.sku || '').trim().toUpperCase()
+      const tenia = k ? apartado[k] : undefined
+      const hay = k ? resto[k] : undefined
+      const toma = hay === undefined ? 0 : Math.max(0, Math.min(l.requerido, hay))
+      if (k && hay !== undefined) resto[k] = hay - toma
+      l.planear = toma
+      l.falta = Math.max(0, l.requerido - toma)
+      l.enOrden = toma > 0
+      // 'entregado' NO es hueco: la orden traía el renglón y ya salió. Por eso
+      // se mide contra lo que la orden tenía al principio, no contra lo que
+      // quedó después de repartir.
+      l.estadoOV = tenia === undefined ? 'fuera'
+        : num(tenia) <= 0 ? 'entregado'
+        : l.falta > 0 ? 'parcial' : 'pendiente'
+    }
+  }
+  return lineas
 }
 
 // LA ORDEN DE VENTA MANDA.  [6-nov-2026]
@@ -98,13 +141,18 @@ export function lineasDeProyecto(p) {
 // `sinOrden` existe para que el hueco se vea. Una regla que esconde datos en
 // silencio deja de ser regla y se vuelve fuga — es el mismo error del folio
 // que no se escribía durante tres semanas.
-export function conOrden(p) { return lineasDeProyecto(p).filter((l) => l.enOrden) }
-export function sinOrden(p) { return lineasDeProyecto(p).filter((l) => !l.enOrden) }
+export function conOrden(p, apartado) { return lineasDeProyecto(p, apartado).filter((l) => l.enOrden) }
+// El hueco de verdad: lo que la orden NO trae ('fuera') y lo que trae corto
+// ('parcial'). Lo ya entregado no es hueco y no sale: por eso 'entregado' se
+// queda afuera de esta lista y tambien del MRP.
+export function sinOrden(p, apartado) {
+  return lineasDeProyecto(p, apartado).filter((l) => l.estadoOV === 'fuera' || l.estadoOV === 'parcial')
+}
 
-export function bomPorHito(p, hitosDelFeed) {
-  // Solo lo que tiene respaldo en la orden de venta. Lo demás sale aparte,
-  // en la lista de «falta subir a la orden», no aquí.
-  const lineas = lineasDeProyecto(p).filter((l) => l.enOrden)
+export function bomPorHito(p, hitosDelFeed, apartado) {
+  // Solo lo que la orden de venta todavía debe. Lo entregado desaparece y lo
+  // que no está en la orden sale aparte, en «falta subir a la orden».
+  const lineas = lineasDeProyecto(p, apartado).filter((l) => l.enOrden)
   // Se recorre sistema por sistema: SOLAR:4, GEN:4 y BOMBA:4 son tres hitos
   // distintos que pueden convivir en la misma obra. Agrupar por el numero solo
   // los fundiria en uno. El orden lo manda el feed (orden_sistema, num) y si no
@@ -120,7 +168,11 @@ export function bomPorHito(p, hitosDelFeed) {
       hito: h, sistema: s, clave, meta: mapa[clave] || hitoById(h, s), materiales: mats,
       lead: mats.reduce((n, m) => Math.max(n, m.lead), 0),
       fechaCompra: mats.map((m) => m.fechaCompra).filter(Boolean).sort()[0] || null,
-      piezas: mats.reduce((a, m) => a + m.requerido, 0),
+      // `piezas` es lo que se va a COMPRAR: lo que la orden todavía debe.
+      // `disenado` es lo que ingeniería puso. Donde no coinciden, ya se entregó
+      // parte o la orden se quedó corta.
+      piezas: mats.reduce((a, m) => a + m.planear, 0),
+      disenado: mats.reduce((a, m) => a + m.requerido, 0),
     }
   }).filter((g) => g.materiales.length)
 }
