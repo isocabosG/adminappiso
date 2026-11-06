@@ -3,7 +3,7 @@ import { LOGO_ISO, LEAF_WHITE } from "./logoISO.js";
 import { supabase } from "./supabaseClient.js";
 import Preguntar from "./Preguntar.jsx";
 import Usuarios from "./Usuarios.jsx";
-import { bomPorHito } from "./mrp.js";
+import { bomPorHito, sinOrden } from "./mrp.js";
 import { leadDe, porqueLead, fechaPedido } from "./hitos.js";
 
 // Recargar de verdad la version desplegada. Un location.reload() pelado puede
@@ -4244,10 +4244,56 @@ ${porPagar >= 0
                 return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked, locked_at: e.lockedAt } : x;
               }),
             }, feedHitos);
-            if (!grupos.length) return <p className="px-3 py-4 text-xs text-stone-400">Este proyecto no tiene lista de materiales en IS-PMT todavía. El MRP jala los equipos de la orden de venta como provisional.</p>;
+            // Lo diseñado que NADIE subió a la orden de venta. No entra al
+            // cálculo —la OV manda— pero se enseña, porque si no, el material
+            // desaparece sin que nadie sepa que falta un paso.  [6-nov-2026]
+            const fuera = sinOrden({
+              ...feedProy,
+              materiales: (feedProy.materiales || []).map((x) => {
+                const e = matEdit[x.id];
+                return e ? { ...x, sku: e.sku, cant_disenada: e.requerido, sku_activo: e.skuActivo, sku_locked: e.skuLocked, cant_locked: e.cantLocked, locked_at: e.lockedAt } : x;
+              }),
+            });
+            const avisoFuera = fuera.length ? (
+              <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <p className="text-xs font-semibold text-amber-900">
+                  {fuera.length} renglón(es) diseñados que NO están en la orden de venta
+                </p>
+                <p className="text-[11px] text-amber-800 mt-0.5">
+                  El MRP no los pide: solo compra contra lo que tiene respaldo en la OV.
+                  Para que entren, hay que subirlos a la orden desde IS-PMT.
+                </p>
+                <div className="mt-2 space-y-0.5">
+                  {fuera.slice(0, 12).map((l) => (
+                    <div key={l.id} className="text-[11px] text-amber-900">
+                      <span className="font-medium">{l.requerido}</span> · {l.descripcion}
+                      <span className="opacity-60"> · {l.sku || "sin SKU"}</span>
+                    </div>
+                  ))}
+                  {fuera.length > 12 && (
+                    <div className="text-[11px] text-amber-700 opacity-80">… y {fuera.length - 12} más</div>
+                  )}
+                </div>
+              </div>
+            ) : null;
+            // [6-nov-2026] Este mensaje decía que el MRP jala los equipos de la
+            // orden de venta como provisional. Dejó de ser cierto el 30-sep,
+            // cuando un refactor borró ese respaldo, y siguió cinco semanas
+            // prometiendo algo que la app ya no hacía.
+            if (!grupos.length) return (
+              <>
+                <p className="px-3 py-4 text-xs text-stone-400">
+                  Esta obra no tiene material dado de alta en la orden de venta, así que el MRP
+                  no pide nada para ella. En cuanto ingeniería lo suba a la OV desde IS-PMT,
+                  aparece aquí.
+                </p>
+                {avisoFuera}
+              </>
+            );
             const hoyISO = hoy();
             return (
               <div className="p-3 space-y-3">
+                {avisoFuera}
                 {grupos.map((g) => {
                   const tarde = g.fechaCompra && g.fechaCompra < hoyISO;
                   return (

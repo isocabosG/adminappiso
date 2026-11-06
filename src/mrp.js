@@ -75,12 +75,36 @@ export function lineasDeProyecto(p) {
       etaAlmacen: m.eta_almacen || null,
       etaOrigen: m.eta_origen || null,
       etaLocked: !!m.eta_locked,
+      // ¿Tiene respaldo en la orden de venta?  [6-nov-2026]
+      // Lo manda el feed de IS-PMT como `en_orden`. Un feed viejo no trae el
+      // campo: `undefined` se trata como SÍ, para no vaciar el MRP entero el
+      // día que IS-PMT se despliegue después que esta app.
+      enOrden: m.en_orden === undefined ? true : !!m.en_orden,
     }
   })
 }
 
+// LA ORDEN DE VENTA MANDA.  [6-nov-2026]
+//
+// Fran: «el MRP debe mostrar y calcular en función de lo que esté dado de
+// alta en la orden de venta, punto. Si no han dado de alta los materiales
+// porque ingeniería no ha hecho su trabajo, será algo que deberemos corregir
+// internamente en nuestros procesos... así es la única manera de que lo que
+// se pida y compre tenga un sustento de ingeniería».
+//
+// Es una regla de negocio, no un filtro técnico: comprar contra un diseño
+// que nadie subió a la orden es comprar sin respaldo comercial.
+//
+// `sinOrden` existe para que el hueco se vea. Una regla que esconde datos en
+// silencio deja de ser regla y se vuelve fuga — es el mismo error del folio
+// que no se escribía durante tres semanas.
+export function conOrden(p) { return lineasDeProyecto(p).filter((l) => l.enOrden) }
+export function sinOrden(p) { return lineasDeProyecto(p).filter((l) => !l.enOrden) }
+
 export function bomPorHito(p, hitosDelFeed) {
-  const lineas = lineasDeProyecto(p)
+  // Solo lo que tiene respaldo en la orden de venta. Lo demás sale aparte,
+  // en la lista de «falta subir a la orden», no aquí.
+  const lineas = lineasDeProyecto(p).filter((l) => l.enOrden)
   // Se recorre sistema por sistema: SOLAR:4, GEN:4 y BOMBA:4 son tres hitos
   // distintos que pueden convivir en la misma obra. Agrupar por el numero solo
   // los fundiria en uno. El orden lo manda el feed (orden_sistema, num) y si no
