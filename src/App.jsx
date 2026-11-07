@@ -2035,16 +2035,53 @@ const CATS = ["Panel", "Inversor", "Batería", "Otro"];
 const UMBRAL = 0.03;
 
 /* Saldos reales tomados del modelo de flujo (13-jul-2026) */
+// IDS FIJOS, NO uid().  [7-nov-2026]
+//
+// `iso3-cuentas` nunca se ha guardado en la base: la app cae en esta semilla en
+// CADA carga, y `uid()` le daba un id nuevo a cada cuenta cada vez. Una
+// operación guardada hoy quedaba huérfana mañana —su `cuentaId` ya no existía—
+// y el saldo de esa cuenta dejaba de contarla, en silencio. Con ids fijos el
+// movimiento sigue apuntando a la misma cuenta aunque nadie guarde el catálogo.
+//
+// `ultimos` son los últimos dígitos de la cuenta, los que imprime el
+// comprobante del banco («Mifel MXN ****1360»). Es con lo que el campo smart
+// de egresos adivina de dónde salió el pago. Se editan en Tesorería → Resumen.
 const SEED_CUENTAS = [
-  { id: uid(), nombre: "Banregio", moneda: "MXN", saldo: 154237.98 },
-  { id: uid(), nombre: "Banregio", moneda: "USD", saldo: 68802.06 },
-  { id: uid(), nombre: "Mifel", moneda: "MXN", saldo: 702928.75 },
-  { id: uid(), nombre: "Mifel", moneda: "USD", saldo: 1217.68 },
-  { id: uid(), nombre: "BBVA", moneda: "MXN", saldo: 419917.12 },
-  { id: uid(), nombre: "BBVA", moneda: "USD", saldo: 115019.88 },
-  { id: uid(), nombre: "Caja", moneda: "MXN", saldo: 36159.0 },
-  { id: uid(), nombre: "Caja", moneda: "USD", saldo: 1222.0 },
+  { id: "banregio-mxn", nombre: "Banregio", moneda: "MXN", saldo: 154237.98, ultimos: "" },
+  { id: "banregio-usd", nombre: "Banregio", moneda: "USD", saldo: 68802.06, ultimos: "" },
+  { id: "mifel-mxn", nombre: "Mifel", moneda: "MXN", saldo: 702928.75, ultimos: "1360" },
+  { id: "mifel-usd", nombre: "Mifel", moneda: "USD", saldo: 1217.68, ultimos: "" },
+  { id: "bbva-mxn", nombre: "BBVA", moneda: "MXN", saldo: 419917.12, ultimos: "" },
+  { id: "bbva-usd", nombre: "BBVA", moneda: "USD", saldo: 115019.88, ultimos: "" },
+  { id: "caja-mxn", nombre: "Caja", moneda: "MXN", saldo: 36159.0, ultimos: "" },
+  { id: "caja-usd", nombre: "Caja", moneda: "USD", saldo: 1222.0, ultimos: "" },
 ];
+
+// DE QUÉ CUENTA SALIÓ EL PAGO.  [7-nov-2026]
+// Fran: «el comprobante de pago dice qué banco y la terminación de la cuenta
+// origen». Primero se compara la terminación, que es exacta; si la cuenta no
+// la tiene capturada, se cae al nombre del banco con la moneda. Si ni así,
+// NO se adivina: se pide que la escojan a mano.
+const cuentaDelPago = (pago, cuentas) => {
+  const fin = String(pago?.cuentaOrigen || "").replace(/\D/g, "").slice(-4);
+  if (fin) {
+    const c = (cuentas || []).find((x) => String(x.ultimos || "").replace(/\D/g, "").slice(-4) === fin);
+    if (c) return { cuenta: c, como: `terminación ${fin}` };
+  }
+  const banco = String(pago?.bancoOrigen || "").toUpperCase();
+  const mon = String(pago?.moneda || "MXN").toUpperCase();
+  if (banco) {
+    const pri = banco.split(/\s+/)[0];
+    const delBanco = (cuentas || []).filter((x) => {
+      const n = String(x.nombre || "").toUpperCase();
+      return n && (banco.includes(n) || (pri.length > 2 && n.includes(pri)));
+    });
+    const exacta = delBanco.find((x) => String(x.moneda || "").toUpperCase() === mon);
+    if (exacta) return { cuenta: exacta, como: `banco y moneda (${exacta.nombre} ${exacta.moneda})` };
+    if (delBanco.length === 1) return { cuenta: delBanco[0], como: `banco (${delBanco[0].nombre})` };
+  }
+  return null;
+};
 
 const CAT_INGRESO = ["Anticipo", "Aviso de embarque", "Finiquito", "Pago parcial", "Servicio / PS", "Reembolso", "Otro"];
 const CAT_EGRESO = ["Proveedor nacional", "Proveedor local (Cabo)", "Importación", "Renta (fijo)", "Nómina", "IMSS / impuestos", "Préstamo / crédito", "Comisiones", "Gasolina", "Logística", "Gasto interno", "Otro"];
@@ -8268,6 +8305,7 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
         <table className="w-full min-w-[520px] text-sm">
           <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
             <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Moneda</th>
+            <th className="text-left px-3 py-2" title="Los últimos dígitos que imprime el comprobante del banco. Con esto el campo smart de egresos reconoce de qué cuenta salió el pago.">Últimos 4</th>
             <th className="text-right px-3 py-2">Saldo</th><th className="text-right px-3 py-2">USD equiv.</th>
           </tr></thead>
           <tbody>
@@ -8275,6 +8313,11 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
               <tr key={c.id} className="border-b border-stone-100">
                 <td className="px-3 py-2 font-medium">{c.nombre}</td>
                 <td className="px-3 py-2 font-mono text-xs text-stone-500">{c.moneda}</td>
+                <td className="px-3 py-2">
+                  <input value={c.ultimos || ""} maxLength={4} placeholder="····"
+                    onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, ultimos: e.target.value.replace(/\D/g, "").slice(0, 4) } : x)))}
+                    className="w-16 px-1.5 py-0.5 text-xs font-mono border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
+                </td>
                 <td className="px-3 py-2 text-right font-mono">{mx(saldos[c.id] || 0)}</td>
                 <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(enUSD(saldos[c.id] || 0, c.moneda, tcFix))}</td>
               </tr>
@@ -8794,6 +8837,17 @@ Responde SOLO JSON compacto, sin markdown:
             </tbody>
           </table>
 
+          {(sm.pago?.bancoOrigen || sm.pago?.claveRastreo || sm.ctaDetectada) && (
+            <div className="mt-2 text-[11px] text-stone-600 border-t border-violet-200 pt-1.5">
+              Pagado desde <b>{sm.pago?.bancoOrigen || "—"}</b>
+              {sm.pago?.cuentaOrigen ? ` ····${String(sm.pago.cuentaOrigen).replace(/\D/g, "").slice(-4)}` : ""}
+              {sm.ctaDetectada
+                ? <span className="text-emerald-800 font-semibold"> → cuenta {sm.ctaDetectada.nombre} ✓ <span className="font-normal text-stone-400">({sm.ctaDetectada.como})</span></span>
+                : <span className="text-amber-700 font-semibold"> → no reconocí la cuenta: escógela abajo. Captura su terminación en Tesorería → Resumen y la próxima sale sola.</span>}
+              {sm.pago?.beneficiario ? <span className="block text-stone-500">a {sm.pago.beneficiario}{sm.pago?.cuentaDestino ? ` · ${sm.pago.cuentaDestino}` : ""}</span> : null}
+              {sm.pago?.claveRastreo ? <span className="block font-mono text-[10px] text-stone-400">rastreo {sm.pago.claveRastreo}</span> : null}
+            </div>
+          )}
           <div className={`mt-2 text-[11px] font-medium ${cuadra ? "text-emerald-800" : "text-red-700"}`}>
             Suma de facturas ${mx(sumaFact)} · comprobante ${mx(montoPago)}{" "}
             {cuadra ? "· cuadra ✓" : `· NO cuadra, difieren $${mx(Math.abs(sumaFact - montoPago))}`}
@@ -8828,14 +8882,20 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
 
   // Lo que la IA leyó se vuelca al formulario. No se pisa lo que ya tenga algo
   // escrito a mano: el campo smart ayuda, no manda.
-  const aplicar = ({ proveedor, pago, suma }) => setF((s) => ({
-    ...s,
-    contraparte: s.contraparte || proveedor || "",
-    fecha: pago?.fecha || s.fecha,
-    monto: s.monto || (pago?.monto ? String(pago.monto) : (suma ? String(suma) : "")),
-    referencia: s.referencia || pago?.claveRastreo || pago?.referencia || "",
-    categoria: s.categoria || "Proveedor nacional",
-  }));
+  const aplicar = ({ proveedor, pago, suma }) => {
+    // De dónde salió el dinero. El comprobante trae banco y terminación.
+    const hallada = cuentaDelPago(pago, cuentas);
+    setSm((x) => ({ ...x, ctaDetectada: hallada ? { nombre: `${hallada.cuenta.nombre} ${hallada.cuenta.moneda}`, como: hallada.como } : null }));
+    setF((s) => ({
+      ...s,
+      contraparte: s.contraparte || proveedor || "",
+      fecha: pago?.fecha || s.fecha,
+      monto: s.monto || (pago?.monto ? String(pago.monto) : (suma ? String(suma) : "")),
+      referencia: s.referencia || pago?.claveRastreo || pago?.referencia || "",
+      categoria: s.categoria || "Proveedor nacional",
+      cuentaId: hallada ? hallada.cuenta.id : s.cuentaId,
+    }));
+  };
 
   const sumaFact = sm.facturas.reduce((a, x) => a + (+x.total || 0), 0);
   const cuadraSmart = sm.facturas.length === 0 || Math.abs(sumaFact - (+f.monto || 0)) < 0.5;
