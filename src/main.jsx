@@ -127,6 +127,16 @@ window.pagoProveedor = async (payload) => {
   return data
 }
 
+// GASTO EN ZOHO (egreso sin factura: comisiones, rentas, cargos). Va a la
+// Edge Function `gasto-zoho`, que valida cuenta contable, banco, moneda y
+// duplicados antes de escribir. No se traga el error.
+window.gastoZoho = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('gasto-zoho', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (!data || data.ok === false) throw new Error(textoError(data?.error) || 'Zoho no acepto el gasto.')
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))

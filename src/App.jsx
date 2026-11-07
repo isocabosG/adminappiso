@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 11";
+const RELEASE = "FACTURAS COMPRAS 12";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8752,7 +8752,7 @@ const comoIA = (file, b64) => {
   return null;
 };
 
-function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho, sinFactura, nPendiente }) {
+function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho, sinFactura, nPendiente, puedeGasto, faltaGasto }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const refFac = useRef(null), refComp = useRef(null);
   const [sobreF, setSobreF] = useState(false), [sobreC, setSobreC] = useState(false);
@@ -8938,10 +8938,22 @@ Responde SOLO JSON compacto, sin markdown:
       </div>
 
       {sinFactura && (
-        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
-          Sin factura todavía: este movimiento se registra como <b>PENDIENTE {nPendiente}</b>. Cuando llegue la
-          factura, se edita el movimiento, se carga aquí y el folio pendiente se reemplaza por el número real.
-        </p>
+        <>
+          <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
+            Sin factura todavía: este movimiento se registra como <b>PENDIENTE {nPendiente}</b>. Cuando llegue la
+            factura, se edita el movimiento, se carga aquí y el folio pendiente se reemplaza por el número real.
+          </p>
+          <label className={`flex items-start gap-2 text-[11px] rounded px-2 py-1.5 border ${puedeGasto ? "bg-emerald-50 border-emerald-300 text-emerald-900" : "bg-stone-100 border-stone-300 text-stone-500"}`}>
+            <input type="checkbox" className="mt-0.5" disabled={!puedeGasto} checked={!!sm.aGasto && !!puedeGasto}
+              onChange={(e) => setSm((x) => ({ ...x, aGasto: e.target.checked }))} />
+            <span>
+              <b>Registrar el gasto en Zoho</b> con la cuenta contable del concepto.
+              {puedeGasto
+                ? <span className="block text-[10px] opacity-80">Baja el saldo de la cuenta en Zoho y clasifica el importe. No es un pago a proveedor: no hay factura que aplicar.</span>
+                : <span className="block text-[10px] text-amber-700">No se puede todavía: {faltaGasto}.</span>}
+            </span>
+          </label>
+        </>
       )}
       {sm.err && <p className="text-[11px] text-red-700">{sm.err}</p>}
       {sm.errZ && <p className="text-[11px] text-red-700">{sm.errZ}</p>}
@@ -9121,7 +9133,20 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
     : !ctaApp?.zohoAccountId ? `la cuenta ${ctaApp?.nombre || ""} no tiene asignada su cuenta de Zoho — se pone en Tesorería → Resumen`
     : !rastreo ? "falta la clave de rastreo: es lo que evita registrar el pago dos veces"
     : "";
-  const puedeZoho = tipo === "egreso" && !editando && sm.facturas.length > 0 && !faltaZoho;
+  const puedeZoho = tipo === "egreso" && sm.facturas.length > 0 && !faltaZoho;
+
+  // EL EGRESO SIN FACTURA TAMBIÉN VA A ZOHO.  [7-nov-2026]
+  // Una comisión bancaria no tiene factura que pagar, pero sí salió del banco
+  // y sí tiene cuenta contable. En Zoho eso es un GASTO. Mismas condiciones
+  // explicadas con su nombre, nunca una casilla gris sin motivo.
+  const conceptoZoho = (cat.conceptos || []).find((c) => String(c.nombre).toLowerCase() === String(f.concepto || "").trim().toLowerCase());
+  const faltaGasto = !sinFactura ? ""
+    : !ctaApp?.zohoAccountId ? "la cuenta no es una cuenta de Zoho"
+    : !conceptoZoho ? "el concepto tiene que ser una de las cuentas contables de Zoho (escógelo de la lista)"
+    : !(+f.monto > 0) ? "falta el importe"
+    : !f.referencia ? "falta una referencia: es lo que evita registrarlo dos veces"
+    : "";
+  const puedeGasto = sinFactura && !faltaGasto;
 
   // Sube un archivo al bucket privado y devuelve su ruta. El nombre se limpia:
   // Storage no acepta acentos ni espacios y un error ahí aborta el guardado
@@ -9169,7 +9194,19 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
         });
       }
 
-      if (sm.facturas.length || sm.archComprobante) {
+      // Egreso sin factura: se registra como GASTO en Zoho, con su cuenta
+      // contable y la referencia del movimiento (el folio PENDIENTE mientras
+      // la factura no llegue).
+      let resGasto = null;
+      if (sm.aGasto && puedeGasto) {
+        resGasto = await window.gastoZoho({
+          conceptoId: conceptoZoho.id, concepto: conceptoZoho.nombre,
+          cuentaZohoId: ctaApp.zohoAccountId, fecha: f.fecha, monto: +f.monto || 0,
+          referencia: f.referencia, proveedor: f.contraparte, nota: f.nota,
+        });
+      }
+
+      if (sm.facturas.length || sm.archComprobante || resGasto) {
         const carpeta = `egresos/${String(f.fecha || hoy()).slice(0, 4)}/${id}`;
         const rutasFac = [];
         for (const fl of sm.archFacturas) rutasFac.push({ nombre: fl.name, ruta: await subir(fl, carpeta) });
@@ -9190,6 +9227,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
           // pago ya estaba registrado con la misma clave de rastreo y no se
           // creó uno nuevo.
           pagoEnZoho: resZoho ? { pagoId: resZoho.pagoId, numero: resZoho.numero, yaExistia: !!resZoho.yaExistia, ts: new Date().toISOString() } : null,
+          gastoEnZoho: resGasto ? { gastoId: resGasto.gastoId, referencia: resGasto.referencia, concepto: resGasto.concepto, yaExistia: !!resGasto.yaExistia, ts: new Date().toISOString() } : (inicial?.smart?.gastoEnZoho || null),
         };
         if (rutaComp && !op.comprobante) op.comprobante = rutaComp.nombre;
       }
@@ -9219,7 +9257,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
         ))}
       </div>
 
-      {tipo === "egreso" && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago), sinFactura, nPendiente }} />}
+      {tipo === "egreso" && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago), sinFactura, nPendiente, puedeGasto, faltaGasto }} />}
 
       <div className="bg-white border border-stone-200 rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></div>
@@ -9412,9 +9450,16 @@ function VisorMovimiento({ op, cuenta, onCerrar }) {
                   {sm.pagoEnZoho.yaExistia && <p className="text-amber-700">Ya existía con esa clave de rastreo; no se creó otro.</p>}
                   <p className="text-[9px] font-mono text-stone-400 mt-1">{sm.pagoEnZoho.pagoId}</p>
                 </div>
+              ) : sm.gastoEnZoho?.gastoId ? (
+                <div className="text-[11px] bg-emerald-50 border border-emerald-300 rounded p-2">
+                  <p className="text-emerald-900 font-semibold">Gasto registrado · {sm.gastoEnZoho.referencia}</p>
+                  <p className="text-emerald-800">Cuenta contable: {sm.gastoEnZoho.concepto || op.concepto}</p>
+                  {sm.gastoEnZoho.yaExistia && <p className="text-amber-700">Ya existía con esa referencia; no se creó otro.</p>}
+                  <p className="text-[9px] font-mono text-stone-400 mt-1">{sm.gastoEnZoho.gastoId}</p>
+                </div>
               ) : (
                 <p className="text-[11px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2">
-                  No se aplicó en Zoho. Este movimiento solo vive en la libreta de la app.
+                  No se registró en Zoho. Este movimiento solo vive en la libreta de la app.
                 </p>
               )}
               {sm.descuadrado && (
