@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FECHA LOCAL 1";
+const RELEASE = "FECHA LOCAL 3";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -2090,18 +2090,20 @@ const SEED_CUENTAS = [
    en pantalla salía «BBVA Dólares USD» y parecía otra. Eso hace dudar de a
    qué cuenta se registró un pago, que es lo último que uno quiere dudar.
 
-   De aquí en adelante el nombre sale TAL CUAL de Zoho. La moneda se añade
-   solo cuando el nombre no la dice ya —«Bancomer», «Fondo fijo», «Caja Chica
-   Finanzas»— y con un punto medio, para que se lea como aclaración y no como
-   parte del nombre.
+   El nombre sale TAL CUAL de Zoho, sin añadirle nada. El primer intento le
+   pegaba la moneda cuando el nombre no la decía, y volvió a pasar lo mismo por
+   el otro lado: salía «BBVA Prestamo 009666387611 · MXN» y en Zoho esa cuenta
+   se llama «BBVA Prestamo 009666387611» a secas.
+
+   Fran: «así no sale en Zoho, que sea idéntico PARA EVITAR FALLOS». Y tiene
+   razón: quien escoge una cuenta está buscando en pantalla el nombre que vio
+   en Zoho. Cualquier adorno —aunque sea correcto— obliga a traducir, y
+   traducir es donde se escoge la cuenta equivocada.
+
+   La moneda no se pierde: la tabla de cuentas tiene su columna, y el campo del
+   importe dice MONTO (USD) o MONTO (MXN) según la cuenta escogida.
 --------------------------------------------------------------------------- */
-const DICE_MONEDA = /D[OÓ]LARES?|DLS|USD|PESOS|MXN/i;
-const rotuloCuenta = (c) => {
-  if (!c) return "";
-  const n = String(c.nombre || "").trim();
-  if (!n) return String(c.moneda || "");
-  return DICE_MONEDA.test(n) ? n : `${n} · ${c.moneda || ""}`.trim();
-};
+const rotuloCuenta = (c) => String(c?.nombre || "").trim();
 
 // DE QUÉ CUENTA SALIÓ EL PAGO.  [7-nov-2026]
 // Fran: «el comprobante de pago dice qué banco y la terminación de la cuenta
@@ -2402,8 +2404,25 @@ function App({ perfil, correo }) {
   const pendientes = Object.values(catalogo).filter((a) => a.promedioPendiente != null).length;
 
   return (
-    <div className="min-h-screen bg-stone-100 text-stone-900 overflow-x-hidden">
-      <header className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-emerald-600 text-white shadow-sm">
+    /* EL ENCABEZADO SE QUEDA PEGADO ARRIBA.  [7-nov-2026]
+       Fran: «congélame el banner del menú para que siempre esté visible».
+
+       Dos detalles que lo hacen funcionar y que no son obvios:
+
+       · `overflowX` va en **clip**, no en hidden. `overflow-x: hidden` convierte
+         al div en contenedor de scroll, y entonces el `sticky` de adentro se
+         pega a ESE contenedor —que mide lo que mide el contenido— en vez de a
+         la ventana: el encabezado se iría hacia arriba igual. `clip` recorta lo
+         que se desborda sin volverse contenedor de scroll, que es lo que se
+         quería desde el principio.
+       · `z-40` para que los menús y tablas pasen por debajo, pero los diálogos
+         de confirmación (z-50) sigan por encima.
+
+       Los encabezados pegados de las tablas no estorban: cada uno vive dentro
+       de su propia caja con scroll, así que su `top-0` es el borde de la caja,
+       no el de la ventana. */
+    <div className="min-h-screen bg-stone-100 text-stone-900" style={{ overflowX: "clip" }}>
+      <header className="sticky top-0 z-40 bg-gradient-to-r from-emerald-900 via-emerald-800 to-emerald-600 text-white shadow-md">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <img src={LEAF_WHITE} alt="Innovación Solar" className="h-8 w-auto" />
@@ -8561,7 +8580,7 @@ function SaldosZoho({ tcFix, recargar, porRegistrar = 0 }) {
         <div className="px-3 py-2 rounded border bg-amber-50 border-amber-300">
           <p className="text-xs font-semibold text-amber-900">{zombis.length} cuenta{zombis.length === 1 ? "" : "s"} dada{zombis.length === 1 ? "" : "s"} de baja con saldo — no cuenta{zombis.length === 1 ? "" : "n"} en los totales.</p>
           <p className="text-[11px] text-amber-800 mt-0.5">
-            {zombis.map((c) => `${rotuloCuenta(c)}: ${mx(c.saldo)}`).join(" · ")}
+            {zombis.map((c) => `${rotuloCuenta(c)}: ${mx(c.saldo)} ${c.moneda}`).join(" · ")}
           </p>
           <p className="text-[10px] text-amber-700 mt-0.5">Una cuenta cerrada con saldo no se vació antes de darla de baja, o el cierre quedó a medias. Vale la pena que finanzas lo revise.</p>
         </div>
