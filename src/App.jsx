@@ -8471,6 +8471,230 @@ function FlujoSemanal({ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta
 }
 
 
+/* ---------------------------------------------------------------------------
+   CAMPO SMART DE EGRESOS — Tesorería  [7-nov-2026]
+
+   Fran: «para agregar movimientos quiero que haya un campo smart parecido al de
+   las importaciones para que puedan jalar las facturas del proveedor y así
+   registrar los egresos, que adjunte también el comprobante de pago».
+
+   CÓMO FUNCIONA
+   Se sueltan los PDF de las facturas del proveedor y el comprobante del banco
+   (PDF o foto). UNA sola llamada a la IA lee todo junto y devuelve el
+   proveedor, cada factura con su folio fiscal e importes, y los datos del
+   pago. Con eso se llena el formulario y se buscan en Zoho las facturas de
+   proveedor abiertas, para empatarlas.
+
+   POR QUÉ LA SUMA MANDA
+   Un pago cubre VARIAS facturas: el caso que originó esto fueron cuatro CFDI
+   de Eléctrica Dos Hermanos que suman exactamente los $109,525.11 de un SPEI.
+   Si la suma no da el monto del comprobante, algo falta o algo sobra, y
+   registrarlo así ensucia la contabilidad sin que nadie se entere. La pantalla
+   no deja guardar hasta que cuadre, o hasta que alguien escriba por qué no.
+
+   POR QUÉ EL EMPATE NO SE APLICA SOLO
+   Zoho NO guarda el UUID del CFDI en la factura de proveedor: se revisaron los
+   campos del módulo y no existe ninguno fiscal. El empate va por número de
+   factura y por total, que se parecen pero no son únicos. Y el nombre tampoco
+   salva: este proveedor es «ELECTRICA DOS HERMANOS» en el CFDI y «ELECTRICA
+   DOS HERMANOS HISTORICA» en Zoho. Cada renglón trae su selector a la vista y
+   la persona confirma. La IA propone; nadie aplica nada en automático.
+
+   LO QUE ESTO TODAVÍA NO HACE
+   No crea el pago en Zoho. Eso es la etapa C y va en su propia función, con su
+   propia revisión: es la primera vez que esta app mueve dinero allá.
+--------------------------------------------------------------------------- */
+const BUCKET_TES = "tesoreria";
+const limpiaFolio = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const nFolio = (x) => { const n = +x; return isFinite(n) ? n : 0; };
+
+// Qué le puede mandar cada archivo a la IA. Un PDF va como documento; una foto
+// del comprobante, como imagen. Lo que no sea ninguno de los dos se queda
+// fuera en vez de romper la llamada.
+const comoIA = (file, b64) => {
+  const t = String(file.type || "").toLowerCase();
+  if (t === "application/pdf") return { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } };
+  if (/^image\/(png|jpe?g|webp)$/.test(t)) return { type: "image", source: { type: "base64", media_type: t === "image/jpg" ? "image/jpeg" : t, data: b64 } };
+  return null;
+};
+
+function SmartEgreso({ sm, setSm, aplicar }) {
+  const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
+  const sumaFact = sm.facturas.reduce((a, x) => a + nFolio(x.total), 0);
+  const montoPago = nFolio(sm.pago?.monto);
+  const cuadra = sm.facturas.length > 0 && montoPago > 0 && Math.abs(sumaFact - montoPago) < 0.5;
+
+  const leer = async () => {
+    if (!sm.archFacturas.length) return setSm((x) => ({ ...x, err: "Sube al menos una factura del proveedor." }));
+    setSm((x) => ({ ...x, leyendo: true, err: null }));
+    try {
+      const content = [];
+      for (const fl of sm.archFacturas) { const b = comoIA(fl, await fileToB64(fl)); if (b) content.push(b); }
+      let traeComp = false;
+      if (sm.archComprobante) { const b = comoIA(sm.archComprobante, await fileToB64(sm.archComprobante)); if (b) { content.push(b); traeComp = true; } }
+      content.push({ type: "text", text: `Eres contador en una empresa mexicana. Te paso ${sm.archFacturas.length} factura(s) CFDI de un proveedor${traeComp ? " y, AL FINAL, el comprobante de una transferencia bancaria que las paga" : ""}.
+
+Extrae los datos tal como vienen, sin inventar y sin redondear. Si un dato no aparece, déjalo en "" o en 0.
+
+Responde SOLO JSON compacto, sin markdown:
+{"proveedor":{"nombre":"","rfc":""},
+ "facturas":[{"folio":"","uuid":"","fecha":"YYYY-MM-DD","subtotal":0,"iva":0,"total":0,"moneda":"MXN"}],
+ "pago":{"fecha":"YYYY-MM-DD","monto":0,"moneda":"MXN","bancoOrigen":"","cuentaOrigen":"","beneficiario":"","bancoDestino":"","cuentaDestino":"","referencia":"","claveRastreo":"","folioBanco":""}}
+
+- "folio" es el número de la factura que imprime el proveedor (por ejemplo "CL - 822014"), NO el folio fiscal.
+- "uuid" es el folio fiscal de 36 caracteres.
+- "fecha" de la factura es la de certificación.
+- Una factura por cada PDF de factura. ${traeComp ? "El pago sale del comprobante bancario, no de las facturas." : "No hay comprobante: deja \"pago\" en ceros."}
+- Solo el JSON.` });
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
+      if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
+      const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
+      const r = extraerJSON(txt);
+      const facturas = (Array.isArray(r.facturas) ? r.facturas : []).map((x) => ({
+        id: uid(), folio: x.folio || "", uuid: x.uuid || "", fecha: x.fecha || "",
+        subtotal: nFolio(x.subtotal), iva: nFolio(x.iva), total: nFolio(x.total),
+        moneda: x.moneda || "MXN", billId: "", empatePor: "",
+      }));
+      const prov = r.proveedor?.nombre || "";
+      setSm((x) => ({ ...x, leyendo: false, facturas, proveedor: prov, rfc: r.proveedor?.rfc || "", pago: r.pago || {}, bills: [], provs: [], vendorId: "" }));
+      aplicar({ proveedor: prov, pago: r.pago || {}, suma: facturas.reduce((a, y) => a + nFolio(y.total), 0) });
+    } catch (e) {
+      setSm((x) => ({ ...x, leyendo: false, err: e?.message || String(e) }));
+    }
+  };
+
+  // Las facturas de proveedor ABIERTAS de ese proveedor en Zoho. Primero se
+  // busca el proveedor por nombre (el del CFDI casi nunca es idéntico al de
+  // Zoho, así que se usan las dos primeras palabras y se deja escoger).
+  const buscarZoho = async (idForzado) => {
+    setSm((x) => ({ ...x, buscando: true, errZ: null }));
+    try {
+      const nom = String(sm.proveedor || "").trim();
+      if (!nom && !idForzado) throw new Error("Primero lee las facturas: falta el nombre del proveedor.");
+      let provs = sm.provs || [];
+      if (!provs.length) {
+        const clave = nom.split(/\s+/).slice(0, 2).join(" ");
+        const c = await window.zohoBooks({ action: "list_contacts", params: { contact_type: "vendor", search_text: clave, filter_by: "Status.All", per_page: "20" } });
+        provs = (c?.contacts || []).map((v) => ({ id: v.contact_id, nombre: v.vendor_name || v.contact_name, porPagar: +v.outstanding_payable_amount || 0 }));
+        if (!provs.length) throw new Error(`Zoho no tiene ningún proveedor parecido a «${clave}». Revisa el nombre.`);
+      }
+      const vendorId = idForzado || sm.vendorId || provs[0].id;
+      const b = await window.zohoBooks({ action: "list_bills", params: { vendor_id: vendorId, status: "unpaid", per_page: "200" } });
+      const bills = (b?.bills || []).map((x) => ({ id: x.bill_id, numero: x.bill_number || "", fecha: x.date || "", total: +x.total || 0, saldo: +x.balance || 0 }));
+      setSm((x) => {
+        const facturas = x.facturas.map((fa) => {
+          const porFolio = bills.find((bb) => limpiaFolio(bb.numero) && limpiaFolio(bb.numero) === limpiaFolio(fa.folio));
+          const porTotal = bills.find((bb) => Math.abs(bb.total - nFolio(fa.total)) < 1);
+          const m = porFolio || porTotal;
+          return m ? { ...fa, billId: m.id, empatePor: porFolio ? "folio" : "total" } : { ...fa, billId: "", empatePor: "" };
+        });
+        return { ...x, provs, vendorId, bills, facturas, buscando: false };
+      });
+    } catch (e) {
+      setSm((x) => ({ ...x, buscando: false, errZ: e?.message || String(e) }));
+    }
+  };
+
+  const setFac = (id, k, v) => setSm((x) => ({ ...x, facturas: x.facturas.map((f) => (f.id === id ? { ...f, [k]: v, ...(k === "billId" ? { empatePor: "a mano" } : {}) } : f)) }));
+
+  return (
+    <div className="bg-violet-50 border border-violet-300 rounded-lg p-3 space-y-3">
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-violet-800">Campo smart · facturas y comprobante</p>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <div>
+          <Lbl>Facturas del proveedor (PDF)</Lbl>
+          <input type="file" accept="application/pdf" multiple className="text-[11px]"
+            onChange={(e) => setSm((x) => ({ ...x, archFacturas: [...e.target.files], err: null }))} />
+          {sm.archFacturas.length > 0 && <p className="text-[10px] font-mono text-stone-500 mt-1">{sm.archFacturas.map((a) => a.name).join(" · ")}</p>}
+        </div>
+        <div>
+          <Lbl>Comprobante de pago (PDF o foto)</Lbl>
+          <input type="file" accept="application/pdf,image/*" className="text-[11px]"
+            onChange={(e) => setSm((x) => ({ ...x, archComprobante: e.target.files?.[0] || null, err: null }))} />
+          {sm.archComprobante && <p className="text-[10px] font-mono text-stone-500 mt-1">{sm.archComprobante.name}</p>}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 items-center">
+        <button onClick={leer} disabled={sm.leyendo || !sm.archFacturas.length}
+          className="px-3 py-1.5 bg-violet-700 text-white text-xs font-semibold rounded hover:bg-violet-800 disabled:opacity-40">
+          {sm.leyendo ? "Leyendo…" : "✨ Leer y llenar"}
+        </button>
+        {sm.facturas.length > 0 && (
+          <button onClick={() => buscarZoho()} disabled={sm.buscando}
+            className="px-3 py-1.5 border border-violet-400 text-violet-800 text-xs font-semibold rounded hover:bg-violet-100 disabled:opacity-40">
+            {sm.buscando ? "Buscando en Zoho…" : "Buscar las facturas en Zoho"}
+          </button>
+        )}
+      </div>
+
+      {sm.err && <p className="text-[11px] text-red-700">{sm.err}</p>}
+      {sm.errZ && <p className="text-[11px] text-red-700">{sm.errZ}</p>}
+
+      {sm.provs?.length > 1 && (
+        <div>
+          <Lbl>Proveedor en Zoho</Lbl>
+          <select className={inp} value={sm.vendorId} onChange={(e) => buscarZoho(e.target.value)}>
+            {sm.provs.map((p) => <option key={p.id} value={p.id}>{p.nombre} — debe ${mx(p.porPagar)}</option>)}
+          </select>
+        </div>
+      )}
+
+      {sm.facturas.length > 0 && (
+        <div className="overflow-x-auto">
+          <p className="text-[11px] text-violet-900 mb-1">
+            <b>{sm.proveedor || "(sin proveedor)"}</b>{sm.rfc ? ` · ${sm.rfc}` : ""}
+            {sm.provs?.length === 1 && <span className="text-stone-500"> → en Zoho: {sm.provs[0].nombre}</span>}
+          </p>
+          <table className="w-full text-[11px]">
+            <thead className="text-[9px] uppercase tracking-wider text-violet-500">
+              <tr><th className="text-left py-0.5">Folio</th><th className="text-left">Fecha</th>
+                <th className="text-right">Subtotal</th><th className="text-right">IVA</th><th className="text-right">Total</th>
+                <th className="text-left pl-3">Factura en Zoho</th></tr>
+            </thead>
+            <tbody>
+              {sm.facturas.map((fa) => (
+                <tr key={fa.id} className="border-t border-violet-200">
+                  <td className="py-0.5 font-mono text-violet-900">{fa.folio || "—"}
+                    {fa.uuid && <span className="block text-[9px] text-stone-400">{fa.uuid}</span>}</td>
+                  <td className="text-stone-600">{fa.fecha || "—"}</td>
+                  <td className="text-right font-mono">{mx(fa.subtotal)}</td>
+                  <td className="text-right font-mono">{mx(fa.iva)}</td>
+                  <td className="text-right font-mono font-semibold">{mx(fa.total)}</td>
+                  <td className="pl-3">
+                    {sm.bills.length === 0 ? <span className="text-stone-400">busca en Zoho</span> : (
+                      <>
+                        <select className="px-1 py-0.5 text-[11px] border border-stone-300 rounded bg-white max-w-[15rem]"
+                          value={fa.billId} onChange={(e) => setFac(fa.id, "billId", e.target.value)}>
+                          <option value="">— sin empatar —</option>
+                          {sm.bills.map((bb) => <option key={bb.id} value={bb.id}>{bb.numero} · {bb.fecha} · ${mx(bb.total)}</option>)}
+                        </select>
+                        {fa.empatePor && <span className="ml-1 text-[9px] text-stone-400">por {fa.empatePor}</span>}
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className={`mt-2 text-[11px] font-medium ${cuadra ? "text-emerald-800" : "text-red-700"}`}>
+            Suma de facturas ${mx(sumaFact)} · comprobante ${mx(montoPago)}{" "}
+            {cuadra ? "· cuadra ✓" : `· NO cuadra, difieren $${mx(Math.abs(sumaFact - montoPago))}`}
+          </div>
+          {!cuadra && (
+            <label className="mt-1 flex items-start gap-2 text-[11px] text-stone-700">
+              <input type="checkbox" className="mt-0.5" checked={!!sm.forzar} onChange={(e) => setSm((x) => ({ ...x, forzar: e.target.checked }))} />
+              <span>Registrar de todos modos. Escribe abajo, en la nota, por qué no cuadra — queda guardado con el movimiento.</span>
+            </label>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   const [tipo, setTipo] = useState(inicial?.tipo || "egreso");
   const [f, setF] = useState(inicial
@@ -8480,15 +8704,77 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const monedaDe = (id) => cuentas.find((c) => c.id === id)?.moneda || "";
 
-  const guardar = () => {
-    if (!f.monto || !f.cuentaId) return;
+  // Campo smart (solo egresos nuevos). Vive aquí, no dentro del componente,
+  // porque al guardar hay que subir los archivos y colgarle las facturas a la
+  // operación.  [7-nov-2026]
+  const [sm, setSm] = useState({ archFacturas: [], archComprobante: null, facturas: [], proveedor: "", rfc: "", pago: {}, bills: [], provs: [], vendorId: "", leyendo: false, buscando: false, err: null, errZ: null, forzar: false });
+  const [guardando, setGuardando] = useState(false);
+  const [errGuardar, setErrGuardar] = useState(null);
+
+  // Lo que la IA leyó se vuelca al formulario. No se pisa lo que ya tenga algo
+  // escrito a mano: el campo smart ayuda, no manda.
+  const aplicar = ({ proveedor, pago, suma }) => setF((s) => ({
+    ...s,
+    contraparte: s.contraparte || proveedor || "",
+    fecha: pago?.fecha || s.fecha,
+    monto: s.monto || (pago?.monto ? String(pago.monto) : (suma ? String(suma) : "")),
+    referencia: s.referencia || pago?.claveRastreo || pago?.referencia || "",
+    categoria: s.categoria || "Proveedor nacional",
+  }));
+
+  const sumaFact = sm.facturas.reduce((a, x) => a + (+x.total || 0), 0);
+  const cuadraSmart = sm.facturas.length === 0 || Math.abs(sumaFact - (+f.monto || 0)) < 0.5;
+  const bloqueado = !cuadraSmart && !sm.forzar;
+
+  // Sube un archivo al bucket privado y devuelve su ruta. El nombre se limpia:
+  // Storage no acepta acentos ni espacios y un error ahí aborta el guardado
+  // completo justo cuando ya se habían subido los otros.
+  const subir = async (file, carpeta) => {
+    const limpio = String(file.name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9._-]/g, "_");
+    const ruta = `${carpeta}/${Date.now()}-${limpio}`;
+    const { error } = await supabase.storage.from(BUCKET_TES).upload(ruta, file, { contentType: file.type || undefined, upsert: false });
+    if (error) throw new Error(`No se pudo subir ${file.name}: ${error.message}`);
+    return ruta;
+  };
+
+  const guardar = async () => {
+    if (!f.monto || !f.cuentaId || guardando || bloqueado) return;
     if ((tipo === "traspaso" || tipo === "cambio") && !f.cuentaDestinoId) return;
-    const moneda = monedaDe(f.cuentaId);
-    const op = { id: inicial?.id || uid(), tipo, fecha: f.fecha, cuentaId: f.cuentaId, monto: +f.monto || 0, moneda, estatus: f.estatus, referencia: f.referencia, comprobante: f.comprobante, nota: f.nota };
-    if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; op.categoria = f.categoria; }
-    if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
-    if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
-    onSave(op);
+    setGuardando(true); setErrGuardar(null);
+    try {
+      const id = inicial?.id || uid();
+      const moneda = monedaDe(f.cuentaId);
+      const op = { id, tipo, fecha: f.fecha, cuentaId: f.cuentaId, monto: +f.monto || 0, moneda, estatus: f.estatus, referencia: f.referencia, comprobante: f.comprobante, nota: f.nota };
+      if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; op.categoria = f.categoria; }
+      if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
+      if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
+
+      if (sm.facturas.length || sm.archComprobante) {
+        const carpeta = `egresos/${String(f.fecha || hoy()).slice(0, 4)}/${id}`;
+        const rutasFac = [];
+        for (const fl of sm.archFacturas) rutasFac.push({ nombre: fl.name, ruta: await subir(fl, carpeta) });
+        const rutaComp = sm.archComprobante ? { nombre: sm.archComprobante.name, ruta: await subir(sm.archComprobante, carpeta) } : null;
+        op.smart = {
+          proveedor: sm.proveedor, rfc: sm.rfc, vendorId: sm.vendorId,
+          zohoProveedor: (sm.provs || []).find((p) => p.id === sm.vendorId)?.nombre || "",
+          facturas: sm.facturas.map((x) => ({
+            folio: x.folio, uuid: x.uuid, fecha: x.fecha, subtotal: x.subtotal, iva: x.iva, total: x.total,
+            billId: x.billId || "", billNumero: (sm.bills.find((b) => b.id === x.billId) || {}).numero || "", empatePor: x.empatePor || "",
+          })),
+          pago: sm.pago || {},
+          archivos: rutasFac, comprobanteArchivo: rutaComp,
+          // Queda escrito si se registró sin cuadrar: dentro de un mes nadie se
+          // acuerda, y el renglón descuadrado seguirá ahí.
+          descuadrado: !cuadraSmart ? { suma: sumaFact, pago: +f.monto || 0 } : null,
+          // Todavía NO se aplicó en Zoho. Lo pone la etapa C.
+          pagoEnZoho: null,
+        };
+        if (rutaComp && !op.comprobante) op.comprobante = rutaComp.nombre;
+      }
+      onSave(op);
+    } catch (e) {
+      setErrGuardar(e?.message || String(e));
+    } finally { setGuardando(false); }
   };
 
   const catList = tipo === "ingreso" ? CAT_INGRESO : CAT_EGRESO;
@@ -8508,6 +8794,8 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
             className={`px-3 py-2 text-xs font-medium rounded border ${tipo === k ? "bg-emerald-700 text-white border-stone-900" : "bg-white text-stone-600 border-stone-300"}`}>{v}</button>
         ))}
       </div>
+
+      {tipo === "egreso" && !editando && <SmartEgreso {...{ sm, setSm, aplicar }} />}
 
       <div className="bg-white border border-stone-200 rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></div>
@@ -8557,11 +8845,17 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
         </div>
       </div>
 
-      <div className="flex gap-2">
-        <button onClick={guardar} disabled={!f.monto || !f.cuentaId} className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Registrar operación"}</button>
+      {errGuardar && <p className="text-[11px] text-red-700">{errGuardar}</p>}
+      <div className="flex gap-2 items-center">
+        <button onClick={guardar} disabled={!f.monto || !f.cuentaId || guardando || bloqueado}
+          title={bloqueado ? "La suma de las facturas no cuadra con el monto. Palomea «registrar de todos modos» si así es." : ""}
+          className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">
+          {guardando ? "Guardando…" : editando ? "Guardar cambios" : "Registrar operación"}
+        </button>
         <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
+        {bloqueado && <span className="text-[11px] text-red-700">No cuadra con las facturas.</span>}
       </div>
-      <p className="text-[11px] text-stone-400">El registro alimenta el flujo y queda listo para empujarse a Zoho (cliente o proveedor) cuando conectemos la escritura. El comprobante físico se guardará ligado en Zoho.</p>
+      <p className="text-[11px] text-stone-400">El registro alimenta el flujo. Las facturas y el comprobante quedan guardados en el almacén privado de la app; aplicar el pago en Zoho —y dejar la factura de proveedor en pagada— es el paso que sigue.</p>
     </div>
   );
 }
