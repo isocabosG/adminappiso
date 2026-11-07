@@ -49,6 +49,12 @@ function extraerJSON(txt) {
    costo (provisional → real) + envío manual a Zoho.
    ================================================================ */
 
+// NOMBRE DE ESTA ENTREGA.  [7-nov-2026]
+// `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
+// memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
+// saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
+const RELEASE = "FACTURAS COMPRAS 1";
+
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
 const mx0 = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { maximumFractionDigits: 0 }) : "—");
@@ -2201,8 +2207,9 @@ function App({ perfil, correo }) {
               {/* Version viva + con que cuenta estas dentro. Lo segundo es
                   lo que nos falto media manana: la pestana de Usuarios depende
                   de la sesion, no del correo que uno cree traer. */}
-              <p className="text-[9px] font-mono text-emerald-300/70" title="Build desplegado y cuenta de la sesion">
-                v {__BUILD__}{correo ? ` · ${correo}` : " · sin sesion"}
+              <p className="text-[9px] font-mono text-emerald-300/70" title="Entrega, build desplegado y cuenta de la sesion">
+                <span className="text-amber-300 font-bold tracking-wider">{RELEASE}</span>
+                {" · v "}{__BUILD__}{correo ? ` · ${correo}` : " · sin sesion"}
               </p>
             </div>
           </div>
@@ -8506,6 +8513,29 @@ function FlujoSemanal({ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta
 --------------------------------------------------------------------------- */
 const BUCKET_TES = "tesoreria";
 const limpiaFolio = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+// LOS PRIMEROS 8 DEL FOLIO FISCAL.  [7-nov-2026]
+// Fran: «el número de factura que se da de alta en Zoho hoy es el folio del
+// documento, pero queremos que mejor usemos los primeros 8 dígitos del folio
+// fiscal que viene en las facturas de los proveedores».
+//
+// Es mejor llave que el folio del documento: el UUID lo pone el SAT, es único
+// en todo México y no se repite entre proveedores. «CL - 822014» sí se puede
+// repetir, y de hecho cada proveedor numera como quiere.
+//
+// El empate acepta LAS DOS formas a propósito: las facturas viejas de Zoho
+// están capturadas con el folio del documento y van a seguir ahí años.
+const uuid8 = (u) => String(u || "").replace(/[^0-9A-Za-z]/g, "").slice(0, 8).toUpperCase();
+
+// CON QUE NUMERO VA CAPTURADA LA FACTURA EN ZOHO.  [7-nov-2026]
+// Fran: «si no trae folio fiscal es porque el proveedor es extranjero, y
+// entonces ahí jalamos el número de la factura del proveedor».
+//
+// Un CFDI siempre trae UUID del SAT; una invoice de Renon o de Battery Depot
+// no, porque el SAT no la timbra. No es un dato faltante que haya que ir a
+// buscar: es que no existe. Para esas, la llave es el número que imprime el
+// proveedor, que dentro de ese proveedor sí es único.
+const claveZoho = (fa) => uuid8(fa?.uuid) || limpiaFolio(fa?.folio);
 const nFolio = (x) => { const n = +x; return isFinite(n) ? n : 0; };
 
 // Qué le puede mandar cada archivo a la IA. Un PDF va como documento; una foto
@@ -8520,6 +8550,20 @@ const comoIA = (file, b64) => {
 
 function SmartEgreso({ sm, setSm, aplicar }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
+  const refFac = useRef(null), refComp = useRef(null);
+  const [sobreF, setSobreF] = useState(false), [sobreC, setSobreC] = useState(false);
+
+  // Los archivos SE SUMAN, no se reemplazan. Antes cada `onChange` pisaba la
+  // lista entera: quien escogía las facturas de una en una acababa con una
+  // sola y la pantalla no decía nada. Se descartan los repetidos por nombre y
+  // tamaño, que es como se ve un doble clic en el mismo archivo.
+  const sumarFacturas = (lista) => setSm((x) => {
+    const pdfs = Array.from(lista || []).filter((fl) => fl.type === "application/pdf" || /\.pdf$/i.test(fl.name));
+    const ya = new Set(x.archFacturas.map((a) => a.name + ":" + a.size));
+    const nuevos = pdfs.filter((fl) => !ya.has(fl.name + ":" + fl.size));
+    const noPdf = Array.from(lista || []).length - pdfs.length;
+    return { ...x, archFacturas: [...x.archFacturas, ...nuevos], err: noPdf ? `Se ignoraron ${noPdf} archivo(s) que no son PDF.` : null };
+  });
   const sumaFact = sm.facturas.reduce((a, x) => a + nFolio(x.total), 0);
   const montoPago = nFolio(sm.pago?.monto);
   const cuadra = sm.facturas.length > 0 && montoPago > 0 && Math.abs(sumaFact - montoPago) < 0.5;
@@ -8542,7 +8586,7 @@ Responde SOLO JSON compacto, sin markdown:
  "pago":{"fecha":"YYYY-MM-DD","monto":0,"moneda":"MXN","bancoOrigen":"","cuentaOrigen":"","beneficiario":"","bancoDestino":"","cuentaDestino":"","referencia":"","claveRastreo":"","folioBanco":""}}
 
 - "folio" es el número de la factura que imprime el proveedor (por ejemplo "CL - 822014"), NO el folio fiscal.
-- "uuid" es el folio fiscal de 36 caracteres.
+- "uuid" es el folio fiscal del SAT, 36 caracteres. Una factura de proveedor EXTRANJERO no lo trae porque el SAT no la timbra: en ese caso deja uuid en "" y NO inventes nada.
 - "fecha" de la factura es la de certificación.
 - Una factura por cada PDF de factura. ${traeComp ? "El pago sale del comprobante bancario, no de las facturas." : "No hay comprobante: deja \"pago\" en ceros."}
 - Solo el JSON.` });
@@ -8583,10 +8627,16 @@ Responde SOLO JSON compacto, sin markdown:
       const bills = (b?.bills || []).map((x) => ({ id: x.bill_id, numero: x.bill_number || "", fecha: x.date || "", total: +x.total || 0, saldo: +x.balance || 0 }));
       setSm((x) => {
         const facturas = x.facturas.map((fa) => {
-          const porFolio = bills.find((bb) => limpiaFolio(bb.numero) && limpiaFolio(bb.numero) === limpiaFolio(fa.folio));
+          // Orden a propósito: el folio fiscal es único, el folio del documento
+          // no, y el total menos todavía —dos facturas del mismo día por el
+          // mismo importe existen—. Se empata por lo más seguro primero.
+          const clave = claveZoho(fa);
+          const porClave = clave && bills.find((bb) => limpiaFolio(bb.numero) === clave);
+          const porFolio = limpiaFolio(fa.folio) && bills.find((bb) => limpiaFolio(bb.numero) === limpiaFolio(fa.folio));
           const porTotal = bills.find((bb) => Math.abs(bb.total - nFolio(fa.total)) < 1);
-          const m = porFolio || porTotal;
-          return m ? { ...fa, billId: m.id, empatePor: porFolio ? "folio" : "total" } : { ...fa, billId: "", empatePor: "" };
+          const m = porClave || porFolio || porTotal;
+          const como = porClave ? (fa.uuid ? "folio fiscal" : "folio del proveedor") : porFolio ? "folio" : "total";
+          return m ? { ...fa, billId: m.id, empatePor: como } : { ...fa, billId: "", empatePor: "" };
         });
         return { ...x, provs, vendorId, bills, facturas, buscando: false };
       });
@@ -8603,16 +8653,48 @@ Responde SOLO JSON compacto, sin markdown:
 
       <div className="grid md:grid-cols-2 gap-3">
         <div>
-          <Lbl>Facturas del proveedor (PDF)</Lbl>
-          <input type="file" accept="application/pdf" multiple className="text-[11px]"
-            onChange={(e) => setSm((x) => ({ ...x, archFacturas: [...e.target.files], err: null }))} />
-          {sm.archFacturas.length > 0 && <p className="text-[10px] font-mono text-stone-500 mt-1">{sm.archFacturas.map((a) => a.name).join(" · ")}</p>}
+          <div onClick={() => refFac.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setSobreF(true); }}
+            onDragLeave={() => setSobreF(false)}
+            onDrop={(e) => { e.preventDefault(); setSobreF(false); sumarFacturas(e.dataTransfer.files); }}
+            className={`cursor-pointer rounded-lg border-2 border-dashed px-3 py-5 text-center transition-colors ${sobreF ? "border-violet-600 bg-violet-100" : "border-violet-400 bg-white/70 hover:bg-violet-100"}`}>
+            <p className="text-xs font-semibold text-violet-800">📄 Facturas del proveedor</p>
+            <p className="text-[11px] text-stone-500 mt-0.5">Arrastra los PDF o haz clic. Puedes soltarlos de uno en uno: se van sumando.</p>
+            <input ref={refFac} type="file" accept="application/pdf" multiple className="hidden"
+              onChange={(e) => { sumarFacturas(e.target.files); e.target.value = ""; }} />
+          </div>
+          {sm.archFacturas.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {sm.archFacturas.map((a, i) => (
+                <span key={a.name + i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-violet-300 rounded text-[10px] font-mono text-stone-600">
+                  {a.name} <span className="text-stone-400">{kb(a.size)}</span>
+                  <button onClick={() => setSm((x) => ({ ...x, archFacturas: x.archFacturas.filter((_, k) => k !== i) }))}
+                    className="text-stone-400 hover:text-red-600" title="Quitar">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
+
         <div>
-          <Lbl>Comprobante de pago (PDF o foto)</Lbl>
-          <input type="file" accept="application/pdf,image/*" className="text-[11px]"
-            onChange={(e) => setSm((x) => ({ ...x, archComprobante: e.target.files?.[0] || null, err: null }))} />
-          {sm.archComprobante && <p className="text-[10px] font-mono text-stone-500 mt-1">{sm.archComprobante.name}</p>}
+          <div onClick={() => refComp.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setSobreC(true); }}
+            onDragLeave={() => setSobreC(false)}
+            onDrop={(e) => { e.preventDefault(); setSobreC(false); const f0 = e.dataTransfer.files?.[0]; if (f0) setSm((x) => ({ ...x, archComprobante: f0, err: null })); }}
+            className={`cursor-pointer rounded-lg border-2 border-dashed px-3 py-5 text-center transition-colors ${sobreC ? "border-violet-600 bg-violet-100" : "border-violet-400 bg-white/70 hover:bg-violet-100"}`}>
+            <p className="text-xs font-semibold text-violet-800">🧾 Comprobante de pago</p>
+            <p className="text-[11px] text-stone-500 mt-0.5">PDF o foto de la transferencia. Uno solo.</p>
+            <input ref={refComp} type="file" accept="application/pdf,image/*" className="hidden"
+              onChange={(e) => { const f0 = e.target.files?.[0]; if (f0) setSm((x) => ({ ...x, archComprobante: f0, err: null })); e.target.value = ""; }} />
+          </div>
+          {sm.archComprobante && (
+            <div className="mt-1">
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-violet-300 rounded text-[10px] font-mono text-stone-600">
+                {sm.archComprobante.name} <span className="text-stone-400">{kb(sm.archComprobante.size)}</span>
+                <button onClick={() => setSm((x) => ({ ...x, archComprobante: null }))} className="text-stone-400 hover:text-red-600" title="Quitar">✕</button>
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -8657,7 +8739,17 @@ Responde SOLO JSON compacto, sin markdown:
               {sm.facturas.map((fa) => (
                 <tr key={fa.id} className="border-t border-violet-200">
                   <td className="py-0.5 font-mono text-violet-900">{fa.folio || "—"}
-                    {fa.uuid && <span className="block text-[9px] text-stone-400">{fa.uuid}</span>}</td>
+                    {claveZoho(fa) && (
+                      <button onClick={() => navigator.clipboard?.writeText(claveZoho(fa))}
+                        title={fa.uuid
+                          ? "Los primeros 8 del folio fiscal: así va capturada la factura en Zoho. Clic para copiar."
+                          : "Sin folio fiscal (proveedor extranjero): en Zoho manda el número de factura del proveedor. Clic para copiar."}
+                        className="block text-[10px] font-mono font-bold text-violet-700 hover:underline">en Zoho: {claveZoho(fa)}</button>
+                    )}
+                    {fa.uuid
+                      ? <span className="block text-[9px] text-stone-400">{fa.uuid}</span>
+                      : <span className="block text-[9px] text-amber-700">extranjera · sin folio fiscal</span>}
+                    {fa.moneda && fa.moneda !== "MXN" && <span className="block text-[9px] font-bold text-amber-700">{fa.moneda}</span>}</td>
                   <td className="text-stone-600">{fa.fecha || "—"}</td>
                   <td className="text-right font-mono">{mx(fa.subtotal)}</td>
                   <td className="text-right font-mono">{mx(fa.iva)}</td>
