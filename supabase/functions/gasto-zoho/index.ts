@@ -112,6 +112,13 @@ Deno.serve(async (req) => {
       const coa = await z.get("/chartofaccounts", { filter_by: "AccountType.Expense", per_page: "200" });
       const cta = (coa?.chartofaccounts || []).find((c: any) => txt(c.account_id) === conceptoId);
       if (!cta) return json({ ok: false, error: `La cuenta contable «${conceptoNombre || conceptoId}» no existe en Zoho o no es de gastos.` }, 400);
+      // Y que este ACTIVA. Hoy Zoho no devuelve ninguna de baja en este filtro,
+      // pero el dia que den una de baja el catalogo de la app puede traerla en
+      // cache hasta 24 h, y registrar un gasto en una cuenta cerrada obliga a
+      // reclasificarlo a mano despues.
+      if (cta.is_active === false) {
+        return json({ ok: false, error: `La cuenta contable «${txt(cta.account_name) || conceptoNombre}» está dada de baja en Zoho. Escoge otra.` }, 400);
+      }
     } catch (e) {
       return json({ ok: false, error: `No se pudo validar la cuenta contable: ${String((e as Error)?.message || e).slice(0, 180)}` }, 502);
     }
@@ -137,6 +144,7 @@ Deno.serve(async (req) => {
       const bk = await z.get("/bankaccounts", { filter_by: "Status.All", per_page: "200" });
       const b = (bk?.bankaccounts || []).find((x: any) => txt(x.account_id) === cuentaZoho);
       if (!b) return json({ ok: false, error: "La cuenta bancaria no existe en Zoho." }, 400);
+      if (b.is_active === false) return json({ ok: false, error: `La cuenta «${txt(b.account_name)}» está dada de baja en Zoho. Escoge otra.` }, 400);
       currencyId = txt(b.currency_id);
       bancoNombre = txt(b.account_name);
     } catch (e) {

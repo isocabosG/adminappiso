@@ -137,6 +137,15 @@ window.gastoZoho = async (payload) => {
   return data
 }
 
+// BORRAR EN ZOHO lo que la app registró allá. Si borras un movimiento aquí,
+// no debe quedar huérfano en la contabilidad.
+window.borrarZoho = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('borrar-zoho', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (!data || data.ok === false) throw new Error(textoError(data?.error) || 'Zoho no dejó borrarlo.')
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))

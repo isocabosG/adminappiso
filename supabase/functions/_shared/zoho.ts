@@ -96,19 +96,27 @@ export class Zoho {
     return this.escribir("POST", path, cuerpo, params);
   }
 
+  // DELETE a Zoho. Mismo manejo del freno y del `code != 0`: un borrado que
+  // Zoho rechaza con 200 no es un borrado.  [7-nov-2026]
+  async del(path: string, params: Record<string, string> = {}): Promise<any> {
+    return this.escribir("DELETE", path, undefined, params);
+  }
+
   // PUT a Zoho. Mismo manejo del freno que el GET.
   async put(path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
     return this.escribir("PUT", path, cuerpo, params);
   }
 
-  private async escribir(metodo: "POST" | "PUT", path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
+  private async escribir(metodo: "POST" | "PUT" | "DELETE", path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
     for (let intento = 0; intento < 3; intento++) {
       const token = await this.token();
       const qs = new URLSearchParams({ organization_id: this.org, ...params });
       const r = await fetch(`${API}${path}?${qs}`, {
         method: metodo,
         headers: { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(cuerpo),
+        // DELETE no lleva cuerpo: mandarlo vacio hace que algunos proxys lo
+        // rechacen antes de que llegue a Zoho.
+        ...(metodo === "DELETE" ? {} : { body: JSON.stringify(cuerpo) }),
       });
       this.llamadas++;
       if (r.status === 401 && intento < 2) { this.tok = null; continue; }

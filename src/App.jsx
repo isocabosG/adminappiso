@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 14";
+const RELEASE = "SALDOS Y LIBRO 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -2057,6 +2057,30 @@ const SEED_CUENTAS = [
   { id: "caja-usd", nombre: "Caja", moneda: "USD", saldo: 1222.0, ultimos: "" },
 ];
 
+/* ---------------------------------------------------------------------------
+   COMO SE ESCRIBE EL NOMBRE DE UNA CUENTA  [7-nov-2026]
+
+   Fran: «el movimiento pusimos la cuenta BBVA Dólares USD pero la cuenta en
+   Zoho se llama BBVA Dólares».
+
+   No eran dos cuentas: era una sola con la moneda pegada atrás. La app
+   escribía `nombre + " " + moneda`, y como Zoho ya la llama «BBVA Dólares»,
+   en pantalla salía «BBVA Dólares USD» y parecía otra. Eso hace dudar de a
+   qué cuenta se registró un pago, que es lo último que uno quiere dudar.
+
+   De aquí en adelante el nombre sale TAL CUAL de Zoho. La moneda se añade
+   solo cuando el nombre no la dice ya —«Bancomer», «Fondo fijo», «Caja Chica
+   Finanzas»— y con un punto medio, para que se lea como aclaración y no como
+   parte del nombre.
+--------------------------------------------------------------------------- */
+const DICE_MONEDA = /D[OÓ]LARES?|DLS|USD|PESOS|MXN/i;
+const rotuloCuenta = (c) => {
+  if (!c) return "";
+  const n = String(c.nombre || "").trim();
+  if (!n) return String(c.moneda || "");
+  return DICE_MONEDA.test(n) ? n : `${n} · ${c.moneda || ""}`.trim();
+};
+
 // DE QUÉ CUENTA SALIÓ EL PAGO.  [7-nov-2026]
 // Fran: «el comprobante de pago dice qué banco y la terminación de la cuenta
 // origen». Primero se compara la terminación, que es exacta; si la cuenta no
@@ -2315,14 +2339,14 @@ function App({ perfil, correo }) {
       setCuentas(bancos.length
         ? bancos.map((b) => ({
             id: String(b.id), nombre: b.nombre, moneda: b.moneda,
-            // El saldo que reporta Zoho hoy es la base, igual que antes lo era
-            // la semilla capturada a mano. Encima se suman las operaciones de
-            // la app. OJO: el día que una operación se aplique TAMBIÉN en Zoho,
-            // se contaría dos veces — está anotado como la decisión pendiente.
+            // El saldo que reporta Zoho es la base. Encima se suma SOLO lo que
+            // Zoho todavía no tiene: lo que ya se registró allá no se vuelve a
+            // restar. Ver `yaEnZoho` y el cálculo de `saldos` en Tesorería.
             saldoZoho: +b.saldo || 0, saldo: +b.saldo || 0, tipo: b.tipo || "bank",
             // La cuenta de Zoho es ella misma: ya no hay dos catálogos.
             zohoAccountId: String(b.id),
             ultimos: porId.get(String(b.id))?.ultimos || "",
+            clave: porId.get(String(b.id))?.clave || "",
           }))
         : (Array.isArray(extra) && extra.length ? extra : SEED_CUENTAS));
       setOperaciones(await load("iso3-operaciones", []));
@@ -8090,11 +8114,64 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
 
   const cta = (id) => cuentas.find((c) => c.id === id);
 
-  // Saldo actual por cuenta = semilla + neto de operaciones confirmadas
+  /* -------------------------------------------------------------------------
+     REFRESCAR LOS SALDOS DE ZOHO, EN UN SOLO LUGAR  [7-nov-2026]
+
+     Fran: «este movimiento prueba de -30.48 USD no modificó el saldo que
+     aparece en tesorería en BBVA Dólares, aun cuando le pusimos actualizar».
+
+     Habia dos copias de los saldos y solo una se refrescaba. El panel de
+     arriba («Posicion neta») leia Zoho con su propio boton; la lista de
+     cuentas de abajo usaba `cuentas`, que se carga UNA vez al abrir la app y
+     ya no se volvia a tocar. Asi que despues de registrar un egreso, el panel
+     se podia poner al dia y la lista seguia con el numero de antes, o al
+     reves, segun donde mirara uno.
+
+     Ahora el refresco vive aqui: lee Zoho, guarda el cache y pisa `cuentas`
+     con los saldos nuevos. Un solo boton pone al dia las dos cosas, y se
+     dispara solo en cuanto una operacion se registra o se borra en Zoho, que
+     es justo cuando el saldo cambio.
+
+     De la app sobreviven `ultimos` y `clave`, que Zoho no tiene.
+  ------------------------------------------------------------------------- */
+  const cuentasRef = useRef(cuentas);
+  cuentasRef.current = cuentas;
+
+  const refrescarBancos = useCallback(async () => {
+    const r = await leerBancosZoho();
+    // SOLO CUENTAS ACTIVAS EN ZOHO. Una cuenta dada de baja no se le puede
+    // ofrecer a nadie para registrar un pago. El panel de arriba si recibe la
+    // lista completa, porque avisa de las que quedaron de baja con saldo.
+    const vivas = (r.cuentas || []).filter((b) => b.activa !== false);
+    if (vivas.length) {
+      const porId = new Map((cuentasRef.current || []).map((c) => [String(c.id), c]));
+      saveCuentas(vivas.map((b) => ({
+        id: String(b.id), nombre: b.nombre, moneda: b.moneda, tipo: b.tipo || "bank",
+        saldoZoho: +b.saldo || 0, saldo: +b.saldo || 0, zohoAccountId: String(b.id),
+        ultimos: porId.get(String(b.id))?.ultimos || "",
+        clave: porId.get(String(b.id))?.clave || "",
+      })));
+    }
+    return r;
+  }, [saveCuentas]);
+
+  /* -------------------------------------------------------------------------
+     EL SALDO YA NO CUENTA DOS VECES
+
+     El saldo de cada cuenta es el de Zoho. Las operaciones confirmadas que YA
+     se registraron alla (traen pagoEnZoho o gastoEnZoho) estan dentro de ese
+     numero: restarlas otra vez bajaba la cuenta el doble. El egreso de 30.48
+     dolares se habria visto como 60.96.
+
+     Encima solo se suma lo que Zoho todavia no tiene: lo capturado a mano, lo
+     planeado y lo que quedo pendiente de factura sin registrar. Eso es
+     informacion util —dinero comprometido que la contabilidad no ve aun— y es
+     lo unico que la app puede aportar sobre el saldo de Zoho.
+  ------------------------------------------------------------------------- */
   const saldos = useMemo(() => {
     const m = {};
     cuentas.forEach((c) => (m[c.id] = c.saldo || 0));
-    operaciones.filter((o) => o.estatus === "confirmado").forEach((o) => {
+    operaciones.filter((o) => o.estatus === "confirmado" && !yaEnZoho(o)).forEach((o) => {
       const mo = +o.monto || 0;
       if (o.tipo === "ingreso") m[o.cuentaId] = (m[o.cuentaId] || 0) + mo;
       else if (o.tipo === "egreso") m[o.cuentaId] = (m[o.cuentaId] || 0) - mo;
@@ -8104,13 +8181,17 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
     return m;
   }, [cuentas, operaciones]);
 
+  // Cuantas operaciones confirmadas no han llegado a Zoho. Es lo que explica
+  // la diferencia entre el panel de arriba y la lista de abajo.
+  const porRegistrar = operaciones.filter((o) => o.estatus === "confirmado" && !yaEnZoho(o)).length;
+
   const consolidadoUSD = cuentas.reduce((s, c) => s + enUSD(saldos[c.id] || 0, c.moneda, tcFix), 0);
 
   if (modo === "nueva")
-    return <NuevaOperacion {...{ cuentas, tcFix, cat, operaciones, onCancel: () => setModo("resumen"), onSave: (op) => { saveOperaciones([op, ...operaciones]); setModo("movimientos"); setAviso({ t: "ok", m: `Operación registrada (${TIPOS_OP[op.tipo]}).` }); } }} />;
+    return <NuevaOperacion {...{ cuentas, tcFix, cat, operaciones, onCancel: () => setModo("resumen"), onSave: (op) => { saveOperaciones([op, ...operaciones]); setModo("movimientos"); setAviso({ t: "ok", m: `Operación registrada (${TIPOS_OP[op.tipo]}).` }); if (yaEnZoho(op)) refrescarBancos().catch(() => {}); } }} />;
 
   if (editando)
-    return <NuevaOperacion {...{ cuentas, tcFix, cat, operaciones, inicial: editando, onCancel: () => setEditando(null), onSave: (op) => { saveOperaciones(operaciones.map((o) => (o.id === op.id ? op : o))); setEditando(null); setModo("movimientos"); setAviso({ t: "ok", m: "Movimiento actualizado." }); } }} />;
+    return <NuevaOperacion {...{ cuentas, tcFix, cat, operaciones, inicial: editando, onCancel: () => setEditando(null), onSave: (op) => { saveOperaciones(operaciones.map((o) => (o.id === op.id ? op : o))); setEditando(null); setModo("movimientos"); setAviso({ t: "ok", m: "Movimiento actualizado." }); if (yaEnZoho(op)) refrescarBancos().catch(() => {}); } }} />;
 
   return (
     <div className="space-y-4">
@@ -8127,9 +8208,9 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
         </div>
       </div>
 
-      {modo === "resumen" && <ResumenTesoreria {...{ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix }} />}
+      {modo === "resumen" && <ResumenTesoreria {...{ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix, refrescarBancos, porRegistrar }} />}
       {modo === "flujo" && <FlujoSemanal {...{ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta }} />}
-      {modo === "movimientos" && <Movimientos {...{ operaciones, saveOperaciones, cta, setAviso, onEditar: setEditando }} />}
+      {modo === "movimientos" && <Movimientos {...{ operaciones, saveOperaciones, cta, setAviso, onEditar: setEditando, refrescarBancos }} />}
     </div>
   );
 }
@@ -8142,6 +8223,11 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
    captura los movimientos hoy, asi que de ahi salen los numeros buenos.
 --------------------------------------------------------------------------- */
 const BANCOS_KEY = "iso3-bancos-zoho";
+
+// ¿Esta operacion ya vive en Zoho? Si trae el id del pago o del gasto que se
+// creo alla, si. Es la unica prueba que vale: el estatus «confirmado» lo pone
+// la app y no dice nada de la contabilidad.
+const yaEnZoho = (o) => !!(o?.smart?.pagoEnZoho?.pagoId || o?.smart?.gastoEnZoho?.gastoId);
 
 async function leerBancosZoho() {
   // Status.All y no Active: una cuenta dada de baja con saldo es un cabo suelto
@@ -8160,9 +8246,32 @@ async function leerBancosZoho() {
     // conciliadas por contabilidad, no lo que el banco reporta hoy.
     feed: b.feeds_last_refresh_date || "",
   }));
+  // SELLO CON HORA, NO SOLO CON DIA.  [7-nov-2026]
+  // Antes se guardaba `fecha` y la pantalla no volvia a preguntarle a Zoho si
+  // el cache era de hoy. Eso significaba que registrar un egreso a las 3:08 y
+  // mirar el saldo a las 3:10 enseñaba el numero de antes del egreso, sin
+  // ningun aviso de que estaba viejo. Con la hora se puede decir «esto se leyo
+  // hace 2 minutos» y refrescar cuando ya tiene rato.
   const fecha = hoy();
-  try { await window.storage?.set(BANCOS_KEY, JSON.stringify({ fecha, cuentas })); } catch {}
-  return { fecha, cuentas };
+  const ts = new Date().toISOString();
+  try { await window.storage?.set(BANCOS_KEY, JSON.stringify({ fecha, ts, cuentas })); } catch {}
+  return { fecha, ts, cuentas };
+}
+
+// ¿El sello ya tiene rato? Sin sello se considera viejo: los caches escritos
+// antes de este cambio solo traen el dia.
+const rancio = (ts, minutos = 10) => {
+  const t = Date.parse(ts || "");
+  return !t || (Date.now() - t) > minutos * 60000;
+};
+const haceRato = (ts) => {
+  const t = Date.parse(ts || "");
+  if (!t) return "";
+  const min = Math.round((Date.now() - t) / 60000);
+  if (min < 1) return "hace un momento";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `hace ${h} h` : new Date(t).toLocaleDateString("es-MX");
 }
 
 
@@ -8308,19 +8417,23 @@ function IngresosZoho({ tcFix }) {
   );
 }
 
-function SaldosZoho({ tcFix }) {
+function SaldosZoho({ tcFix, recargar, porRegistrar = 0 }) {
   const [z, setZ] = useState(null);
-  const [fecha, setFecha] = useState("");
+  const [ts, setTs] = useState("");
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
   const ref = useRef(false);
   const noConn = typeof window.zohoBooks !== "function";
 
+  // El refresco lo hace Tesorería: asi la lista de cuentas de abajo queda con
+  // los mismos numeros. Antes este boton solo se ponia al dia a si mismo.
   const refrescar = async () => {
     if (noConn || ref.current) return;
     ref.current = true; setCargando(true); setErr("");
-    try { const r = await leerBancosZoho(); setZ(r.cuentas); setFecha(r.fecha); }
-    catch (e) { setErr("No se pudieron leer los saldos de Zoho: " + (e.message || e)); }
+    try {
+      const r = recargar ? await recargar() : await leerBancosZoho();
+      setZ(r.cuentas); setTs(r.ts || "");
+    } catch (e) { setErr("No se pudieron leer los saldos de Zoho: " + (e.message || e)); }
     ref.current = false; setCargando(false);
   };
 
@@ -8328,8 +8441,11 @@ function SaldosZoho({ tcFix }) {
     (async () => {
       let c = null;
       try { const r = await window.storage?.get(BANCOS_KEY); if (r?.value) c = JSON.parse(r.value); } catch {}
-      if (c?.cuentas) { setZ(c.cuentas); setFecha(c.fecha || ""); }
-      if ((!c || c.fecha !== hoy()) && !noConn) refrescar();
+      if (c?.cuentas) { setZ(c.cuentas); setTs(c.ts || ""); }
+      // Se vuelve a leer si el cache tiene mas de diez minutos. El candado
+      // anterior era por DIA: una vez leido en la mañana, el saldo se quedaba
+      // congelado hasta el otro dia aunque se registraran egresos en medio.
+      if (rancio(c?.ts) && !noConn) refrescar();
     })();
   }, []);
 
@@ -8388,7 +8504,9 @@ function SaldosZoho({ tcFix }) {
             <p className="text-[11px] font-mono text-emerald-100/90">caja ${mx(cajaUSD)} − deuda ${mx(deudaUSD)}</p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-emerald-100">{cargando ? "Leyendo Zoho…" : (fecha ? `según Zoho al ${fecha}` : "sin datos")}</p>
+            <p className="text-xs text-emerald-100">
+              {cargando ? "Leyendo Zoho…" : (ts ? `leído de Zoho ${haceRato(ts)}` : "sin leer todavía")}
+            </p>
             <button onClick={refrescar} disabled={cargando || noConn} className="mt-1 px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
           </div>
         </div>
@@ -8411,6 +8529,7 @@ function SaldosZoho({ tcFix }) {
         </div>
         <p className="text-[10px] text-emerald-100/80 mt-2">
           Cifras <b>según Zoho</b>, no saldos de banco: ninguna cuenta tiene feed bancario conectado, así que son los montos que contabilidad capturó y concilió. Pueden traer días de retraso. MXN a USD al TC {tcFix || "—"}.
+          {porRegistrar > 0 && <> Hay <b>{porRegistrar}</b> movimiento{porRegistrar === 1 ? "" : "s"} confirmado{porRegistrar === 1 ? "" : "s"} en la app que todavía no se registró en Zoho; {porRegistrar === 1 ? "no está" : "no están"} descontado{porRegistrar === 1 ? "" : "s"} de estas cifras.</>}
         </p>
       </div>
 
@@ -8420,7 +8539,7 @@ function SaldosZoho({ tcFix }) {
         <div className="px-3 py-2 rounded border bg-amber-50 border-amber-300">
           <p className="text-xs font-semibold text-amber-900">{zombis.length} cuenta{zombis.length === 1 ? "" : "s"} dada{zombis.length === 1 ? "" : "s"} de baja con saldo — no cuenta{zombis.length === 1 ? "" : "n"} en los totales.</p>
           <p className="text-[11px] text-amber-800 mt-0.5">
-            {zombis.map((c) => `${c.nombre}: ${mx(c.saldo)} ${c.moneda}`).join(" · ")}
+            {zombis.map((c) => `${rotuloCuenta(c)}: ${mx(c.saldo)}`).join(" · ")}
           </p>
           <p className="text-[10px] text-amber-700 mt-0.5">Una cuenta cerrada con saldo no se vació antes de darla de baja, o el cierre quedó a medias. Vale la pena que finanzas lo revise.</p>
         </div>
@@ -8437,20 +8556,20 @@ function SaldosZoho({ tcFix }) {
   );
 }
 
-function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix }) {
+function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix, refrescarBancos, porRegistrar = 0 }) {
 
   return (
     <div className="space-y-4">
       {/* Saldos REALES de Zoho — es el numero bueno */}
-      <SaldosZoho tcFix={tcFix} />
+      <SaldosZoho tcFix={tcFix} recargar={refrescarBancos} porRegistrar={porRegistrar} />
       <IngresosZoho tcFix={tcFix} />
 
-      {/* Libreta interna de la app (saldos semilla + movimientos capturados a mano).
-          NO se concilia con Zoho ni con el banco: se deja visible para no perder lo
-          que ya se habia capturado, pero marcada como lo que es. */}
+      {/* Saldo de Zoho MAS lo que la app tiene y Zoho todavia no. Lo que ya se
+          registro alla no se vuelve a restar: contaba doble. Aqui tambien viven
+          los dos datos que la app guarda por su cuenta, terminacion y clave. */}
       <details className="bg-white border border-stone-200 rounded-lg">
         <summary className="px-3 py-2 text-xs font-medium text-stone-600 cursor-pointer">
-          ▸ Libreta interna de la app <span className="font-normal text-stone-400">— saldos capturados a mano, no conciliados con Zoho</span>
+          ▸ Cuentas, terminación y clave del libro <span className="font-normal text-stone-400">— saldo de Zoho más lo que aún no se registra allá</span>
         </summary>
         <div className="p-3 pt-0">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -8475,6 +8594,7 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
           <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
             <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Moneda</th>
             <th className="text-left px-3 py-2" title="Los últimos dígitos que imprime el comprobante del banco. Con esto el campo smart de egresos reconoce de qué cuenta salió el pago.">Últimos 4</th>
+            <th className="text-left px-3 py-2" title="Cómo se llama esta cuenta en el libro de bancos de Jesús (por ejemplo BM MXN 01600699136). Es lo que se escribe en la columna CUENTA al exportar.">Clave en el libro</th>
             <th className="text-right px-3 py-2">Saldo</th><th className="text-right px-3 py-2">USD equiv.</th>
           </tr></thead>
           <tbody>
@@ -8486,6 +8606,11 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
                   <input value={c.ultimos || ""} maxLength={4} placeholder="····"
                     onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, ultimos: e.target.value.replace(/\D/g, "").slice(0, 4) } : x)))}
                     className="w-16 px-1.5 py-0.5 text-xs font-mono border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
+                </td>
+                <td className="px-3 py-2">
+                  <input value={c.clave || ""} placeholder="BM MXN 016006…"
+                    onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, clave: e.target.value } : x)))}
+                    className="w-44 px-1.5 py-0.5 text-xs font-mono border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{mx(saldos[c.id] || 0)}</td>
                 <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(enUSD(saldos[c.id] || 0, c.moneda, tcFix))}</td>
@@ -8500,6 +8625,7 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
         Las cuentas son <b>las de Zoho</b>: la que escoges en un movimiento es contra la que se registra el pago
         allá. Ya no hay nada que asociar. <b>Últimos 4</b> es lo único que la app guarda por su cuenta — la
         terminación que imprime el comprobante del banco, con la que el campo smart reconoce de dónde salió un pago.
+        <b> Clave en el libro</b> es cómo se llama la cuenta en la hoja de Jesús; es lo que sale en la columna CUENTA al exportar.
       </p>
       <p className="text-xs text-stone-500">La proyección semana a semana está en la pestaña <strong>Flujo semanal</strong> y se calcula sobre la libreta interna, no sobre Zoho.</p>
     </div>
@@ -8612,7 +8738,7 @@ function FlujoSemanal({ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta
         <button onClick={hoy} className="px-2.5 py-1.5 text-xs font-medium rounded border border-stone-300 text-stone-600 hover:bg-stone-50">Hoy</button>
         <select className={sel} value={ctaF} onChange={(e) => setCtaF(e.target.value)}>
           <option value="todas">Todas (USD)</option>
-          {cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre} {c.moneda}</option>)}
+          {cuentas.map((c) => <option key={c.id} value={c.id}>{rotuloCuenta(c)}</option>)}
         </select>
         <span className="text-[11px] font-mono text-stone-500 ml-auto">Inicio ${mx(inicio)} {monedaVista}</span>
       </div>
@@ -8676,7 +8802,7 @@ function FlujoSemanal({ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta
                       {detalle}
                       {o.categoria && <span className="text-stone-400"> · {o.categoria}</span>}
                     </p>
-                    <p className="text-[10px] font-mono text-stone-400">{o.fecha} · {c?.nombre} {c?.moneda}{o.referencia ? ` · ${o.referencia}` : ""}</p>
+                    <p className="text-[10px] font-mono text-stone-400">{o.fecha} · {rotuloCuenta(c)}{o.referencia ? ` · ${o.referencia}` : ""}</p>
                   </div>
                   <div className="text-right whitespace-nowrap">
                     <span className={`font-mono text-sm ${o.tipo === "ingreso" ? "text-teal-700" : o.tipo === "egreso" ? "text-red-600" : "text-stone-600"}`}>
@@ -9311,14 +9437,14 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
 
         <div><Lbl>{tipo === "traspaso" || tipo === "cambio" ? "Cuenta origen" : "Cuenta"}</Lbl>
           <select className={inp} value={f.cuentaId} onChange={(e) => set("cuentaId", e.target.value)}>
-            {cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre} {c.moneda}</option>)}
+            {cuentas.map((c) => <option key={c.id} value={c.id}>{rotuloCuenta(c)}</option>)}
           </select></div>
 
         {(tipo === "traspaso" || tipo === "cambio") && (
           <div><Lbl>Cuenta destino</Lbl>
             <select className={inp} value={f.cuentaDestinoId} onChange={(e) => set("cuentaDestinoId", e.target.value)}>
               <option value="">—</option>
-              {cuentas.filter((c) => c.id !== f.cuentaId && (tipo === "cambio" || c.moneda === monedaDe(f.cuentaId))).map((c) => <option key={c.id} value={c.id}>{c.nombre} {c.moneda}</option>)}
+              {cuentas.filter((c) => c.id !== f.cuentaId && (tipo === "cambio" || c.moneda === monedaDe(f.cuentaId))).map((c) => <option key={c.id} value={c.id}>{rotuloCuenta(c)}</option>)}
             </select></div>
         )}
 
@@ -9459,7 +9585,7 @@ function VisorMovimiento({ op, cuenta, onCerrar }) {
           <div>
             <p className="text-sm font-semibold">{op.contraparte || TIPOS_OP[op.tipo]}</p>
             <p className="text-[11px] text-stone-500">
-              {op.fecha} · {cuenta?.nombre} {cuenta?.moneda} · {op.categoria || "—"} · {op.formaPago || "—"}
+              {op.fecha} · {rotuloCuenta(cuenta)} · {op.categoria || "—"} · {op.formaPago || "—"}
             </p>
           </div>
           <div className="text-right">
@@ -9574,6 +9700,215 @@ function VisorMovimiento({ op, cuenta, onCerrar }) {
   );
 }
 
+/* ---------------------------------------------------------------------------
+   LIBRO DE BANCOS EN EXCEL  [7-nov-2026]
+
+   Fran: «agrega un botón para exportar tabla a Excel con formato de Innovación
+   Solar, bien armada con colores corporativos» · «el mismo formato aunque más
+   bonito».
+
+   Las columnas son LAS MISMAS de la pestaña Concentrado de la hoja de Jesús, en
+   el mismo orden y con sus mismas convenciones: egresos en negativo, huecos con
+   un guión, el tipo en mayúsculas de su catálogo. Eso no es capricho: si una
+   columna se mueve o un hueco va vacío en vez de «-», su hoja deja de cuadrar y
+   el estimado de impuestos sale mal sin avisar.
+
+   Lo que sí cambia es la presentación —encabezados, colores, filtros, columnas
+   congeladas— y una segunda pestaña con los totales, que su archivo no trae.
+
+   UN TRASPASO SON DOS RENGLONES, como en su hoja: la salida en negativo en la
+   cuenta origen y la entrada en positivo en la destino. Un solo renglón dejaría
+   el traspaso descuadrado entre bancos.
+
+   ExcelJS se carga del CDN en el momento, no se empaqueta: se usa en un botón
+   que casi nadie pica y no tiene por qué pesarle a todos los que abren la app.
+--------------------------------------------------------------------------- */
+const VERDE_ISO = "FF065F46";      // encabezado
+const VERDE_CLARO = "FFD1FAE5";    // totales
+const VERDE_CEBRA = "FFF2FBF6";    // renglón alterno
+const CDN_EXCELJS = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
+
+let cargandoExcel = null;
+const traerExcelJS = () => {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  if (cargandoExcel) return cargandoExcel;
+  cargandoExcel = new Promise((ok, mal) => {
+    const sc = document.createElement("script");
+    sc.src = CDN_EXCELJS;
+    sc.onload = () => (window.ExcelJS ? ok(window.ExcelJS) : mal(new Error("ExcelJS no quedó disponible.")));
+    sc.onerror = () => mal(new Error("No se pudo descargar ExcelJS. ¿Hay internet?"));
+    document.head.appendChild(sc);
+  });
+  return cargandoExcel;
+};
+
+// Nombre corto del banco, como lo escribe Jesús: MIFEL, BBVA, BANREGIO.
+const bancoCorto = (nombre) => {
+  const n = String(nombre || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+  if (n.includes("MIFEL")) return "MIFEL";
+  if (n.includes("BBVA")) return "BBVA";
+  if (n.includes("BANREGIO")) return "BANREGIO";
+  return n.split(/\s+/)[0] || "-";
+};
+
+const guion = (v) => { const t = String(v ?? "").trim(); return t === "" ? "-" : t; };
+
+// Un movimiento -> uno o dos renglones del libro.
+function renglonesLibro(o, cta) {
+  const c = cta(o.cuentaId), cd = o.cuentaDestinoId ? cta(o.cuentaDestinoId) : null;
+  const facturas = (o.smart?.facturas || []).map((f) => f.folio).filter(Boolean).join(", ");
+  const base = {
+    fecha: o.fecha || "",
+    tipo: guion(o.categoria),
+    formaPago: guion(o.formaPago),
+    nombre: guion(o.contraparte || o.concepto),
+    ocOv: "-",
+    factura: guion(facturas || o.pendiente),
+    complemento: "-",
+    referencia: guion(o.referencia),
+  };
+  const uno = (cuenta, monto, nombre) => ({
+    ...base,
+    moneda: cuenta?.moneda || o.moneda || "-",
+    banco: bancoCorto(cuenta?.nombre),
+    cuenta: guion(cuenta?.clave || cuenta?.nombre),
+    monto,
+    nombre: nombre || base.nombre,
+  });
+
+  if (o.tipo === "traspaso" || o.tipo === "cambio") {
+    const etiqueta = o.tipo === "cambio" ? "CAMBIO DE DIVISAS" : "TRASPASO ENTRE CUENTAS";
+    return [
+      uno(c, -Math.abs(+o.monto || 0), `${etiqueta} · SALE DE ${bancoCorto(c?.nombre)}`),
+      uno(cd, Math.abs(+(o.montoDestino ?? o.monto) || 0), `${etiqueta} · ENTRA A ${bancoCorto(cd?.nombre)}`),
+    ];
+  }
+  const signo = o.tipo === "egreso" ? -1 : 1;
+  return [uno(c, signo * Math.abs(+o.monto || 0))];
+}
+
+async function exportarLibroBancos(rows, cta) {
+  const ExcelJS = await traerExcelJS();
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "AdminAppISO · Innovación Solar";
+  wb.created = new Date();
+
+  const COLS = [
+    { h: "FECHA", k: "fecha", w: 12 }, { h: "TIPO", k: "tipo", w: 22 },
+    { h: "MONEDA", k: "moneda", w: 9 }, { h: "FORMA PAGO", k: "formaPago", w: 17 },
+    { h: "BANCO", k: "banco", w: 12 }, { h: "CUENTA", k: "cuenta", w: 24 },
+    { h: "MONTO", k: "monto", w: 15 }, { h: "NOMBRE", k: "nombre", w: 40 },
+    { h: "OC / OVTA", k: "ocOv", w: 14 }, { h: "FACTURA", k: "factura", w: 18 },
+    { h: "COMPLEMENTO", k: "complemento", w: 15 }, { h: "REFERENCIA", k: "referencia", w: 22 },
+  ];
+
+  const ws = wb.addWorksheet("Concentrado", { views: [{ state: "frozen", ySplit: 4 }] });
+  ws.columns = COLS.map((c) => ({ key: c.k, width: c.w }));
+
+  // Encabezado de la casa
+  ws.mergeCells(1, 1, 1, COLS.length);
+  const t = ws.getCell(1, 1);
+  t.value = "INNOVACIÓN SOLAR · LIBRO DE BANCOS";
+  t.font = { bold: true, size: 14, color: { argb: "FFFFFFFF" } };
+  t.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+  t.fill = { type: "pattern", pattern: "solid", fgColor: { argb: VERDE_ISO } };
+  ws.getRow(1).height = 30;
+
+  ws.mergeCells(2, 1, 2, COLS.length);
+  const sub = ws.getCell(2, 1);
+  const f = new Date();
+  sub.value = `Concentrado de movimientos · ${rows.length} registro(s) · generado ${f.toLocaleDateString("es-MX")} ${f.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}`;
+  sub.font = { size: 10, color: { argb: "FF6B7280" }, italic: true };
+  sub.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+  ws.getRow(2).height = 18;
+  ws.getRow(3).height = 6;
+
+  const hr = ws.getRow(4);
+  COLS.forEach((c, i) => {
+    const cel = hr.getCell(i + 1);
+    cel.value = c.h;
+    cel.font = { bold: true, size: 10, color: { argb: "FFFFFFFF" } };
+    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF047857" } };
+    cel.alignment = { vertical: "middle", horizontal: c.k === "monto" ? "right" : "left", indent: 1 };
+    cel.border = { bottom: { style: "thin", color: { argb: "FF065F46" } } };
+  });
+  hr.height = 22;
+
+  const datos = rows.flatMap((o) => renglonesLibro(o, cta));
+  datos.forEach((d, i) => {
+    const r = ws.addRow(d);
+    r.height = 17;
+    if (i % 2 === 1) r.eachCell((cel) => { cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: VERDE_CEBRA } }; });
+    r.eachCell((cel) => {
+      cel.font = { size: 10 };
+      cel.alignment = { vertical: "middle", indent: 1 };
+      cel.border = { bottom: { style: "hair", color: { argb: "FFE5E7EB" } } };
+    });
+    const cf = r.getCell(1); cf.numFmt = "dd/mm/yyyy"; if (d.fecha) cf.value = new Date(d.fecha + "T12:00:00");
+    const cm = r.getCell(7);
+    cm.numFmt = "#,##0.00;[Red]-#,##0.00";
+    cm.alignment = { vertical: "middle", horizontal: "right", indent: 1 };
+    cm.font = { size: 10, bold: true, color: { argb: d.monto < 0 ? "FFB91C1C" : "FF065F46" } };
+  });
+
+  ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: COLS.length } };
+
+  /* ── Resumen: lo que su archivo no trae ── */
+  const rs = wb.addWorksheet("Resumen");
+  rs.columns = [{ width: 26 }, { width: 10 }, { width: 18 }, { width: 10 }];
+  const titulo = (fila, texto) => {
+    rs.mergeCells(fila, 1, fila, 4);
+    const c = rs.getCell(fila, 1);
+    c.value = texto;
+    c.font = { bold: true, size: 11, color: { argb: "FFFFFFFF" } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: VERDE_ISO } };
+    c.alignment = { vertical: "middle", indent: 1 };
+    rs.getRow(fila).height = 22;
+  };
+  const bloque = (desde, texto, mapa) => {
+    titulo(desde, texto);
+    const enc = rs.getRow(desde + 1);
+    ["", "MONEDA", "MONTO", "MOVS"].forEach((h, i) => {
+      const c = enc.getCell(i + 1);
+      c.value = h; c.font = { bold: true, size: 9, color: { argb: "FF065F46" } };
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: VERDE_CLARO } };
+      c.alignment = { indent: 1 };
+    });
+    let fila = desde + 2;
+    for (const [clave, v] of [...mapa.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const r = rs.getRow(fila++);
+      r.getCell(1).value = clave.split("|")[0];
+      r.getCell(2).value = clave.split("|")[1] || "";
+      const m = r.getCell(3);
+      m.value = v.monto; m.numFmt = "#,##0.00;[Red]-#,##0.00";
+      m.font = { bold: true, color: { argb: v.monto < 0 ? "FFB91C1C" : "FF065F46" } };
+      r.getCell(4).value = v.n;
+      r.eachCell((c) => { c.font = { ...(c.font || {}), size: 10 }; c.alignment = { ...(c.alignment || {}), indent: 1 }; });
+    }
+    return fila + 1;
+  };
+  const agrupa = (fn) => {
+    const m = new Map();
+    for (const d of datos) {
+      const k = fn(d);
+      const v = m.get(k) || { monto: 0, n: 0 };
+      v.monto += d.monto; v.n += 1; m.set(k, v);
+    }
+    return m;
+  };
+  let y = 1;
+  y = bloque(y, "POR TIPO", agrupa((d) => `${d.tipo}|${d.moneda}`));
+  y = bloque(y, "POR BANCO", agrupa((d) => `${d.banco}|${d.moneda}`));
+  bloque(y, "POR FORMA DE PAGO", agrupa((d) => `${d.formaPago}|${d.moneda}`));
+
+  const buf = await wb.xlsx.writeBuffer();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  a.download = `Libro de Bancos ${hoy()}.xlsx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
 // Todo lo que de un movimiento se puede buscar escribiendo. Se arma una sola
 // cadena por renglón y se buscan TODAS las palabras del buscador dentro de
 // ella: así «mifel kca» encuentra lo que trae las dos, en cualquier orden, sin
@@ -9588,7 +9923,7 @@ const textoBuscable = (o, c, cd) => [
   String(o.monto ?? ""),
 ].filter(Boolean).join(" ").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
-function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) {
+function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, refrescarBancos }) {
   const [filtro, setFiltro] = useState("todos");
   const [busca, setBusca] = useState("");
   const [orden, setOrden] = useState("desc");   // por fecha
@@ -9615,7 +9950,48 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
     saveOperaciones(operaciones.map((o) => (o.id === id ? { ...o, estatus: "confirmado" } : o)));
     setAviso({ t: "ok", m: "Operación marcada como confirmada." });
   };
-  const borrar = (id) => saveOperaciones(operaciones.filter((o) => o.id !== id));
+  // BORRAR AQUÍ ES BORRAR ALLÁ.  [7-nov-2026]
+  //
+  // Fran: «si borras en la app, se borra en Zoho». Dejar el registro vivo en
+  // la contabilidad después de borrarlo aquí es la divergencia entre libros
+  // que llevamos toda la sesión cerrando.
+  //
+  // Pero NO en un clic y sin avisar: borrar un pago deja la factura del
+  // proveedor otra vez por pagar, y eso no se deshace solo. Se pregunta una
+  // vez, diciendo exactamente qué va a pasar. Si Zoho se niega —una
+  // transacción conciliada no se puede borrar— tampoco se borra aquí: el
+  // movimiento se queda y se dice por qué, para no perder el rastro.
+  const [exportando, setExportando] = useState(false);
+  const [errExcel, setErrExcel] = useState(null);
+  const bajarExcel = async () => {
+    setExportando(true); setErrExcel(null);
+    // Se exporta LO FILTRADO, no todo: quien filtró por un banco o un mes es
+    // justo lo que quiere pegar en la hoja.
+    try { await exportarLibroBancos(rows, cta); }
+    catch (e) { setErrExcel(e?.message || String(e)); }
+    finally { setExportando(false); }
+  };
+
+  const [borrando, setBorrando] = useState(null);   // { op, trabajando, err }
+  const pedirBorrar = (o) => setBorrando({ op: o, trabajando: false, err: null });
+
+  const borrarDeVerdad = async () => {
+    const o = borrando?.op; if (!o) return;
+    const enZoho = o.smart?.pagoEnZoho?.pagoId ? { tipo: "pago", id: o.smart.pagoEnZoho.pagoId }
+      : o.smart?.gastoEnZoho?.gastoId ? { tipo: "gasto", id: o.smart.gastoEnZoho.gastoId } : null;
+    setBorrando((b) => ({ ...b, trabajando: true, err: null }));
+    try {
+      if (enZoho) await window.borrarZoho({ ...enZoho, porque: `Borrado desde Tesorería · ${o.contraparte || ""} ${o.fecha}` });
+      saveOperaciones(operaciones.filter((x) => x.id !== o.id));
+      setBorrando(null);
+      setAviso({ t: "ok", m: enZoho ? `Movimiento borrado aquí y en Zoho (${enZoho.tipo}).` : "Movimiento borrado." });
+      // Borrar en Zoho devuelve el saldo de la cuenta. Se vuelve a leer para
+      // que el numero de la pantalla no quede con el cargo que ya no existe.
+      if (enZoho) refrescarBancos?.().catch(() => {});
+    } catch (e) {
+      setBorrando((b) => ({ ...b, trabajando: false, err: e?.message || String(e) }));
+    }
+  };
 
   const pedirEditar = (o) => { setConfirmando(o); setPaso(1); };
   const cerrarModal = () => { setConfirmando(null); setPaso(1); };
@@ -9638,7 +10014,13 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
           Fecha {orden === "desc" ? "↓ reciente primero" : "↑ antigua primero"}
         </button>
         <span className="text-xs text-stone-500 self-center">{rows.length} de {operaciones.length}</span>
+        <button onClick={bajarExcel} disabled={!rows.length || exportando}
+          title="Las mismas columnas del Concentrado de Jesús, con formato. Exporta lo que está filtrado."
+          className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
+          {exportando ? "Armando…" : "⤓ Exportar a Excel"}
+        </button>
       </div>
+      {errExcel && <p className="text-[11px] text-red-700">{errExcel}</p>}
       {rows.length === 0 ? (
         <div className="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">Sin operaciones. Registra la primera con "+ Nueva operación".</div>
       ) : (
@@ -9660,7 +10042,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
                       {o.categoria && <span className="text-stone-400"> · {o.categoria}</span>}
                       {o.comprobante && <span className="text-teal-600"> · 📎</span>}
                     </td>
-                    <td className="px-3 py-2 text-xs">{c?.nombre} {c?.moneda}</td>
+                    <td className="px-3 py-2 text-xs">{rotuloCuenta(c)}</td>
                     <td className="px-3 py-2 text-xs font-mono text-stone-600">
                       {(o.smart?.facturas || []).map((fa) => fa.folio).filter(Boolean).join(", ")
                         || (o.pendiente ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">{o.pendiente}</span>
@@ -9680,7 +10062,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
                       {(o.smart || o.pendiente) && <button onClick={() => setVer(o)} className="px-2 py-1 text-[11px] text-violet-700 hover:bg-violet-50 rounded font-medium">Ver</button>}
                       <button onClick={() => pedirEditar(o)} className="px-2 py-1 text-[11px] text-stone-600 hover:bg-stone-100 rounded">Editar</button>
                       {o.estatus === "planeado" && <button onClick={() => confirmar(o.id)} className="px-2 py-1 text-[11px] text-teal-700 hover:bg-teal-50 rounded">Confirmar</button>}
-                      <button onClick={() => borrar(o.id)} className="px-2 py-1 text-[11px] text-stone-400 hover:text-red-600">×</button>
+                      <button onClick={() => pedirBorrar(o)} className="px-2 py-1 text-[11px] text-stone-400 hover:text-red-600">×</button>
                     </td>
                   </tr>
                 );
@@ -9691,6 +10073,46 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
       )}
 
       {viendo && <VisorMovimiento op={viendo} cuenta={cta(viendo.cuentaId)} onCerrar={() => setVer(null)} />}
+
+      {/* Borrar: una pregunta, con las consecuencias escritas. */}
+      {borrando && (() => {
+        const o = borrando.op;
+        const pago = o.smart?.pagoEnZoho?.pagoId, gasto = o.smart?.gastoEnZoho?.gastoId;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !borrando.trabajando && setBorrando(null)}>
+            <div className="bg-white rounded-xl max-w-md w-full p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <p className="text-sm font-semibold mb-1">Borrar este movimiento</p>
+              <p className="text-[12px] text-stone-600 font-mono mb-3">
+                {o.fecha} · {o.contraparte || TIPOS_OP[o.tipo]} · {o.moneda} ${mx(o.monto)}
+              </p>
+              {pago ? (
+                <div className="text-[12px] text-red-800 bg-red-50 border border-red-300 rounded p-2 leading-relaxed">
+                  Está registrado en Zoho como <b>pago #{o.smart.pagoEnZoho.numero}</b>. Al borrarlo:
+                  el saldo del banco vuelve a subir y <b>la factura del proveedor regresa a «por pagar»</b>.
+                </div>
+              ) : gasto ? (
+                <div className="text-[12px] text-amber-900 bg-amber-50 border border-amber-300 rounded p-2 leading-relaxed">
+                  Está registrado en Zoho como <b>gasto</b> ({o.smart.gastoEnZoho.referencia || gasto}). Al borrarlo,
+                  el movimiento deja de existir allá y el saldo del banco vuelve a como estaba.
+                </div>
+              ) : (
+                <div className="text-[12px] text-stone-600 bg-stone-50 border border-stone-200 rounded p-2">
+                  No está en Zoho. Solo se borra de la libreta de la app.
+                </div>
+              )}
+              {borrando.err && <p className="mt-2 text-[11px] text-red-700">{borrando.err}</p>}
+              <div className="flex gap-2 mt-4">
+                <button onClick={borrarDeVerdad} disabled={borrando.trabajando}
+                  className="px-4 py-2 bg-red-700 text-white text-sm font-medium rounded hover:bg-red-800 disabled:opacity-40">
+                  {borrando.trabajando ? "Borrando…" : pago || gasto ? "Borrar aquí y en Zoho" : "Borrar"}
+                </button>
+                <button onClick={() => setBorrando(null)} disabled={borrando.trabajando}
+                  className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Modal ¡AGUAS! doble confirmación */}
       {confirmando && (

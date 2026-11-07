@@ -119,6 +119,21 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: `No se pudo comprobar si el pago ya existia, asi que no se registro: ${String((e as Error)?.message || e).slice(0, 200)}` }, 502);
     }
 
+    // LA CUENTA DE DONDE SALE EL PAGO: que exista y este ACTIVA.  [7-nov-2026]
+    // Zoho acepta el id sin chistar y registra el pago contra una cuenta dada
+    // de baja, que es justo la que nadie va a conciliar.
+    try {
+      const bk = await z.get("/bankaccounts", { filter_by: "Status.All", per_page: "200" });
+      const b = (bk?.bankaccounts || []).find((x: any) => txt(x.account_id) === cuentaZoho);
+      if (!b) return json({ ok: false, error: "La cuenta bancaria no existe en Zoho." }, 400);
+      if (b.is_active === false) return json({ ok: false, error: `La cuenta «${txt(b.account_name)}» está dada de baja en Zoho. Escoge otra.` }, 400);
+      if (txt(b.currency_code) && txt(b.currency_code) !== moneda) {
+        return json({ ok: false, error: `La cuenta «${txt(b.account_name)}» es en ${txt(b.currency_code)} y el pago viene en ${moneda}. No se registró nada.` }, 400);
+      }
+    } catch (e) {
+      return json({ ok: false, error: `No se pudo validar la cuenta bancaria: ${String((e as Error)?.message || e).slice(0, 180)}` }, 502);
+    }
+
     // REVISIONES 2 y 3 — cada factura, leida de Zoho.
     const revisadas: Array<{ billId: string; numero: string; saldo: number; aplica: number }> = [];
     for (const f of aplicar) {
