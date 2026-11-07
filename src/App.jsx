@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 10";
+const RELEASE = "FACTURAS COMPRAS 11";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8024,9 +8024,49 @@ function Flujo({ tcFix, setAviso }) {
   );
 }
 
+const CATALOGOS_KEY = "iso3-zoho-catalogos";
+
 function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }) {
   const [modo, setModo] = useState("resumen"); // resumen | nueva | movimientos
   const [editando, setEditando] = useState(null);
+
+  // PROVEEDORES Y CUENTAS DE GASTO, DE ZOHO.  [7-nov-2026]
+  //
+  // Fran: «el campo de proveedor debe jalarlo de Zoho cuando empiezas a
+  // escribir» y «el campo concepto... que lo jale de los conceptos precargados
+  // del catálogo de cuentas contables».
+  //
+  // Se bajan UNA vez al día y se guardan en adm_kv. Buscar contra una lista en
+  // memoria es instantáneo; pedirle a Zoho en cada tecla sería lento y además
+  // se come el tope de llamadas que esta app comparte con IS-PMT y los crons.
+  // Los dos campos aceptan texto libre: la lista ayuda a escribir el mismo
+  // nombre que ya existe, no impide capturar algo nuevo.
+  const [cat, setCat] = useState({ proveedores: [], conceptos: [] });
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const r = await window.storage?.get(CATALOGOS_KEY);
+        const v = r?.value ? JSON.parse(r.value) : null;
+        if (v?.proveedores?.length && vivo) setCat(v);
+        if (v?.fecha === hoy()) return;              // ya se bajó hoy
+        const [pv, cc] = await Promise.all([
+          window.zohoBooks({ action: "list_contacts", params: { contact_type: "vendor", filter_by: "Status.Active", per_page: "200" } }).catch(() => null),
+          window.zohoBooks({ action: "list_chart_of_accounts", params: { filter_by: "AccountType.Expense", per_page: "200" } }).catch(() => null),
+        ]);
+        const nuevo = {
+          fecha: hoy(),
+          proveedores: (pv?.contacts || []).map((x) => ({ id: x.contact_id, nombre: x.vendor_name || x.contact_name })).filter((x) => x.nombre),
+          conceptos: (cc?.chartofaccounts || []).filter((x) => x.is_active !== false)
+            .map((x) => ({ id: x.account_id, nombre: x.account_name, codigo: x.account_code || "" })).filter((x) => x.nombre),
+        };
+        if (!nuevo.proveedores.length && !nuevo.conceptos.length) return;  // Zoho no contestó: se queda el caché
+        if (vivo) setCat(nuevo);
+        try { await window.storage?.set(CATALOGOS_KEY, JSON.stringify(nuevo)); } catch {}
+      } catch { /* sin catálogo los campos siguen siendo de texto libre */ }
+    })();
+    return () => { vivo = false; };
+  }, []);
 
   const cta = (id) => cuentas.find((c) => c.id === id);
 
@@ -8047,10 +8087,10 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
   const consolidadoUSD = cuentas.reduce((s, c) => s + enUSD(saldos[c.id] || 0, c.moneda, tcFix), 0);
 
   if (modo === "nueva")
-    return <NuevaOperacion {...{ cuentas, tcFix, onCancel: () => setModo("resumen"), onSave: (op) => { saveOperaciones([op, ...operaciones]); setModo("movimientos"); setAviso({ t: "ok", m: `Operación registrada (${TIPOS_OP[op.tipo]}).` }); } }} />;
+    return <NuevaOperacion {...{ cuentas, tcFix, cat, operaciones, onCancel: () => setModo("resumen"), onSave: (op) => { saveOperaciones([op, ...operaciones]); setModo("movimientos"); setAviso({ t: "ok", m: `Operación registrada (${TIPOS_OP[op.tipo]}).` }); } }} />;
 
   if (editando)
-    return <NuevaOperacion {...{ cuentas, tcFix, inicial: editando, onCancel: () => setEditando(null), onSave: (op) => { saveOperaciones(operaciones.map((o) => (o.id === op.id ? op : o))); setEditando(null); setModo("movimientos"); setAviso({ t: "ok", m: "Movimiento actualizado." }); } }} />;
+    return <NuevaOperacion {...{ cuentas, tcFix, cat, operaciones, inicial: editando, onCancel: () => setEditando(null), onSave: (op) => { saveOperaciones(operaciones.map((o) => (o.id === op.id ? op : o))); setEditando(null); setModo("movimientos"); setAviso({ t: "ok", m: "Movimiento actualizado." }); } }} />;
 
   return (
     <div className="space-y-4">
@@ -8712,7 +8752,7 @@ const comoIA = (file, b64) => {
   return null;
 };
 
-function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho }) {
+function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho, sinFactura, nPendiente }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const refFac = useRef(null), refComp = useRef(null);
   const [sobreF, setSobreF] = useState(false), [sobreC, setSobreC] = useState(false);
@@ -8750,12 +8790,14 @@ Extrae los datos tal como vienen, sin inventar y sin redondear. Si un dato no ap
 Responde SOLO JSON compacto, sin markdown:
 {"proveedor":{"nombre":"","rfc":""},
  "facturas":[{"folio":"","uuid":"","fecha":"YYYY-MM-DD","subtotal":0,"iva":0,"total":0,"moneda":"MXN"}],
- "pago":{"fecha":"YYYY-MM-DD","monto":0,"moneda":"MXN","bancoOrigen":"","cuentaOrigen":"","beneficiario":"","bancoDestino":"","cuentaDestino":"","referencia":"","claveRastreo":"","folioBanco":""}}
+ "pago":{"fecha":"YYYY-MM-DD","monto":0,"moneda":"MXN","bancoOrigen":"","cuentaOrigen":"","beneficiario":"","bancoDestino":"","cuentaDestino":"","referencia":"","claveRastreo":"","folioBanco":""},
+ "concepto":""}
 
 - "folio" es el número de la factura que imprime el proveedor (por ejemplo "CL - 822014"), NO el folio fiscal.
 - "uuid" es el folio fiscal del SAT, 36 caracteres. Una factura de proveedor EXTRANJERO no lo trae porque el SAT no la timbra: en ese caso deja uuid en "" y NO inventes nada.
 - "fecha" de la factura es la de certificación.
 - Una factura por cada PDF de factura. ${traeComp ? "El pago sale del comprobante bancario, no de las facturas." : "No hay comprobante: deja \"pago\" en ceros."}
+- "concepto": en dos o tres palabras, QUÉ se compró o contrató, leído de los renglones de la factura (por ejemplo "honorarios contables", "material eléctrico", "renta de bodega", "combustible"). Es para clasificar el gasto en la contabilidad.
 - Solo el JSON.` });
       const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content }] });
       if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
@@ -8767,8 +8809,8 @@ Responde SOLO JSON compacto, sin markdown:
         moneda: x.moneda || "MXN", billId: "", empatePor: "",
       }));
       const prov = r.proveedor?.nombre || "";
-      setSm((x) => ({ ...x, leyendo: false, facturas, proveedor: prov, rfc: r.proveedor?.rfc || "", pago: r.pago || {}, bills: [], provs: [], vendorId: "" }));
-      aplicar({ proveedor: prov, pago: r.pago || {}, suma: facturas.reduce((a, y) => a + nFolio(y.total), 0) });
+      setSm((x) => ({ ...x, leyendo: false, facturas, proveedor: prov, rfc: r.proveedor?.rfc || "", pago: r.pago || {}, concepto: r.concepto || "", bills: [], provs: [], vendorId: "" }));
+      aplicar({ proveedor: prov, pago: r.pago || {}, concepto: r.concepto || "", suma: facturas.reduce((a, y) => a + nFolio(y.total), 0) });
     } catch (e) {
       setSm((x) => ({ ...x, leyendo: false, err: e?.message || String(e) }));
     }
@@ -8895,6 +8937,12 @@ Responde SOLO JSON compacto, sin markdown:
         )}
       </div>
 
+      {sinFactura && (
+        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
+          Sin factura todavía: este movimiento se registra como <b>PENDIENTE {nPendiente}</b>. Cuando llegue la
+          factura, se edita el movimiento, se carga aquí y el folio pendiente se reemplaza por el número real.
+        </p>
+      )}
       {sm.err && <p className="text-[11px] text-red-700">{sm.err}</p>}
       {sm.errZ && <p className="text-[11px] text-red-700">{sm.errZ}</p>}
 
@@ -8992,11 +9040,11 @@ Responde SOLO JSON compacto, sin markdown:
   );
 }
 
-function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
+function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { proveedores: [], conceptos: [] }, operaciones = [] }) {
   const [tipo, setTipo] = useState(inicial?.tipo || "egreso");
   const [f, setF] = useState(inicial
-    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "" }
-    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "" });
+    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "", concepto: inicial.concepto || "" }
+    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "", concepto: "" });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const monedaDe = (id) => cuentas.find((c) => c.id === id)?.moneda || "";
@@ -9014,7 +9062,23 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
 
   // Lo que la IA leyó se vuelca al formulario. No se pisa lo que ya tenga algo
   // escrito a mano: el campo smart ayuda, no manda.
-  const aplicar = ({ proveedor, pago, suma }) => {
+  // Lo que la IA leyó de la factura, pegado al nombre de cuenta contable que
+  // más se le parezca. Si ninguna empata, se deja el texto tal cual: el campo
+  // acepta lo que sea y alguien lo corrige al revisarlo.
+  const conceptoDeZoho = (txt) => {
+    const t = String(txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    if (!t) return "";
+    const pal = t.split(/[^a-z0-9]+/).filter((w) => w.length > 3);
+    let mejor = null, mejorN = 0;
+    for (const c of (cat.conceptos || [])) {
+      const n = String(c.nombre).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const puntos = pal.reduce((a, w) => a + (n.includes(w) ? 1 : 0), 0);
+      if (puntos > mejorN) { mejorN = puntos; mejor = c; }
+    }
+    return mejor ? mejor.nombre : txt;
+  };
+
+  const aplicar = ({ proveedor, pago, concepto, suma }) => {
     // De dónde salió el dinero. El comprobante trae banco y terminación.
     const hallada = cuentaDelPago(pago, cuentas);
     setSm((x) => ({ ...x, ctaDetectada: hallada ? { nombre: `${hallada.cuenta.nombre} ${hallada.cuenta.moneda}`, como: hallada.como } : null }));
@@ -9027,9 +9091,21 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       // Un pago de factura por SPEI, en el idioma del libro de bancos.
       categoria: s.categoria || "EGRESO",
       formaPago: s.formaPago || "TRANSFERENCIA",
+      concepto: s.concepto || conceptoDeZoho(concepto),
       cuentaId: hallada ? hallada.cuenta.id : s.cuentaId,
     }));
   };
+
+  // PENDIENTE N — un pago sin factura todavía.  [7-nov-2026]
+  //
+  // Fran: «si no hay factura se crea el movimiento y en vez de casar con la
+  // factura se escribe PENDIENTE en Zoho y un número consecutivo».
+  //
+  // El consecutivo sale de los movimientos que ya existen, no de un contador
+  // guardado aparte: un contador se desincroniza en cuanto alguien borra un
+  // renglón o se restaura un respaldo, y entonces hay dos PENDIENTE 7.
+  const nPendiente = 1 + (operaciones || []).reduce((n, o) => Math.max(n, Number(String(o.pendiente || "").replace(/\D/g, "")) || 0), 0);
+  const sinFactura = tipo === "egreso" && !sm.facturas.length;
 
   const sumaFact = sm.facturas.reduce((a, x) => a + (+x.total || 0), 0);
   const cuadraSmart = sm.facturas.length === 0 || Math.abs(sumaFact - (+f.monto || 0)) < 0.5;
@@ -9068,7 +9144,11 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       const op = { id, tipo, fecha: f.fecha, cuentaId: f.cuentaId, monto: +f.monto || 0, moneda, estatus: f.estatus, referencia: f.referencia, comprobante: f.comprobante, nota: f.nota };
       // La clasificación y la forma de pago van en TODOS los tipos: el libro de
       // bancos también clasifica traspasos y cambios de divisa.
-      op.categoria = f.categoria; op.formaPago = f.formaPago;
+      op.categoria = f.categoria; op.formaPago = f.formaPago; op.concepto = f.concepto;
+      // Sin factura, el movimiento se queda con su folio de pendiente. Cuando
+      // la factura llegue, se edita el movimiento, se carga en el campo smart
+      // y este folio desaparece.
+      if (sinFactura) op.pendiente = inicial?.pendiente || `PENDIENTE ${nPendiente}`;
       if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; }
       if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
       if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
@@ -9139,7 +9219,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
         ))}
       </div>
 
-      {tipo === "egreso" && !editando && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago) }} />}
+      {tipo === "egreso" && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago), sinFactura, nPendiente }} />}
 
       <div className="bg-white border border-stone-200 rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></div>
@@ -9159,7 +9239,13 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
 
         {(tipo === "ingreso" || tipo === "egreso") && (
           <>
-            <div><Lbl>{tipo === "ingreso" ? "Cliente / proyecto" : "Proveedor"}</Lbl><input className={inp} value={f.contraparte} onChange={(e) => set("contraparte", e.target.value)} /></div>
+            <div><Lbl>{tipo === "ingreso" ? "Cliente / proyecto" : "Proveedor"}</Lbl>
+              {/* Lista de Zoho, pero texto libre: escribir el mismo nombre que
+                  ya existe allá es lo que hace que el pago empate después. */}
+              <input className={inp} list="zoho-proveedores" value={f.contraparte} onChange={(e) => set("contraparte", e.target.value)}
+                placeholder={cat.proveedores.length ? "escribe y escoge de Zoho…" : ""} />
+              <datalist id="zoho-proveedores">{cat.proveedores.map((v) => <option key={v.id} value={v.nombre} />)}</datalist>
+            </div>
           </>
         )}
 
@@ -9173,6 +9259,14 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
           <select className={inp} value={f.formaPago} onChange={(e) => set("formaPago", e.target.value)}>
             <option value="">—</option>{pagoList.map((c) => <option key={c}>{c}</option>)}
           </select></div>
+
+        {/* Concepto: a qué cuenta contable de Zoho se carga. Texto libre con la
+            lista real de cuentas de gasto. En modo smart lo propone la factura. */}
+        <div className="md:col-span-2"><Lbl>Concepto</Lbl>
+          <input className={inp} list="zoho-conceptos" value={f.concepto} onChange={(e) => set("concepto", e.target.value)}
+            placeholder={cat.conceptos.length ? `escribe o escoge de las ${cat.conceptos.length} cuentas de gasto de Zoho…` : "qué se compró o contrató"} />
+          <datalist id="zoho-conceptos">{cat.conceptos.map((c) => <option key={c.id} value={c.nombre}>{c.codigo}</option>)}</datalist>
+        </div>
 
         <div><Lbl>Monto ({monedaDe(f.cuentaId)})</Lbl><input type="number" step="0.01" className={inp + " font-mono text-right"} value={f.monto} onChange={(e) => set("monto", e.target.value)} /></div>
 
@@ -9373,7 +9467,7 @@ const textoBuscable = (o, c, cd) => [
   o.nota, o.comprobante, c?.nombre, c?.moneda, cd?.nombre, cd?.moneda,
   o.smart?.proveedor, o.smart?.zohoProveedor, o.smart?.rfc,
   o.smart?.pago?.bancoOrigen, o.smart?.pago?.beneficiario, o.smart?.pago?.claveRastreo,
-  o.smart?.pagoEnZoho?.numero,
+  o.smart?.pagoEnZoho?.numero, o.pendiente, o.concepto,
   ...(o.smart?.facturas || []).flatMap((f) => [f.folio, f.billNumero, f.uuid]),
   String(o.monto ?? ""),
 ].filter(Boolean).join(" ").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -9452,7 +9546,8 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
                     </td>
                     <td className="px-3 py-2 text-xs">{c?.nombre} {c?.moneda}</td>
                     <td className="px-3 py-2 text-xs font-mono text-stone-600">
-                      {(o.smart?.facturas || []).map((fa) => fa.folio).filter(Boolean).join(", ") || <span className="text-stone-300">—</span>}
+                      {(o.smart?.facturas || []).map((fa) => fa.folio).filter(Boolean).join(", ")
+                        || (o.pendiente ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">{o.pendiente}</span> : <span className="text-stone-300">—</span>)}
                       {o.smart?.pagoEnZoho?.numero && <span className="block text-[9px] text-emerald-700">pago Zoho #{o.smart.pagoEnZoho.numero}</span>}
                     </td>
                     <td className={`px-3 py-2 text-right font-mono ${o.tipo === "ingreso" ? "text-teal-700" : o.tipo === "egreso" ? "text-red-600" : "text-stone-600"}`}>
@@ -9464,7 +9559,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
                       <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${o.estatus === "confirmado" ? "bg-teal-100 text-teal-800" : "bg-amber-100 text-amber-800"}`}>{o.estatus === "confirmado" ? "Pagado" : "Planeado"}</span>
                     </td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">
-                      {o.smart && <button onClick={() => setVer(o)} className="px-2 py-1 text-[11px] text-violet-700 hover:bg-violet-50 rounded font-medium">Ver</button>}
+                      {(o.smart || o.pendiente) && <button onClick={() => setVer(o)} className="px-2 py-1 text-[11px] text-violet-700 hover:bg-violet-50 rounded font-medium">Ver</button>}
                       <button onClick={() => pedirEditar(o)} className="px-2 py-1 text-[11px] text-stone-600 hover:bg-stone-100 rounded">Editar</button>
                       {o.estatus === "planeado" && <button onClick={() => confirmar(o.id)} className="px-2 py-1 text-[11px] text-teal-700 hover:bg-teal-50 rounded">Confirmar</button>}
                       <button onClick={() => borrar(o.id)} className="px-2 py-1 text-[11px] text-stone-400 hover:text-red-600">×</button>

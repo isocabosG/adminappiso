@@ -157,6 +157,11 @@ Deno.serve(async (req) => {
     // factura: antes de registrar, se revisa si ya hay un pago con esa
     // referencia bancaria.
     else if (action === "list_vendor_payments") { path = "/vendorpayments"; qsParams = restParams; }
+    // CATALOGO CONTABLE.  [7-nov-2026]
+    // Para el campo «Concepto» de Tesorería: a qué cuenta de gastos se carga un
+    // movimiento. Se escribe a mano o se escoge de aquí, y así la app y la
+    // contabilidad usan el mismo nombre desde el principio.
+    else if (action === "list_chart_of_accounts") { path = "/chartofaccounts"; qsParams = restParams; }
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 
