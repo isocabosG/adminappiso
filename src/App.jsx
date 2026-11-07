@@ -8527,15 +8527,22 @@ const limpiaFolio = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "
 // están capturadas con el folio del documento y van a seguir ahí años.
 const uuid8 = (u) => String(u || "").replace(/[^0-9A-Za-z]/g, "").slice(0, 8).toUpperCase();
 
-// CON QUE NUMERO VA CAPTURADA LA FACTURA EN ZOHO.  [7-nov-2026]
-// Fran: «si no trae folio fiscal es porque el proveedor es extranjero, y
-// entonces ahí jalamos el número de la factura del proveedor».
+// DOS LLAVES, NO UNA.  [7-nov-2026 · corregido]
 //
-// Un CFDI siempre trae UUID del SAT; una invoice de Renon o de Battery Depot
-// no, porque el SAT no la timbra. No es un dato faltante que haya que ir a
-// buscar: es que no existe. Para esas, la llave es el número que imprime el
-// proveedor, que dentro de ese proveedor sí es único.
-const claveZoho = (fa) => uuid8(fa?.uuid) || limpiaFolio(fa?.folio);
+// En Zoho la factura va capturada con el FOLIO DEL DOCUMENTO, y así se queda:
+// es lo que Jesús registra hoy. Pero Fran: «ha pasado otras veces que varios
+// folios de factura pueden coincidir entre proveedores», así que el folio solo
+// no alcanza para identificar una factura con confianza.
+//
+// Por eso el empate usa DOS llaves: el folio y los primeros 8 del folio fiscal.
+// El UUID lo pone el SAT y es único en todo México; el folio lo numera cada
+// proveedor a su gusto. Cuando las dos apuntan al mismo renglón, o cuando el
+// folio coincide Y el importe también, el empate es seguro. Cuando solo
+// coincide una cosa, se marca y lo revisa una persona.
+//
+// Una factura de proveedor extranjero no trae folio fiscal —el SAT no la
+// timbra—, así que ahí solo queda el folio del proveedor y el importe.
+const numZoho = (fa) => limpiaFolio(fa?.folio) || uuid8(fa?.uuid);
 const nFolio = (x) => { const n = +x; return isFinite(n) ? n : 0; };
 
 // Qué le puede mandar cada archivo a la IA. Un PDF va como documento; una foto
@@ -8630,13 +8637,30 @@ Responde SOLO JSON compacto, sin markdown:
           // Orden a propósito: el folio fiscal es único, el folio del documento
           // no, y el total menos todavía —dos facturas del mismo día por el
           // mismo importe existen—. Se empata por lo más seguro primero.
-          const clave = claveZoho(fa);
-          const porClave = clave && bills.find((bb) => limpiaFolio(bb.numero) === clave);
-          const porFolio = limpiaFolio(fa.folio) && bills.find((bb) => limpiaFolio(bb.numero) === limpiaFolio(fa.folio));
-          const porTotal = bills.find((bb) => Math.abs(bb.total - nFolio(fa.total)) < 1);
-          const m = porClave || porFolio || porTotal;
-          const como = porClave ? (fa.uuid ? "folio fiscal" : "folio del proveedor") : porFolio ? "folio" : "total";
-          return m ? { ...fa, billId: m.id, empatePor: como } : { ...fa, billId: "", empatePor: "" };
+          // Se puntea cada candidata con las tres señales y gana la de más
+          // peso. El importe no empata por sí solo —dos facturas del mismo día
+          // por el mismo monto existen— pero sí confirma a las otras dos.
+          const kFol = limpiaFolio(fa.folio), kUui = uuid8(fa.uuid), tot = nFolio(fa.total);
+          const marcadas = bills.map((bb) => {
+            const n = limpiaFolio(bb.numero);
+            const folio = !!kFol && n === kFol;
+            const fiscal = !!kUui && (n === kUui || n.includes(kUui));
+            const importe = Math.abs(bb.total - tot) < 1;
+            return { bb, folio, fiscal, importe, puntos: (fiscal ? 4 : 0) + (folio ? 2 : 0) + (importe ? 1 : 0) };
+          }).filter((c) => c.puntos > 0).sort((a, b) => b.puntos - a.puntos);
+          const g = marcadas[0];
+          if (!g) return { ...fa, billId: "", empatePor: "", seguro: false, ambiguo: false };
+          // Seguro = dos señales de acuerdo, o el folio fiscal, que es único.
+          const seguro = g.fiscal || (g.folio && g.importe);
+          const como = g.fiscal && g.folio ? "folio y folio fiscal"
+            : g.fiscal ? "folio fiscal"
+            : g.folio && g.importe ? "folio e importe"
+            : g.folio ? "solo el folio, el importe NO coincide"
+            : "solo el importe";
+          // Dos candidatas con el mismo puntaje = justo el choque de folios que
+          // Fran describe. Se avisa en vez de escoger a la suerte.
+          const ambiguo = marcadas.length > 1 && marcadas[1].puntos === g.puntos;
+          return { ...fa, billId: g.bb.id, empatePor: como, seguro: seguro && !ambiguo, ambiguo };
         });
         return { ...x, provs, vendorId, bills, facturas, buscando: false };
       });
@@ -8737,17 +8761,12 @@ Responde SOLO JSON compacto, sin markdown:
             </thead>
             <tbody>
               {sm.facturas.map((fa) => (
-                <tr key={fa.id} className="border-t border-violet-200">
-                  <td className="py-0.5 font-mono text-violet-900">{fa.folio || "—"}
-                    {claveZoho(fa) && (
-                      <button onClick={() => navigator.clipboard?.writeText(claveZoho(fa))}
-                        title={fa.uuid
-                          ? "Los primeros 8 del folio fiscal: así va capturada la factura en Zoho. Clic para copiar."
-                          : "Sin folio fiscal (proveedor extranjero): en Zoho manda el número de factura del proveedor. Clic para copiar."}
-                        className="block text-[10px] font-mono font-bold text-violet-700 hover:underline">en Zoho: {claveZoho(fa)}</button>
-                    )}
+                <tr key={fa.id} className={`border-t border-violet-200 ${fa.billId && !fa.seguro ? "bg-amber-50" : ""}`}>
+                  <td className="py-0.5 font-mono text-violet-900">
+                    <button onClick={() => navigator.clipboard?.writeText(numZoho(fa))} title="Así va capturada en Zoho. Clic para copiar."
+                      className="font-semibold hover:underline">{fa.folio || "—"}</button>
                     {fa.uuid
-                      ? <span className="block text-[9px] text-stone-400">{fa.uuid}</span>
+                      ? <span className="block text-[9px] text-stone-500">fiscal <b className="text-violet-700">{uuid8(fa.uuid)}</b> · {fa.uuid.slice(9)}</span>
                       : <span className="block text-[9px] text-amber-700">extranjera · sin folio fiscal</span>}
                     {fa.moneda && fa.moneda !== "MXN" && <span className="block text-[9px] font-bold text-amber-700">{fa.moneda}</span>}</td>
                   <td className="text-stone-600">{fa.fecha || "—"}</td>
@@ -8762,7 +8781,11 @@ Responde SOLO JSON compacto, sin markdown:
                           <option value="">— sin empatar —</option>
                           {sm.bills.map((bb) => <option key={bb.id} value={bb.id}>{bb.numero} · {bb.fecha} · ${mx(bb.total)}</option>)}
                         </select>
-                        {fa.empatePor && <span className="ml-1 text-[9px] text-stone-400">por {fa.empatePor}</span>}
+                        {fa.empatePor && (
+                          <span className={`ml-1 text-[9px] ${fa.seguro ? "text-stone-400" : "text-amber-700 font-semibold"}`}>
+                            {fa.seguro ? "por " : "⚠ "}{fa.empatePor}{fa.ambiguo ? " · hay más de una candidata igual de parecida" : ""}
+                          </span>
+                        )}
                       </>
                     )}
                   </td>
