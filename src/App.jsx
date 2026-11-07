@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 4";
+const RELEASE = "FACTURAS COMPRAS 5";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -2083,6 +2083,37 @@ const cuentaDelPago = (pago, cuentas) => {
   return null;
 };
 
+// EL CATALOGO DEL LIBRO DE BANCOS.  [7-nov-2026]
+// Fran: «agrega el siguiente catálogo de movimientos... esos los vamos a usar
+// para generar el libro de bancos del Excel de Jesús, que es el que calcula el
+// estimado de impuestos».
+//
+// Va TAL CUAL viene del Excel, con sus abreviaturas y su guión al final. No se
+// "mejora" ni se traduce: el punto es que la app y la hoja de Jesús hablen el
+// mismo idioma. Cambiar «DEP. GARANTIA» por «Depósito en garantía» rompería el
+// cruce y nadie se daria cuenta hasta cerrar el mes.
+//
+// OJO: esto NO es el `tipo` de la operación. El `tipo` (ingreso, egreso,
+// traspaso, cambio) es la mecánica: decide si el saldo sube, baja o se mueve
+// entre cuentas. Este catálogo es la CLASIFICACIÓN contable, y por eso incluye
+// INGRESO, EGRESO y TRASPASO como valores genéricos para cuando no hay algo
+// más específico. Son dos columnas distintas en la hoja y aquí también.
+const TIPO_BANCOS = [
+  "INGRESO", "EGRESO", "TRASPASO", "X COMPROBAR", "DEP. GARANTIA", "DEVOLUCION",
+  "NO DEDUCIBLES", "PRESTAMO", "NOMINA", "IMPUESTOS", "IVA IMPORTACION", "DTA",
+  "IGI", "PREVALIDACION", "INCREMENTABLES IMPO", "HONORARIOS IMPO", "FINIQUITO",
+  "REEMBOLSOS", "NOTA CREDITO", "SERV EXTRANJERO", "EXTRANJERO JR",
+  "MATERIAL X IMPORTAR", "MATERIAL IMPORTADO", "GASOLINA", "VIATICOS",
+  "CAJA CHICA", "FONACOT", "FLETE EXTRANJERO", "-",
+];
+
+const FORMAS_PAGO = [
+  "CHEQUE", "EFECTIVO", "TRANSFERENCIA", "TARJ. CREDITO", "TARJ. DEBITO",
+  "DISPERSION", "DEP. EFECTIVO", "CARGO AUT.", "NOTA CREDITO", "CAMBIO DIVISA",
+];
+
+// Los de antes. Se quedan porque hay movimientos viejos guardados con estos
+// valores y la pantalla los tiene que seguir pudiendo mostrar.
 const CAT_INGRESO = ["Anticipo", "Aviso de embarque", "Finiquito", "Pago parcial", "Servicio / PS", "Reembolso", "Otro"];
 const CAT_EGRESO = ["Proveedor nacional", "Proveedor local (Cabo)", "Importación", "Renta (fijo)", "Nómina", "IMSS / impuestos", "Préstamo / crédito", "Comisiones", "Gasolina", "Logística", "Gasto interno", "Otro"];
 const TIPOS_OP = { ingreso: "Ingreso", egreso: "Egreso", traspaso: "Traspaso entre cuentas", cambio: "Cambio de divisas" };
@@ -8903,8 +8934,8 @@ Responde SOLO JSON compacto, sin markdown:
 function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   const [tipo, setTipo] = useState(inicial?.tipo || "egreso");
   const [f, setF] = useState(inicial
-    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "" }
-    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "" });
+    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "" }
+    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "" });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const monedaDe = (id) => cuentas.find((c) => c.id === id)?.moneda || "";
@@ -8932,7 +8963,9 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       fecha: pago?.fecha || s.fecha,
       monto: s.monto || (pago?.monto ? String(pago.monto) : (suma ? String(suma) : "")),
       referencia: s.referencia || pago?.claveRastreo || pago?.referencia || "",
-      categoria: s.categoria || "Proveedor nacional",
+      // Un pago de factura por SPEI, en el idioma del libro de bancos.
+      categoria: s.categoria || "EGRESO",
+      formaPago: s.formaPago || "TRANSFERENCIA",
       cuentaId: hallada ? hallada.cuenta.id : s.cuentaId,
     }));
   };
@@ -8972,7 +9005,10 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       const id = inicial?.id || uid();
       const moneda = monedaDe(f.cuentaId);
       const op = { id, tipo, fecha: f.fecha, cuentaId: f.cuentaId, monto: +f.monto || 0, moneda, estatus: f.estatus, referencia: f.referencia, comprobante: f.comprobante, nota: f.nota };
-      if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; op.categoria = f.categoria; }
+      // La clasificación y la forma de pago van en TODOS los tipos: el libro de
+      // bancos también clasifica traspasos y cambios de divisa.
+      op.categoria = f.categoria; op.formaPago = f.formaPago;
+      if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; }
       if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
       if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
 
@@ -9022,7 +9058,10 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
     } finally { setGuardando(false); }
   };
 
-  const catList = tipo === "ingreso" ? CAT_INGRESO : CAT_EGRESO;
+  // El valor viejo de un movimiento ya guardado se conserva en la lista aunque
+  // no esté en el catálogo nuevo: si no, al abrirlo a editar se perdería solo.
+  const catList = [...TIPO_BANCOS, ...(f.categoria && !TIPO_BANCOS.includes(f.categoria) ? [f.categoria] : [])];
+  const pagoList = [...FORMAS_PAGO, ...(f.formaPago && !FORMAS_PAGO.includes(f.formaPago) ? [f.formaPago] : [])];
 
   return (
     <div className="space-y-4">
@@ -9060,9 +9099,19 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
         {(tipo === "ingreso" || tipo === "egreso") && (
           <>
             <div><Lbl>{tipo === "ingreso" ? "Cliente / proyecto" : "Proveedor"}</Lbl><input className={inp} value={f.contraparte} onChange={(e) => set("contraparte", e.target.value)} /></div>
-            <div><Lbl>Categoría</Lbl><select className={inp} value={f.categoria} onChange={(e) => set("categoria", e.target.value)}><option value="">—</option>{catList.map((c) => <option key={c}>{c}</option>)}</select></div>
           </>
         )}
+
+        {/* Las dos columnas del libro de bancos de Jesús. Van en los cuatro
+            tipos de operación, no solo en ingreso y egreso. */}
+        <div><Lbl>Tipo (libro de bancos)</Lbl>
+          <select className={inp} value={f.categoria} onChange={(e) => set("categoria", e.target.value)}>
+            <option value="">—</option>{catList.map((c) => <option key={c}>{c}</option>)}
+          </select></div>
+        <div><Lbl>Forma de pago</Lbl>
+          <select className={inp} value={f.formaPago} onChange={(e) => set("formaPago", e.target.value)}>
+            <option value="">—</option>{pagoList.map((c) => <option key={c}>{c}</option>)}
+          </select></div>
 
         <div><Lbl>Monto ({monedaDe(f.cuentaId)})</Lbl><input type="number" step="0.01" className={inp + " font-mono text-right"} value={f.monto} onChange={(e) => set("monto", e.target.value)} /></div>
 
