@@ -6656,16 +6656,32 @@ function MrpCompras({ setAviso }) {
     if (typeof window.sincronizar !== "function") {
       setAviso({ t: "err", m: "Esta versión de la app todavía no trae el botón. Recarga la página." }); return;
     }
-    const pasos = [["catalogo-sync", "catálogo"], ["comprometido-sync", "apartados"], ["oc-sync", "órdenes de compra"]];
+    // UN PASO QUE FALLA YA NO TIRA LOS DEMÁS.  [7-nov-2026]
+    //
+    // Jesús dio de alta unos SKU en Zoho, le picó aquí y no aparecieron hasta
+    // el día siguiente. En el log: `catalogo-sync` SÍ corrió y SÍ escribió el
+    // catálogo (6.1 s, 200). El que se cayó fue `comprometido-sync`, que tarda
+    // ~137 s porque lee orden por orden, y desde el navegador no alcanza. Como
+    // el `for` hacía `return` en el primer error, `cargarBlobs()` nunca corría:
+    // el catálogo nuevo ya estaba en la base y la pantalla seguía con el viejo.
+    //
+    // Dos cambios: los apartados van AL FINAL (son los únicos lentos, y así lo
+    // rápido ya quedó releído antes de que se caigan), y un fallo se apunta
+    // pero no cancela — siempre se vuelve a leer al terminar.
+    const pasos = [["catalogo-sync", "catálogo"], ["oc-sync", "órdenes de compra"], ["comprometido-sync", "apartados"]];
+    const fallaron = [];
     for (const [fn, que] of pasos) {
       setSincro(que);
       try { await window.sincronizar(fn); }
-      catch (e) { setSincro(null); setAviso({ t: "err", m: `Falló la sincronía de ${que}: ${e?.message || e}` }); return; }
+      catch (e) { fallaron.push(`${que}: ${e?.message || e}`); }
     }
     setSincro("leyendo");
-    try { await cargarBlobs(); } catch (e) { setAviso({ t: "err", m: `Se trajo de Zoho pero no se pudo releer: ${e?.message || e}` }); }
+    try { await cargarBlobs(); }
+    catch (e) { setSincro(null); setAviso({ t: "err", m: `Se trajo de Zoho pero no se pudo releer: ${e?.message || e}` }); return; }
     setSincro(null);
-    setAviso({ t: "ok", m: "Catálogo, apartados y órdenes de compra al día. El inventario físico sigue siendo el de la madrugada." });
+    setAviso(fallaron.length
+      ? { t: "err", m: `Se actualizó lo que sí se pudo traer; la pantalla ya lo tiene. No se pudo con ${fallaron.join(" · ")}. Los apartados tardan unos dos minutos y a veces no aguantan desde el navegador: el cron de las 5:15 los trae completos.` }
+      : { t: "ok", m: "Catálogo, órdenes de compra y apartados al día. El inventario físico sigue siendo el de la madrugada." });
   };
 
   const guardarQty = (sku, v) => {
@@ -7167,7 +7183,7 @@ function MrpCompras({ setAviso }) {
           {escondidos > 0 && <span className="text-amber-700"> · {mx0(escondidos)} escondidos por filtros</span>}
         </span>
         <button onClick={actualizar} disabled={!!sincro}
-          title="Trae de Zoho el catálogo, lo apartado en órdenes de venta y las órdenes de compra. El inventario físico no: ése corre de madrugada."
+          title="Trae de Zoho el catálogo, las órdenes de compra y lo apartado en órdenes de venta, en ese orden. Si algo falla, lo demás se guarda igual. El inventario físico no: ése corre de madrugada."
           className={`px-3 py-1.5 text-xs font-medium rounded border ${sincro
             ? "border-stone-200 text-stone-400 cursor-wait" : "bg-teal-700 text-white border-teal-700 hover:bg-teal-800"}`}>
           {sincro ? `Trayendo ${sincro}…` : "Actualizar de Zoho"}
