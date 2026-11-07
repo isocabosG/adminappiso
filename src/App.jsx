@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 2";
+const RELEASE = "FACTURAS COMPRAS 3";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8905,6 +8905,10 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const monedaDe = (id) => cuentas.find((c) => c.id === id)?.moneda || "";
+  // Arriba del todo a propósito: `puedeZoho` lo lee y antes se declaraba hasta
+  // el final. Un `const` leído antes de su línea no es undefined, truena —
+  // «Cannot access before initialization»— y se llevó la app entera al montar.
+  const editando = !!inicial;
 
   // Campo smart (solo egresos nuevos). Vive aquí, no dentro del componente,
   // porque al guardar hay que subir los archivos y colgarle las facturas a la
@@ -9016,7 +9020,6 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   };
 
   const catList = tipo === "ingreso" ? CAT_INGRESO : CAT_EGRESO;
-  const editando = !!inicial;
 
   return (
     <div className="space-y-4">
