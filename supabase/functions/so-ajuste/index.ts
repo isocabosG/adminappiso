@@ -133,7 +133,9 @@ Deno.serve(async (req) => {
   // (por ejemplo desde SQL para verificar). Escribir siempre exige usuario.
 
   const z = new Zoho(SB, SRV, ORG);
-  const hoy = new Date(Date.now() - 6 * 3600 * 1000).toISOString().slice(0, 10);
+  // Mexico/BajaSur es UTC-7 todo el año, no -6: con -6 la fecha se adelantaba
+  // un dia entre las 6 y las 7 de la tarde.
+  const hoy = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
   const firma = `${motivo} · ${hoy}${quien.nombre ? " · " + quien.nombre : ""}`;
 
   const salida: any = { ok: true, dryRun, soId, importe, motivo, quien: quien.nombre || "(dryRun)" };

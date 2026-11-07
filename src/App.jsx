@@ -53,12 +53,34 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "SALDOS Y LIBRO 1";
+const RELEASE = "FECHA LOCAL 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
 const mx0 = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { maximumFractionDigits: 0 }) : "—");
-const hoy = () => new Date().toISOString().slice(0, 10);
+/* ---------------------------------------------------------------------------
+   HOY, DONDE ESTÁ LA GENTE — NO EN UTC  [7-nov-2026]
+
+   Esto decía `new Date().toISOString().slice(0, 10)`, que da la fecha en UTC.
+   Los Cabos va SIETE HORAS atrás, así que entre las 5 de la tarde y la
+   medianoche UTC ya es mañana y la app escribía la fecha de mañana en todo:
+   en el movimiento, en el gasto que se manda a Zoho, en los cachés.
+
+   ASÍ SE PERDIÓ EL EGRESO DE 30.48 DÓLARES. Se capturó el 6 de noviembre a
+   las 20:08 y se guardó con fecha 7. Zoho opera en Mexico/BajaSur igual que
+   nosotros, y el saldo de una cuenta bancaria es el saldo AL DÍA DE HOY: una
+   transacción fechada mañana no cuenta todavía. Por eso BBVA Dólares seguía
+   en 222,775.41 por más que se le picara «actualizar» — el cargo estaba
+   registrado, pero con fecha del día siguiente.
+
+   Las Edge Functions ya restaban las siete horas a mano (`Date.now() - 7h`).
+   La que faltaba era la pantalla. Aquí se usa el reloj de la Mac de quien
+   captura, que es el mismo huso que Zoho.
+--------------------------------------------------------------------------- */
+const hoy = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 const fileToB64 = (file) =>
   new Promise((res, rej) => {

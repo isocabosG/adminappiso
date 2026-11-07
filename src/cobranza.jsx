@@ -18,7 +18,12 @@ const LLAVE = "iso-cobranza-sesion";
 
 const mx = (n) => "$" + (Number(n) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = (s) => String(s ?? "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
-const hoy = () => new Date().toISOString().slice(0, 10);
+// Fecha local, no UTC: Los Cabos va 7 h atras y despues de las 5 de la tarde
+// `toISOString()` ya da la fecha de mañana. Ver la nota larga en App.jsx.
+const hoy = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 async function llamar(payload) {
   const r = await fetch(URL_FN, {
