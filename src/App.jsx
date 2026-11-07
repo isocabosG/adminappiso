@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 13";
+const RELEASE = "FACTURAS COMPRAS 14";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8058,7 +8058,7 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
   // se come el tope de llamadas que esta app comparte con IS-PMT y los crons.
   // Los dos campos aceptan texto libre: la lista ayuda a escribir el mismo
   // nombre que ya existe, no impide capturar algo nuevo.
-  const [cat, setCat] = useState({ proveedores: [], conceptos: [] });
+  const [cat, setCat] = useState({ proveedores: [], conceptos: [], impuestos: [] });
   useEffect(() => {
     let vivo = true;
     (async () => {
@@ -8067,15 +8067,18 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
         const v = r?.value ? JSON.parse(r.value) : null;
         if (v?.proveedores?.length && vivo) setCat(v);
         if (v?.fecha === hoy()) return;              // ya se bajó hoy
-        const [pv, cc] = await Promise.all([
+        const [pv, cc, ix] = await Promise.all([
           window.zohoBooks({ action: "list_contacts", params: { contact_type: "vendor", filter_by: "Status.Active", per_page: "200" } }).catch(() => null),
           window.zohoBooks({ action: "list_chart_of_accounts", params: { filter_by: "AccountType.Expense", per_page: "200" } }).catch(() => null),
+          window.zohoBooks({ action: "list_taxes", params: { per_page: "100" } }).catch(() => null),
         ]);
         const nuevo = {
           fecha: hoy(),
           proveedores: (pv?.contacts || []).map((x) => ({ id: x.contact_id, nombre: x.vendor_name || x.contact_name })).filter((x) => x.nombre),
           conceptos: (cc?.chartofaccounts || []).filter((x) => x.is_active !== false)
             .map((x) => ({ id: x.account_id, nombre: x.account_name, codigo: x.account_code || "" })).filter((x) => x.nombre),
+          impuestos: (ix?.taxes || []).filter((x) => x.is_inactive !== true)
+            .map((x) => ({ id: x.tax_id, nombre: x.tax_name, pct: +x.tax_percentage || 0 })),
         };
         if (!nuevo.proveedores.length && !nuevo.conceptos.length) return;  // Zoho no contestó: se queda el caché
         if (vivo) setCat(nuevo);
@@ -9082,11 +9085,11 @@ Responde SOLO JSON compacto, sin markdown:
   );
 }
 
-function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { proveedores: [], conceptos: [] }, operaciones = [] }) {
+function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { proveedores: [], conceptos: [], impuestos: [] }, operaciones = [] }) {
   const [tipo, setTipo] = useState(inicial?.tipo || "egreso");
   const [f, setF] = useState(inicial
-    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "", concepto: inicial.concepto || "" }
-    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "", concepto: "" });
+    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "", concepto: inicial.concepto || "", taxId: inicial.taxId || "", ivaIncluido: inicial.ivaIncluido !== false }
+    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "", concepto: "", taxId: "", ivaIncluido: true });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const monedaDe = (id) => cuentas.find((c) => c.id === id)?.moneda || "";
@@ -9154,6 +9157,12 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
   const noEsperaFactura = sinFactura && (noLleva(f.concepto) || !!sm.noFactura);
   const esperaFactura = sinFactura && !noEsperaFactura;
 
+  // El IVA del 16% es el caso normal de un gasto en México, así que viene
+  // puesto. Se cambia a 8%, a 0% o a sin impuesto cuando toque —intereses y
+  // nómina no llevan—, pero el que se olvida es el 16%, no los otros.
+  const iva16 = (cat.impuestos || []).find((t) => Math.round(t.pct) === 16);
+  useEffect(() => { if (!f.taxId && iva16 && !inicial) setF((x) => (x.taxId ? x : { ...x, taxId: iva16.id })); }, [iva16?.id]);
+
   const sumaFact = sm.facturas.reduce((a, x) => a + (+x.total || 0), 0);
   const cuadraSmart = sm.facturas.length === 0 || Math.abs(sumaFact - (+f.monto || 0)) < 0.5;
   const bloqueado = !cuadraSmart && !sm.forzar;
@@ -9205,6 +9214,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
       // La clasificación y la forma de pago van en TODOS los tipos: el libro de
       // bancos también clasifica traspasos y cambios de divisa.
       op.categoria = f.categoria; op.formaPago = f.formaPago; op.concepto = f.concepto;
+      op.taxId = f.taxId; op.ivaIncluido = !!f.ivaIncluido;
       // Sin factura, el movimiento se queda con su folio de pendiente. Cuando
       // la factura llegue, se edita el movimiento, se carga en el campo smart
       // y este folio desaparece.
@@ -9239,6 +9249,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
           conceptoId: conceptoZoho.id, concepto: conceptoZoho.nombre,
           cuentaZohoId: ctaApp.zohoAccountId, fecha: f.fecha, monto: +f.monto || 0,
           referencia: f.referencia, proveedor: f.contraparte, nota: f.nota,
+          taxId: f.taxId, impuestoIncluido: !!f.ivaIncluido,
         });
       }
 
@@ -9263,7 +9274,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
           // pago ya estaba registrado con la misma clave de rastreo y no se
           // creó uno nuevo.
           pagoEnZoho: resZoho ? { pagoId: resZoho.pagoId, numero: resZoho.numero, yaExistia: !!resZoho.yaExistia, ts: new Date().toISOString() } : null,
-          gastoEnZoho: resGasto ? { gastoId: resGasto.gastoId, referencia: resGasto.referencia, concepto: resGasto.concepto, yaExistia: !!resGasto.yaExistia, ts: new Date().toISOString() } : (inicial?.smart?.gastoEnZoho || null),
+          gastoEnZoho: resGasto ? { gastoId: resGasto.gastoId, referencia: resGasto.referencia, concepto: resGasto.concepto, impuesto: resGasto.impuesto, impuestoIncluido: resGasto.impuestoIncluido, yaExistia: !!resGasto.yaExistia, ts: new Date().toISOString() } : (inicial?.smart?.gastoEnZoho || null),
         };
         if (rutaComp && !op.comprobante) op.comprobante = rutaComp.nombre;
       }
@@ -9333,6 +9344,19 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
           <select className={inp} value={f.formaPago} onChange={(e) => set("formaPago", e.target.value)}>
             <option value="">—</option>{pagoList.map((c) => <option key={c}>{c}</option>)}
           </select></div>
+
+        {/* Impuesto: lo que hace que el IVA quede acreditable. */}
+        <div><Lbl>Impuesto</Lbl>
+          <select className={inp} value={f.taxId} onChange={(e) => set("taxId", e.target.value)}>
+            <option value="">Sin impuesto</option>
+            {(cat.impuestos || []).map((t) => <option key={t.id} value={t.id}>{t.nombre} · {t.pct}%</option>)}
+          </select>
+          <label className="mt-1 flex items-center gap-1.5 text-[11px] text-stone-600">
+            <input type="checkbox" checked={!!f.ivaIncluido} disabled={!f.taxId}
+              onChange={(e) => set("ivaIncluido", e.target.checked)} />
+            <span>El monto ya trae el impuesto incluido</span>
+          </label>
+        </div>
 
         {/* Concepto: a qué cuenta contable de Zoho se carga. Texto libre con la
             lista real de cuentas de gasto. En modo smart lo propone la factura. */}
@@ -9500,6 +9524,7 @@ function VisorMovimiento({ op, cuenta, onCerrar }) {
                 <div className="text-[11px] bg-emerald-50 border border-emerald-300 rounded p-2">
                   <p className="text-emerald-900 font-semibold">Gasto registrado · {sm.gastoEnZoho.referencia}</p>
                   <p className="text-emerald-800">Cuenta contable: {sm.gastoEnZoho.concepto || op.concepto}</p>
+                  {sm.gastoEnZoho.impuesto && <p className="text-emerald-800">Impuesto: {sm.gastoEnZoho.impuesto}{sm.gastoEnZoho.impuestoIncluido ? " (incluido en el monto)" : ""}</p>}
                   {sm.gastoEnZoho.yaExistia && <p className="text-amber-700">Ya existía con esa referencia; no se creó otro.</p>}
                   <p className="text-[9px] font-mono text-stone-400 mt-1">{sm.gastoEnZoho.gastoId}</p>
                 </div>

@@ -162,6 +162,9 @@ Deno.serve(async (req) => {
     // movimiento. Se escribe a mano o se escoge de aquí, y así la app y la
     // contabilidad usan el mismo nombre desde el principio.
     else if (action === "list_chart_of_accounts") { path = "/chartofaccounts"; qsParams = restParams; }
+    // Impuestos dados de alta (Tipo estándar 16%, Tipo reducido 8%, Zero Rate…).
+    // El gasto los necesita para que el IVA quede acreditable.  [7-nov-2026]
+    else if (action === "list_taxes") { path = "/settings/taxes"; qsParams = restParams; }
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 

@@ -72,6 +72,17 @@ Deno.serve(async (req) => {
     const proveedor = txt(body.proveedor);
     const vendorId = txt(body.vendorId);
     const nota = txt(body.nota).slice(0, 480);
+    // EL IMPUESTO.  [7-nov-2026]
+    // Fran: «falta llenar el campo que dice impuesto; ahí debe seleccionar la
+    // casilla de impuesto incluido y escoger Tipo estándar 16%».
+    //
+    // Una comisión bancaria trae IVA y el banco lo cobra dentro del importe
+    // que aparece en el estado de cuenta. Registrarla sin impuesto deja ese
+    // IVA sin acreditar, y el estimado de impuestos del mes sale corto sin que
+    // nada lo avise. `impuestoIncluido` dice que el monto YA trae el IVA
+    // adentro: Zoho lo desglosa en vez de sumarlo encima.
+    const taxId = txt(body.taxId);
+    const impuestoIncluido = body.impuestoIncluido !== false;
 
     if (!conceptoId) return json({ ok: false, error: "Falta el concepto: sin cuenta contable el gasto no se puede clasificar." }, 400);
     if (!cuentaZoho) return json({ ok: false, error: "Falta la cuenta bancaria de la que sale el gasto." }, 400);
@@ -105,6 +116,20 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: `No se pudo validar la cuenta contable: ${String((e as Error)?.message || e).slice(0, 180)}` }, 502);
     }
 
+    // El impuesto, si se mandó, tiene que existir y estar activo. Un tax_id
+    // inventado haría que Zoho registre el gasto sin IVA, en silencio.
+    let taxNombre = "";
+    if (taxId) {
+      try {
+        const tx = await z.get("/settings/taxes", { per_page: "100" });
+        const t = (tx?.taxes || []).find((x: any) => txt(x.tax_id) === taxId && x.is_inactive !== true);
+        if (!t) return json({ ok: false, error: "El impuesto escogido no existe o está inactivo en Zoho." }, 400);
+        taxNombre = `${txt(t.tax_name)} ${num(t.tax_percentage)}%`;
+      } catch (e) {
+        return json({ ok: false, error: `No se pudo validar el impuesto: ${String((e as Error)?.message || e).slice(0, 180)}` }, 502);
+      }
+    }
+
     // REVISION 3 — el banco existe y el gasto se crea EN SU MONEDA.
     let currencyId = "";
     let bancoNombre = "";
@@ -126,8 +151,9 @@ Deno.serve(async (req) => {
       reference_number: referencia,
       description: nota || [conceptoNombre, proveedor].filter(Boolean).join(" · ")
         || `Gasto registrado desde AdminAppISO${actor ? ` por ${actor}` : ""}`,
-      is_inclusive_tax: false,
+      is_inclusive_tax: taxId ? impuestoIncluido : false,
     };
+    if (taxId) cuerpo.tax_id = taxId;
     if (currencyId) cuerpo.currency_id = currencyId;
     if (vendorId) cuerpo.vendor_id = vendorId;
 
@@ -140,6 +166,7 @@ Deno.serve(async (req) => {
       ok: true, yaExistia: false,
       gastoId: txt(g.expense_id), referencia,
       cuenta: bancoNombre, concepto: conceptoNombre,
+      impuesto: taxNombre || "sin impuesto", impuestoIncluido: taxId ? impuestoIncluido : false,
     };
 
     try {
