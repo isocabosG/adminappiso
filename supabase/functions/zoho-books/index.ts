@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
 
     const token = await getAccessToken();
 
-    const { purchaseorder_id, salesorder_id, invoice_id, document_id, item_id, ...restParams } = params;
+    const { purchaseorder_id, salesorder_id, invoice_id, document_id, item_id, bill_id, ...restParams } = params;
     let path, qsParams = params, binary = false;
     if (action === "list_purchase_orders") { path = "/purchaseorders"; }
     else if (action === "get_purchase_order") { path = `/purchaseorders/${purchaseorder_id}`; qsParams = restParams; } // trae line_items (SKU + cantidad)
@@ -141,6 +141,22 @@ Deno.serve(async (req) => {
     // interno, así que un nombre mal escrito simplemente no casa y el renglón se
     // pierde en silencio al importar.
     else if (action === "list_contacts") { path = "/contacts"; qsParams = restParams; }
+    // FACTURAS DE PROVEEDOR (bills).  [7-nov-2026]
+    // Para el campo smart de Tesorería: al registrar un egreso hay que saber
+    // QUE factura se está pagando, no solo cuánto salió. `list_bills` acepta
+    // los filtros de Zoho (vendor_id, status=unpaid, bill_number, date_start…)
+    // y `get_bill` trae los renglones y, si la factura nació de una orden de
+    // compra, el `purchaseorder_id` que la amarra.
+    //
+    // Zoho NO guarda el UUID del CFDI en la factura de proveedor (se revisaron
+    // los campos del módulo: no existe). El empate se hace por proveedor +
+    // número de factura + total, no por folio fiscal.
+    else if (action === "list_bills") { path = "/bills"; qsParams = restParams; }
+    else if (action === "get_bill") { path = `/bills/${bill_id}`; qsParams = restParams; }
+    // Pagos ya hechos a proveedores. Sirve para no pagar dos veces la misma
+    // factura: antes de registrar, se revisa si ya hay un pago con esa
+    // referencia bancaria.
+    else if (action === "list_vendor_payments") { path = "/vendorpayments"; qsParams = restParams; }
     else if (action === "ping") { path = "/organizations"; qsParams = {}; } // prueba de conexión
     else throw new Error("Acción no soportada: " + action);
 

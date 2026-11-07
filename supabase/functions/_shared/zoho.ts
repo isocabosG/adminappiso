@@ -89,13 +89,24 @@ export class Zoho {
     return v.token;
   }
 
+  // POST a Zoho. Crea. Mismo manejo del freno y del `code != 0` que el PUT:
+  // Zoho contesta 200 con code distinto de 0 cuando rechaza, y una creacion
+  // fallida leida como exitosa es peor que un error.  [7-nov-2026]
+  async post(path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
+    return this.escribir("POST", path, cuerpo, params);
+  }
+
   // PUT a Zoho. Mismo manejo del freno que el GET.
   async put(path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
+    return this.escribir("PUT", path, cuerpo, params);
+  }
+
+  private async escribir(metodo: "POST" | "PUT", path: string, cuerpo: unknown, params: Record<string, string> = {}): Promise<any> {
     for (let intento = 0; intento < 3; intento++) {
       const token = await this.token();
       const qs = new URLSearchParams({ organization_id: this.org, ...params });
       const r = await fetch(`${API}${path}?${qs}`, {
-        method: "PUT",
+        method: metodo,
         headers: { Authorization: `Zoho-oauthtoken ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify(cuerpo),
       });
