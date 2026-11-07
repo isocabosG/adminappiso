@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 1";
+const RELEASE = "FACTURAS COMPRAS 2";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8270,6 +8270,19 @@ function SaldosZoho({ tcFix }) {
 }
 
 function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix }) {
+  // Las cuentas bancarias de Zoho, del cache que deja el panel de arriba. Hacen
+  // falta para decir DE CUAL sale el pago cuando se registra alla: la app tiene
+  // su propia lista y los dos catalogos no se parecen. Pagar desde la cuenta
+  // equivocada no se corrige con un clic, asi que se escoge una vez, aqui, y no
+  // en la prisa de cada pago.  [7-nov-2026]
+  const [bancosZ, setBancosZ] = useState([]);
+  useEffect(() => { (async () => {
+    try {
+      const r = await window.storage?.get(BANCOS_KEY);
+      const v = r?.value ? JSON.parse(r.value) : null;
+      setBancosZ((v?.cuentas || []).filter((b) => b.activa !== false));
+    } catch { /* sin cache, el selector sale vacio y se dice */ }
+  })(); }, []);
   return (
     <div className="space-y-4">
       {/* Saldos REALES de Zoho — es el numero bueno */}
@@ -8306,6 +8319,7 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
           <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
             <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Moneda</th>
             <th className="text-left px-3 py-2" title="Los últimos dígitos que imprime el comprobante del banco. Con esto el campo smart de egresos reconoce de qué cuenta salió el pago.">Últimos 4</th>
+            <th className="text-left px-3 py-2" title="Contra qué cuenta de Zoho se registra el pago. Sin esto, el egreso se queda solo en la libreta de la app.">Cuenta en Zoho</th>
             <th className="text-right px-3 py-2">Saldo</th><th className="text-right px-3 py-2">USD equiv.</th>
           </tr></thead>
           <tbody>
@@ -8317,6 +8331,14 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
                   <input value={c.ultimos || ""} maxLength={4} placeholder="····"
                     onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, ultimos: e.target.value.replace(/\D/g, "").slice(0, 4) } : x)))}
                     className="w-16 px-1.5 py-0.5 text-xs font-mono border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
+                </td>
+                <td className="px-3 py-2">
+                  <select value={c.zohoAccountId || ""}
+                    onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, zohoAccountId: e.target.value } : x)))}
+                    className="px-1.5 py-0.5 text-xs border border-stone-300 rounded bg-white max-w-[13rem]">
+                    <option value="">{bancosZ.length ? "— sin asignar —" : "— trae los saldos de Zoho primero —"}</option>
+                    {bancosZ.map((b) => <option key={b.id} value={b.id}>{b.nombre} · {b.moneda}</option>)}
+                  </select>
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{mx(saldos[c.id] || 0)}</td>
                 <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(enUSD(saldos[c.id] || 0, c.moneda, tcFix))}</td>
@@ -8598,7 +8620,7 @@ const comoIA = (file, b64) => {
   return null;
 };
 
-function SmartEgreso({ sm, setSm, aplicar }) {
+function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const refFac = useRef(null), refComp = useRef(null);
   const [sobreF, setSobreF] = useState(false), [sobreC, setSobreC] = useState(false);
@@ -8852,6 +8874,17 @@ Responde SOLO JSON compacto, sin markdown:
             Suma de facturas ${mx(sumaFact)} · comprobante ${mx(montoPago)}{" "}
             {cuadra ? "· cuadra ✓" : `· NO cuadra, difieren $${mx(Math.abs(sumaFact - montoPago))}`}
           </div>
+          <label className={`mt-2 flex items-start gap-2 text-[11px] rounded px-2 py-1.5 border ${puedeZoho ? "bg-emerald-50 border-emerald-300 text-emerald-900" : "bg-stone-100 border-stone-300 text-stone-500"}`}>
+            <input type="checkbox" className="mt-0.5" disabled={!puedeZoho} checked={!!sm.aZoho && !!puedeZoho}
+              onChange={(e) => setSm((x) => ({ ...x, aZoho: e.target.checked }))} />
+            <span>
+              <b>Aplicar el pago en Zoho</b> y dejar estas facturas en <b>pagadas</b>.
+              {puedeZoho
+                ? <span className="block text-[10px] opacity-80">Se registra contra la cuenta de Zoho que tenga asignada la cuenta de arriba. Si ya existe un pago con la misma clave de rastreo, no se crea otro.</span>
+                : <span className="block text-[10px] text-amber-700">No se puede todavía: {faltaZoho}.</span>}
+            </span>
+          </label>
+
           {!cuadra && (
             <label className="mt-1 flex items-start gap-2 text-[11px] text-stone-700">
               <input type="checkbox" className="mt-0.5" checked={!!sm.forzar} onChange={(e) => setSm((x) => ({ ...x, forzar: e.target.checked }))} />
@@ -8901,6 +8934,18 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   const cuadraSmart = sm.facturas.length === 0 || Math.abs(sumaFact - (+f.monto || 0)) < 0.5;
   const bloqueado = !cuadraSmart && !sm.forzar;
 
+  // ¿Se puede aplicar el pago en Zoho? Cada condicion que falta se dice con su
+  // nombre: una casilla gris sin explicacion obliga a adivinar.  [7-nov-2026]
+  const ctaApp = cuentas.find((c) => c.id === f.cuentaId);
+  const rastreo = sm.pago?.claveRastreo || f.referencia || "";
+  const faltaZoho = !sm.vendorId ? "primero busca las facturas en Zoho"
+    : sm.facturas.some((x) => !x.billId) ? "falta amarrar alguna factura"
+    : !cuadraSmart ? "la suma de las facturas no cuadra con el monto"
+    : !ctaApp?.zohoAccountId ? `la cuenta ${ctaApp?.nombre || ""} no tiene asignada su cuenta de Zoho — se pone en Tesorería → Resumen`
+    : !rastreo ? "falta la clave de rastreo: es lo que evita registrar el pago dos veces"
+    : "";
+  const puedeZoho = tipo === "egreso" && !editando && sm.facturas.length > 0 && !faltaZoho;
+
   // Sube un archivo al bucket privado y devuelve su ruta. El nombre se limpia:
   // Storage no acepta acentos ni espacios y un error ahí aborta el guardado
   // completo justo cuando ya se habían subido los otros.
@@ -8924,6 +8969,22 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
       if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
       if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
 
+      // EL ORDEN IMPORTA. Primero Zoho, que es el paso que no se puede
+      // deshacer, y que es idempotente por la clave de rastreo: si algo falla
+      // despues y se vuelve a intentar, devuelve el pago que ya existia en vez
+      // de crear otro. Al reves —archivos primero— un error de Zoho dejaria
+      // archivos huerfanos cada reintento.
+      let resZoho = null;
+      if (sm.aZoho && puedeZoho) {
+        resZoho = await window.pagoProveedor({
+          vendorId: sm.vendorId, cuentaZohoId: ctaApp.zohoAccountId,
+          fecha: f.fecha, monto: +f.monto || 0, moneda: monedaDe(f.cuentaId), tc: +f.tc || tcFix,
+          referencia: rastreo,
+          nota: `${f.contraparte || ""} · ${sm.facturas.map((x) => x.folio).filter(Boolean).join(", ")}`.slice(0, 480),
+          facturas: sm.facturas.map((x) => ({ billId: x.billId, monto: +x.total || 0 })),
+        });
+      }
+
       if (sm.facturas.length || sm.archComprobante) {
         const carpeta = `egresos/${String(f.fecha || hoy()).slice(0, 4)}/${id}`;
         const rutasFac = [];
@@ -8941,8 +9002,10 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
           // Queda escrito si se registró sin cuadrar: dentro de un mes nadie se
           // acuerda, y el renglón descuadrado seguirá ahí.
           descuadrado: !cuadraSmart ? { suma: sumaFact, pago: +f.monto || 0 } : null,
-          // Todavía NO se aplicó en Zoho. Lo pone la etapa C.
-          pagoEnZoho: null,
+          // El pago en Zoho, si se aplicó. `yaExistia` quiere decir que ese
+          // pago ya estaba registrado con la misma clave de rastreo y no se
+          // creó uno nuevo.
+          pagoEnZoho: resZoho ? { pagoId: resZoho.pagoId, numero: resZoho.numero, yaExistia: !!resZoho.yaExistia, ts: new Date().toISOString() } : null,
         };
         if (rutaComp && !op.comprobante) op.comprobante = rutaComp.nombre;
       }
@@ -8970,7 +9033,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
         ))}
       </div>
 
-      {tipo === "egreso" && !editando && <SmartEgreso {...{ sm, setSm, aplicar }} />}
+      {tipo === "egreso" && !editando && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho }} />}
 
       <div className="bg-white border border-stone-200 rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></div>

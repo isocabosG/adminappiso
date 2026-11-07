@@ -116,6 +116,17 @@ window.sincronizar = async (nombre) => {
   return data
 }
 
+// PAGO A PROVEEDOR EN ZOHO. Va a la Edge Function `pago-proveedor`, que es la
+// unica que puede crear un pago: valida proveedor, saldos y duplicados antes de
+// escribir. Aqui NO se traga el error — si un pago no se registro, quien lo
+// intento tiene que enterarse en la misma pantalla.
+window.pagoProveedor = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('pago-proveedor', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (!data || data.ok === false) throw new Error(textoError(data?.error) || 'Zoho no acepto el pago.')
+  return data
+}
+
 window.mrpFeed = async () => {
   const { data, error } = await supabase.functions.invoke('mrp-feed', { body: {} })
   if (error) throw new Error(await detalleError(error))
