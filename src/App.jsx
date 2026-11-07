@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 3";
+const RELEASE = "FACTURAS COMPRAS 4";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8639,6 +8639,9 @@ function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho }) {
   const sumaFact = sm.facturas.reduce((a, x) => a + nFolio(x.total), 0);
   const montoPago = nFolio(sm.pago?.monto);
   const cuadra = sm.facturas.length > 0 && montoPago > 0 && Math.abs(sumaFact - montoPago) < 0.5;
+  // La moneda, escrita. Un «$» a secas en México se lee como peso la mitad de
+  // las veces y como dólar la otra mitad, y aquí conviven las dos.
+  const mon = String(sm.facturas[0]?.moneda || sm.pago?.moneda || "MXN").toUpperCase();
 
   const leer = async () => {
     if (!sm.archFacturas.length) return setSm((x) => ({ ...x, err: "Sube al menos una factura del proveedor." }));
@@ -8821,7 +8824,7 @@ Responde SOLO JSON compacto, sin markdown:
           <table className="w-full text-[11px]">
             <thead className="text-[9px] uppercase tracking-wider text-violet-500">
               <tr><th className="text-left py-0.5">Folio</th><th className="text-left">Fecha</th>
-                <th className="text-right">Subtotal</th><th className="text-right">IVA</th><th className="text-right">Total</th>
+                <th className="text-right">Subtotal</th><th className="text-right">IVA</th><th className="text-right">Total {mon}</th>
                 <th className="text-left pl-3">Factura en Zoho</th></tr>
             </thead>
             <tbody>
@@ -8871,8 +8874,8 @@ Responde SOLO JSON compacto, sin markdown:
             </div>
           )}
           <div className={`mt-2 text-[11px] font-medium ${cuadra ? "text-emerald-800" : "text-red-700"}`}>
-            Suma de facturas ${mx(sumaFact)} · comprobante ${mx(montoPago)}{" "}
-            {cuadra ? "· cuadra ✓" : `· NO cuadra, difieren $${mx(Math.abs(sumaFact - montoPago))}`}
+            Suma de facturas {mon} ${mx(sumaFact)} · comprobante {mon} ${mx(montoPago)}{" "}
+            {cuadra ? "· cuadra ✓" : `· NO cuadra, difieren ${mon} $${mx(Math.abs(sumaFact - montoPago))}`}
           </div>
           <label className={`mt-2 flex items-start gap-2 text-[11px] rounded px-2 py-1.5 border ${puedeZoho ? "bg-emerald-50 border-emerald-300 text-emerald-900" : "bg-stone-100 border-stone-300 text-stone-500"}`}>
             <input type="checkbox" className="mt-0.5" disabled={!puedeZoho} checked={!!sm.aZoho && !!puedeZoho}
