@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "PROVEEDOR EN SU CAMPO 1";
+const RELEASE = "COMPLEMENTO DE PAGO 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -9861,7 +9861,7 @@ function renglonesLibro(o, cta) {
     nombre: guion(o.contraparte || o.concepto),
     ocOv: "-",
     factura: guion(facturas || o.pendiente),
-    complemento: "-",
+    complemento: guion(o.complemento?.numero),
     referencia: guion(o.referencia),
   };
   const uno = (cuenta, monto, nombre) => ({
@@ -10015,7 +10015,7 @@ const textoBuscable = (o, c, cd) => [
   o.nota, o.comprobante, c?.nombre, c?.moneda, cd?.nombre, cd?.moneda,
   o.smart?.proveedor, o.smart?.zohoProveedor, o.smart?.rfc,
   o.smart?.pago?.bancoOrigen, o.smart?.pago?.beneficiario, o.smart?.pago?.claveRastreo,
-  o.smart?.pagoEnZoho?.numero, o.pendiente, o.concepto,
+  o.smart?.pagoEnZoho?.numero, o.pendiente, o.concepto, o.complemento?.numero,
   ...(o.smart?.facturas || []).flatMap((f) => [f.folio, f.billNumero, f.uuid]),
   String(o.monto ?? ""),
 ].filter(Boolean).join(" ").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -10069,6 +10069,64 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
     finally { setExportando(false); }
   };
 
+  /* -------------------------------------------------------------------------
+     COMPLEMENTO DE PAGO, A VARIOS MOVIMIENTOS DE UN JALON  [7-nov-2026]
+
+     Fran: «cuando se paga falta agregarles el complemento de pago, idealmente
+     desde la pantalla de movimientos una casilla que palomeas para seleccionar
+     uno o varios movimientos a los que se les aplicará el mismo número de
+     complemento. Y cuando el movimiento ya tiene complemento se queda fijo el
+     check».
+
+     Por qué de varios a la vez: el proveedor timbra UN complemento por los
+     pagos que le hiciste en el mes, no uno por pago. Capturarlo movimiento por
+     movimiento sería teclear el mismo folio cuatro veces, y es justo donde se
+     cuela un dígito cambiado.
+
+     El que ya lo tiene aparece palomeado y bloqueado: no se puede arrastrar sin
+     querer a un lote nuevo y pisarle el folio. Para corregirlo hay que decirlo
+     a propósito, con «cambiar», que lo deja solo en la barra con su folio
+     puesto — y ahí sí se puede sobrescribir o quitar.
+
+     Esto vive en la app, no en Zoho: Zoho Books no tiene campo para el
+     complemento en un pago a proveedor (se revisaron los campos personalizados
+     del módulo: no hay ninguno). Va a la columna COMPLEMENTO del libro de
+     bancos, que es donde Jesús lo necesita.
+  ------------------------------------------------------------------------- */
+  const [sel, setSel] = useState(() => new Set());
+  const [comp, setComp] = useState({ numero: "", fecha: "" });
+
+  // Un traspaso entre cuentas propias no genera complemento: no hay CFDI.
+  const aplicaComp = (o) => o.tipo === "egreso" || o.tipo === "ingreso";
+  const tieneComp = (o) => !!(o.complemento && o.complemento.numero);
+
+  const marcar = (id, on) => setSel((s) => { const n = new Set(s); if (on) n.add(id); else n.delete(id); return n; });
+  const marcables = rows.filter((o) => aplicaComp(o) && !tieneComp(o));
+  const todosMarcados = marcables.length > 0 && marcables.every((o) => sel.has(o.id));
+  const marcarTodos = (on) => setSel(on ? new Set(marcables.map((o) => o.id)) : new Set());
+
+  const seleccionados = operaciones.filter((o) => sel.has(o.id));
+  const algunoConComp = seleccionados.some(tieneComp);
+
+  const aplicarComplemento = () => {
+    const numero = comp.numero.trim();
+    if (!numero || !sel.size) return;
+    const complemento = { numero, fecha: comp.fecha || hoy(), ts: new Date().toISOString() };
+    saveOperaciones(operaciones.map((o) => (sel.has(o.id) ? { ...o, complemento } : o)));
+    setAviso({ t: "ok", m: `Complemento ${numero} aplicado a ${sel.size} movimiento${sel.size === 1 ? "" : "s"}.` });
+    setSel(new Set()); setComp({ numero: "", fecha: "" });
+  };
+
+  const quitarComplemento = () => {
+    if (!sel.size) return;
+    saveOperaciones(operaciones.map((o) => (sel.has(o.id) ? { ...o, complemento: null } : o)));
+    setAviso({ t: "ok", m: `Complemento quitado de ${sel.size} movimiento${sel.size === 1 ? "" : "s"}.` });
+    setSel(new Set()); setComp({ numero: "", fecha: "" });
+  };
+
+  // «Cambiar»: lo deja solo en la barra, con su folio puesto.
+  const editarComp = (o) => { setSel(new Set([o.id])); setComp({ numero: o.complemento?.numero || "", fecha: o.complemento?.fecha || "" }); };
+
   const [borrando, setBorrando] = useState(null);   // { op, trabajando, err }
   const pedirBorrar = (o) => setBorrando({ op: o, trabajando: false, err: null });
 
@@ -10118,20 +10176,80 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
         </button>
       </div>
       {errExcel && <p className="text-[11px] text-red-700">{errExcel}</p>}
+
+      {/* Aparece sola al palomear el primero. Mientras no haya nada marcado no
+          estorba: es una barra, no un botón que siempre está ahí apagado. */}
+      {sel.size > 0 && (
+        <div className="flex flex-wrap items-end gap-2 px-3 py-2.5 rounded-lg border border-emerald-300 bg-emerald-50">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-emerald-800 font-semibold">
+              {sel.size} movimiento{sel.size === 1 ? "" : "s"} · mismo complemento
+            </p>
+            <p className="text-[10px] text-emerald-700 font-mono">
+              {seleccionados.slice(0, 3).map((o) => `${o.fecha} ${o.contraparte || ""}`.trim()).join(" · ")}
+              {sel.size > 3 ? ` · y ${sel.size - 3} más` : ""}
+            </p>
+          </div>
+          <div>
+            <label className="block text-[9px] uppercase tracking-widest text-emerald-800">Folio del complemento</label>
+            <input value={comp.numero} onChange={(e) => setComp((x) => ({ ...x, numero: e.target.value }))}
+              placeholder="el folio del CFDI de pago"
+              onKeyDown={(e) => { if (e.key === "Enter") aplicarComplemento(); }}
+              className="px-2 py-1 text-xs font-mono bg-white border border-emerald-300 rounded w-64 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+          </div>
+          <div>
+            <label className="block text-[9px] uppercase tracking-widest text-emerald-800">Fecha</label>
+            <input type="date" value={comp.fecha} onChange={(e) => setComp((x) => ({ ...x, fecha: e.target.value }))}
+              className="px-2 py-1 text-xs font-mono bg-white border border-emerald-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+          </div>
+          <button onClick={aplicarComplemento} disabled={!comp.numero.trim()}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
+            Aplicar a {sel.size}
+          </button>
+          {algunoConComp && (
+            <button onClick={quitarComplemento}
+              className="px-3 py-1.5 text-xs font-medium rounded border border-red-300 text-red-700 hover:bg-red-50">
+              Quitar complemento
+            </button>
+          )}
+          <button onClick={() => { setSel(new Set()); setComp({ numero: "", fecha: "" }); }}
+            className="px-2 py-1.5 text-xs text-emerald-800 hover:underline">cancelar</button>
+        </div>
+      )}
+
       {rows.length === 0 ? (
         <div className="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">Sin operaciones. Registra la primera con "+ Nueva operación".</div>
       ) : (
         <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[940px] text-sm">
             <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
+              <th className="px-2 py-2 w-8" title="Palomea uno o varios para aplicarles el mismo complemento de pago">
+                <input type="checkbox" checked={todosMarcados} disabled={!marcables.length}
+                  onChange={(e) => marcarTodos(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-emerald-700 align-middle disabled:opacity-30" />
+              </th>
               <th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Tipo</th><th className="text-left px-3 py-2">Detalle</th>
-              <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Factura</th><th className="text-right px-3 py-2">Monto</th><th className="text-left px-3 py-2">Estatus</th><th className="px-3 py-2"></th>
+              <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Factura</th>
+              <th className="text-left px-3 py-2" title="Folio del CFDI de complemento de pago. Es la columna COMPLEMENTO del libro de bancos.">Complemento</th>
+              <th className="text-right px-3 py-2">Monto</th><th className="text-left px-3 py-2">Estatus</th><th className="px-3 py-2"></th>
             </tr></thead>
             <tbody>
               {rows.slice(0, 300).map((o) => {
                 const c = cta(o.cuentaId), cd = o.cuentaDestinoId ? cta(o.cuentaDestinoId) : null;
                 return (
-                  <tr key={o.id} className="border-b border-stone-100">
+                  <tr key={o.id} className={`border-b border-stone-100 ${sel.has(o.id) ? "bg-emerald-50" : ""}`}>
+                    <td className="px-2 py-2">
+                      {/* El que ya tiene complemento se queda palomeado y
+                          bloqueado, como pidió Fran: así no se arrastra sin
+                          querer a un lote nuevo. Se corrige con «cambiar». */}
+                      {aplicaComp(o) ? (
+                        <input type="checkbox" checked={tieneComp(o) || sel.has(o.id)}
+                          disabled={tieneComp(o) && !sel.has(o.id)}
+                          title={tieneComp(o) ? `Ya tiene complemento ${o.complemento.numero}` : "Marcar para aplicarle un complemento"}
+                          onChange={(e) => marcar(o.id, e.target.checked)}
+                          className="h-3.5 w-3.5 accent-emerald-700 align-middle disabled:opacity-60" />
+                      ) : <span className="text-stone-300 text-xs">—</span>}
+                    </td>
                     <td className="px-3 py-2 font-mono text-xs">{o.fecha}</td>
                     <td className="px-3 py-2 text-xs">{TIPOS_OP[o.tipo]}</td>
                     <td className="px-3 py-2 text-xs text-stone-600">
@@ -10146,6 +10264,14 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
                           : o.sinFacturaEsperada ? <span className="text-[10px] text-stone-500">sin factura</span>
                           : <span className="text-stone-300">—</span>)}
                       {o.smart?.pagoEnZoho?.numero && <span className="block text-[9px] text-emerald-700">pago Zoho #{o.smart.pagoEnZoho.numero}</span>}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono">
+                      {tieneComp(o) ? (
+                        <>
+                          <span className="text-stone-700">{o.complemento.numero}</span>
+                          <button onClick={() => editarComp(o)} className="block text-[9px] text-violet-700 hover:underline">cambiar</button>
+                        </>
+                      ) : aplicaComp(o) ? <span className="text-stone-300">—</span> : <span className="text-stone-200">—</span>}
                     </td>
                     <td className={`px-3 py-2 text-right font-mono ${o.tipo === "ingreso" ? "text-teal-700" : o.tipo === "egreso" ? "text-red-600" : "text-stone-600"}`}>
                       {o.tipo === "ingreso" ? "+" : o.tipo === "egreso" ? "−" : ""}{mx(o.monto)}
