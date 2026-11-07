@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "COMPLEMENTO Y OC 1";
+const RELEASE = "LIBRO DE BANCOS 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8146,6 +8146,434 @@ async function traerProveedores() {
 // acento, un punto o una mayuscula lo tiren.
 const claveProv = (x) => String(x || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
+/* ---------------------------------------------------------------------------
+   LIBRO DE BANCOS — UN DOCUMENTO POR MES  [7-nov-2026]
+
+   Fran: «armemos la pantalla dentro de Tesorería de libro de bancos» · «este es
+   un doc por mes, cuando termina el mes se guarda y el primero se hace uno
+   nuevo».
+
+   Es la hoja de Jesús, calculada desde los movimientos en vez de capturada.
+   Las fórmulas se sacaron de su archivo celda por celda, no de suposiciones
+   (ver claude/libro-de-bancos-formulas-de-jesus-7nov2026.md). Todo el Estimado
+   sale del Concentrado con la misma agrupación TIPO × BANCO × MONEDA; lo único
+   que se teclea es el TC del mes y las dos tablas de abajo, igual que hoy.
+
+   POR QUÉ EL MES SE CIERRA Y SE CONGELA: con el mes abierto los bloques se
+   recalculan solos cada vez que entra un movimiento, que es lo que uno quiere
+   mientras el mes corre. Pero una vez que el impuesto se declaró, un movimiento
+   corregido en diciembre no puede cambiar el número de noviembre. Al cerrar se
+   guarda una FOTO de los bloques y de ahí en adelante la pantalla enseña la
+   foto, no el cálculo. Reabrir vuelve a calcular, y dice quién y cuándo.
+--------------------------------------------------------------------------- */
+const LIBRO_PREF = "iso3-libro-";
+const IVA_TASA = 1.16;
+
+// Los seis renglones fijos de cada bloque, en el orden de la hoja.
+const SEIS = [["BANREGIO", "MXN"], ["BANREGIO", "USD"], ["BBVA", "MXN"], ["BBVA", "USD"], ["MIFEL", "MXN"], ["MIFEL", "USD"]];
+
+/* Los conceptos de importación, cada uno con SU regla de IVA. Esto es criterio
+   contable de Jesús leído de sus fórmulas, no una convención general:
+     todoIva  — el importe completo es IVA (el IVA de importación lo es)
+     desglosa — 16% incluido, se parte en subtotal e IVA
+     sinIva   — no lleva IVA (DTA, IGI e incrementables son derechos, no IVA) */
+const IMPO = [
+  { label: "IVA", tipo: "IVA IMPORTACION", regla: "todoIva" },
+  { label: "PREVALIDACION", tipo: "PREVALIDACION", regla: "desglosa" },
+  { label: "DTA", tipo: "DTA", regla: "sinIva" },
+  { label: "IGI", tipo: "IGI", regla: "sinIva" },
+  { label: "INCREMENTABLES", tipo: "INCREMENTABLES IMPO", regla: "sinIva" },
+  { label: "HONORARIOS", tipo: "HONORARIOS IMPO", regla: "desglosa" },
+];
+const BANCOS_IMPO = ["BANREGIO", "MIFEL"];
+
+const mesDe = (f) => String(f || "").slice(0, 7);
+const nombreMes = (ym) => {
+  const [a, m] = String(ym || "").split("-");
+  const M = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+  return M[(+m || 1) - 1] ? `${M[(+m || 1) - 1]} ${a}` : ym;
+};
+const mesSiguiente = (ym, n) => {
+  const [a, m] = ym.split("-").map(Number);
+  const d = new Date(a, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const sumif = (rs, tipo, banco, moneda) =>
+  rs.reduce((a, r) => (r.tipo === tipo && r.banco === banco && r.moneda === moneda ? a + r.monto : a), 0);
+
+/* ---- los siete bloques ---- */
+// Con IVA al 16% incluido: ingresos, egresos, depósitos en garantía, no deducibles.
+const bloqueIva = (rs, tipo, tcUsd) => SEIS.map(([banca, moneda]) => {
+  const tc = moneda === "USD" ? tcUsd : 1;
+  const mon = sumif(rs, tipo, banca, moneda);
+  const mxn = tc * mon, sub = mxn / IVA_TASA;
+  return { banca, moneda, tc, mon, mxn, sub, iva: mxn - sub };
+});
+
+// Traspasos: TC 1 siempre —también en los renglones USD, así está en la hoja— y
+// sin IVA. Mover dinero entre cuentas propias no genera impuesto.
+const bloqueTraspaso = (rs) => SEIS.map(([banca, moneda]) => {
+  const mon = sumif(rs, "TRASPASO", banca, moneda);
+  return { banca, moneda, tc: 1, mon, mxn: mon, sub: null, iva: null };
+});
+
+const bloqueImpo = (rs) => {
+  const out = [];
+  for (const banca of BANCOS_IMPO) {
+    for (const c of IMPO) {
+      const mon = sumif(rs, c.tipo, banca, "MXN");
+      const sub = c.regla === "desglosa" ? mon / IVA_TASA : null;
+      const iva = c.regla === "todoIva" ? mon : c.regla === "desglosa" ? mon - sub : null;
+      out.push({ banca, moneda: "MXN", concepto: c.label, mon, mxn: mon, sub, iva });
+    }
+  }
+  return out;
+};
+
+const bloqueExtranjero = (rs, tcUsd) => SEIS.map(([banca, moneda]) => {
+  const tc = moneda === "USD" ? tcUsd : 1;
+  const mon = sumif(rs, "SERV EXTRANJERO", banca, moneda);
+  const mxn = tc * mon, sub = mxn / IVA_TASA;
+  return { banca, moneda, tc, mon, mxn, sub, iva: mxn - sub };
+});
+
+const totalDe = (filas) => filas.reduce((t, f) => ({
+  mon: t.mon + (f.mon || 0), mxn: t.mxn + (f.mxn || 0),
+  sub: t.sub + (f.sub || 0), iva: t.iva + (f.iva || 0),
+}), { mon: 0, mxn: 0, sub: 0, iva: 0 });
+
+/* ISR sobre asimilados a salarios en pagos al extranjero: UN TERCIO, no 33%.
+   La celda de Jesús se ve como «0.33» porque está formateada a dos decimales,
+   pero guarda 0.33333333. Con 0.33 el impuesto de noviembre daba 112,266 en
+   vez de 113,431.33 — mil ciento sesenta y cinco pesos de diferencia por leer
+   un número redondeado. Se deja editable por pago, como en su hoja, donde cada
+   columna tiene su propia celda de porcentaje. */
+const RETENCION = 0.33333333;
+
+/* El Estimado completo. `rs` son los renglones del Concentrado del mes —los
+   mismos que produce `renglonesLibro`— y `libro` trae el TC y las dos tablas
+   capturadas. */
+function calcularEstimado(rs, libro) {
+  const tc = +libro.tc || 0;
+  const b = {
+    ingresos: bloqueIva(rs, "INGRESO", tc),
+    egresos: bloqueIva(rs, "EGRESO", tc),
+    garantia: bloqueIva(rs, "DEP. GARANTIA", tc),
+    traspasos: bloqueTraspaso(rs),
+    noDeducibles: bloqueIva(rs, "NO DEDUCIBLES", tc),
+    importacion: bloqueImpo(rs),
+    extranjero: bloqueExtranjero(rs, tc),
+  };
+  const t = Object.fromEntries(Object.entries(b).map(([k, v]) => [k, totalDe(v)]));
+
+  const ivaTrasladado = t.ingresos.iva;
+  const ivaAcreditable = t.egresos.iva + t.importacion.iva;
+  const diferencia = ivaTrasladado + ivaAcreditable;      // el acreditable viene negativo
+
+  const isrSalarios = (libro.nomina || []).reduce((a, n) => a + (+n.isr || 0), 0);
+  const retenciones = (libro.retenciones || []).map((r) => {
+    const asimilado = (+r.dlls || 0) * (+r.tc || 0);
+    const pct = r.pct == null || r.pct === "" ? RETENCION : +r.pct;
+    const impPagar = asimilado * pct;
+    return { ...r, pct, asimilado, impPagar, totalMxn: asimilado + impPagar, totalUsd: (asimilado + impPagar) / (+r.tc || 1) };
+  });
+  const isrExtranjero = retenciones.reduce((a, r) => a + r.impPagar, 0);
+
+  return {
+    bloques: b, totales: t, retenciones,
+    impuestos: {
+      ivaTrasladado, ivaAcreditable, diferencia,
+      isrSalarios, isrExtranjero,
+      totalSalarios: isrSalarios + isrExtranjero,
+      totalIva: diferencia,
+      granTotal: isrSalarios + isrExtranjero + diferencia,
+    },
+  };
+}
+
+function LibroBancos({ operaciones, cta, tcFix, setAviso }) {
+  const [ym, setYm] = useState(() => mesDe(hoy()));
+  const [libro, setLibro] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [cerrando, setCerrando] = useState(false);
+
+  // Un documento por mes, en su propia llave. Cargar otro mes es cambiar de
+  // documento, no filtrar el mismo.
+  useEffect(() => {
+    let vivo = true;
+    setLibro(null);
+    (async () => {
+      let v = null;
+      try { const r = await window.storage?.get(LIBRO_PREF + ym); if (r?.value) v = JSON.parse(r.value); } catch { }
+      if (vivo) setLibro(v || { ym, tc: tcFix || 17.5, nomina: [], retenciones: [], cerrado: false, cerradoEl: "", foto: null });
+    })();
+    return () => { vivo = false; };
+  }, [ym]);
+
+  const grabar = async (next) => {
+    setLibro(next);
+    setGuardando(true);
+    try { await window.storage?.set(LIBRO_PREF + ym, JSON.stringify(next)); }
+    catch { setAviso({ t: "err", m: "No se pudo guardar el libro. Revisa tu conexión." }); }
+    setGuardando(false);
+  };
+
+  // Los movimientos del mes, convertidos a renglones del Concentrado: los
+  // mismos que salen al exportar. Un traspaso son dos renglones.
+  const renglones = useMemo(
+    () => (operaciones || []).filter((o) => mesDe(o.fecha) === ym).flatMap((o) => renglonesLibro(o, cta)),
+    [operaciones, ym, cta]);
+
+  const vivo = useMemo(() => (libro ? calcularEstimado(renglones, libro) : null), [renglones, libro]);
+  // Mes cerrado: manda la foto. Mes abierto: manda el cálculo.
+  const E = libro?.cerrado && libro?.foto ? libro.foto : vivo;
+
+  if (!libro) return <p className="text-xs text-stone-500">Cargando el libro de {nombreMes(ym)}…</p>;
+
+  const cerrar = async () => {
+    if (!vivo) return;
+    setCerrando(true);
+    await grabar({ ...libro, cerrado: true, cerradoEl: new Date().toISOString(), foto: vivo });
+    setCerrando(false);
+    setAviso({ t: "ok", m: `Libro de ${nombreMes(ym)} cerrado. Los movimientos que entren después ya no lo mueven.` });
+  };
+  const reabrir = async () => {
+    await grabar({ ...libro, cerrado: false, cerradoEl: "", foto: null });
+    setAviso({ t: "ok", m: `Libro de ${nombreMes(ym)} reabierto: vuelve a calcularse con los movimientos.` });
+  };
+
+  const col = (v, neg) => `px-2 py-1 text-right font-mono tabular-nums ${neg && v < 0 ? "text-red-700" : ""}`;
+  const n2 = (v) => (v == null ? "—" : mx(v));
+
+  const Bloque = ({ titulo, filas, total, conConcepto }) => (
+    <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
+      <div className="px-3 py-2 bg-stone-50 border-b border-stone-200">
+        <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600">{titulo}</p>
+      </div>
+      <table className="w-full text-[11px]">
+        <thead className="text-[9px] uppercase tracking-wider text-stone-400">
+          <tr>
+            <th className="px-2 py-1 text-left">Banca</th><th className="px-2 py-1 text-left">Moneda</th>
+            {conConcepto && <th className="px-2 py-1 text-left">Concepto</th>}
+            {!conConcepto && <th className="px-2 py-1 text-right">TC</th>}
+            <th className="px-2 py-1 text-right">Total mon</th><th className="px-2 py-1 text-right">Total MXN</th>
+            <th className="px-2 py-1 text-right">Subtotal</th><th className="px-2 py-1 text-right">IVA</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr key={i} className="border-t border-stone-100">
+              <td className="px-2 py-1">{f.banca}</td><td className="px-2 py-1 text-stone-500">{f.moneda}</td>
+              {conConcepto ? <td className="px-2 py-1">{f.concepto}</td> : <td className={col(f.tc)}>{f.tc}</td>}
+              <td className={col(f.mon, true)}>{n2(f.mon)}</td><td className={col(f.mxn, true)}>{n2(f.mxn)}</td>
+              <td className={col(f.sub, true)}>{n2(f.sub)}</td><td className={col(f.iva, true)}>{n2(f.iva)}</td>
+            </tr>
+          ))}
+          <tr className="border-t-2 border-stone-300 bg-stone-50 font-semibold">
+            <td className="px-2 py-1" colSpan={conConcepto ? 3 : 3}>Gran total</td>
+            <td className={col(total.mon, true)}>{n2(total.mon)}</td><td className={col(total.mxn, true)}>{n2(total.mxn)}</td>
+            <td className={col(total.sub, true)}>{n2(total.sub)}</td><td className={col(total.iva, true)}>{n2(total.iva)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const I = E.impuestos;
+  const Ren = ({ k, v, fuerte, rojo }) => (
+    <div className={`flex justify-between gap-4 px-3 py-1.5 ${fuerte ? "border-t border-emerald-300 font-semibold" : ""}`}>
+      <span className={fuerte ? "text-emerald-900" : "text-stone-600"}>{k}</span>
+      <span className={`font-mono tabular-nums ${rojo && v < 0 ? "text-red-700" : fuerte ? "text-emerald-900" : ""}`}>{mx(v)}</span>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      {/* Cabecera del documento del mes */}
+      <div className="panel-iso rounded-lg p-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setYm(mesSiguiente(ym, -1))} className="px-2 py-1 rounded bg-white/15 hover:bg-white/25 border border-white/25 text-sm">←</button>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Libro de bancos</p>
+              <p className="text-xl font-bold leading-tight capitalize">{nombreMes(ym)}</p>
+            </div>
+            <button onClick={() => setYm(mesSiguiente(ym, 1))} className="px-2 py-1 rounded bg-white/15 hover:bg-white/25 border border-white/25 text-sm">→</button>
+          </div>
+          <div className="flex items-end gap-3">
+            <div>
+              <label className="block text-[9px] uppercase tracking-widest text-emerald-100">TC del mes</label>
+              <input type="number" step="0.0001" value={libro.tc} disabled={libro.cerrado}
+                onChange={(e) => grabar({ ...libro, tc: +e.target.value || 0 })}
+                className="w-24 px-2 py-1 text-sm font-mono rounded bg-white/15 border border-white/30 text-white placeholder-emerald-200 disabled:opacity-50" />
+            </div>
+            {libro.cerrado
+              ? <button onClick={reabrir} className="px-3 py-1.5 text-xs rounded bg-white/15 hover:bg-white/25 border border-white/25">Reabrir</button>
+              : <button onClick={cerrar} disabled={cerrando} className="px-3 py-1.5 text-xs font-medium rounded bg-white text-emerald-800 hover:bg-emerald-50 disabled:opacity-50">{cerrando ? "Cerrando…" : "Cerrar el mes"}</button>}
+          </div>
+        </div>
+        <p className="text-[11px] text-emerald-100/90 mt-2">
+          {libro.cerrado
+            ? <>Mes <b>cerrado</b> el {String(libro.cerradoEl).slice(0, 10)}. Las cifras son la foto de ese día: los movimientos que entren o se corrijan después ya no lo mueven.</>
+            : <>Mes <b>abierto</b>: {renglones.length} renglón{renglones.length === 1 ? "" : "es"} del Concentrado, recalculándose con cada movimiento. Ciérralo cuando declares.</>}
+          {guardando && <span className="ml-2 text-emerald-200">guardando…</span>}
+        </p>
+      </div>
+
+      {/* Impuestos: lo que se viene a ver */}
+      <div className="bg-emerald-50 border border-emerald-300 rounded-lg overflow-hidden">
+        <div className="px-3 py-2 bg-emerald-100 border-b border-emerald-300">
+          <p className="text-[10px] uppercase tracking-widest font-semibold text-emerald-900">Impuestos estimados del mes</p>
+        </div>
+        <div className="text-sm">
+          <Ren k="IVA trasladado (de ingresos)" v={I.ivaTrasladado} />
+          <Ren k="IVA acreditable (egresos + importación)" v={I.ivaAcreditable} rojo />
+          <Ren k="Diferencia de IVA" v={I.diferencia} fuerte />
+          <Ren k="ISR por salarios" v={I.isrSalarios} />
+          <Ren k="ISR retenciones extranjero" v={I.isrExtranjero} />
+          <Ren k="Total impuestos por salarios" v={I.totalSalarios} fuerte />
+          <div className="bg-emerald-700 text-white flex justify-between gap-4 px-3 py-2">
+            <span className="font-semibold">Gran total de impuestos</span>
+            <span className="font-mono tabular-nums text-lg font-bold">${mx(I.granTotal)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <Bloque titulo="Ingresos" filas={E.bloques.ingresos} total={E.totales.ingresos} />
+        <Bloque titulo="Egresos" filas={E.bloques.egresos} total={E.totales.egresos} />
+        <Bloque titulo="Depósitos en garantía" filas={E.bloques.garantia} total={E.totales.garantia} />
+        <Bloque titulo="Traspasos entre cuentas" filas={E.bloques.traspasos} total={E.totales.traspasos} />
+        <Bloque titulo="No deducibles" filas={E.bloques.noDeducibles} total={E.totales.noDeducibles} />
+        <Bloque titulo="Pagos de servicios a proveedor extranjero" filas={E.bloques.extranjero} total={E.totales.extranjero} />
+      </div>
+      <Bloque titulo="Gastos de importación" filas={E.bloques.importacion} total={E.totales.importacion} conConcepto />
+      <p className="text-[11px] text-stone-500">
+        Cada concepto de importación lleva su propia regla, como en la hoja de Jesús: el <b>IVA de importación</b> es todo IVA;
+        <b> prevalidación</b> y <b>honorarios</b> se desglosan al 16%; <b>DTA</b>, <b>IGI</b> e <b>incrementables</b> no llevan IVA.
+        Ojo al comparar: en su Excel el renglón de prevalidación trae el subtotal en la columna del total, y por eso su gran
+        total de TOTAL MXN sale unos pesos abajo. Aquí el total es el total.
+      </p>
+
+      {!libro.cerrado && <TablasCaptura libro={libro} grabar={grabar} retenciones={E.retenciones} />}
+    </div>
+  );
+}
+
+/* Las dos tablas que NO salen de los bancos y por eso se capturan, igual que
+   hoy en el Excel. Solo la columna ISR de la nómina entra al impuesto; las
+   demás se llevan para tener el panorama completo de la semana. */
+const COLS_NOMINA = [
+  ["isr", "ISR"], ["imss", "IMSS"], ["fonacot", "FONACOT"], ["sar", "SAR"], ["impEstatal", "Imp. estatal"],
+  ["riesgo", "Riesgo trab."], ["imssEmp", "IMSS emp."], ["infonavit", "INFONAVIT"], ["guarderia", "Guardería"],
+  ["pmoEmpr", "PMO empr."], ["infonavitEmp", "INFONAVIT emp."], ["ajuste", "Ajuste"], ["art174", "Art. 174"],
+];
+
+function TablasCaptura({ libro, grabar, retenciones }) {
+  const nom = libro.nomina || [], ret = libro.retenciones || [];
+  const setNom = (l) => grabar({ ...libro, nomina: l });
+  const setRet = (l) => grabar({ ...libro, retenciones: l });
+  const inp = "w-full px-1.5 py-1 text-[11px] font-mono text-right border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
+  const totNom = (k) => nom.reduce((a, n) => a + (+n[k] || 0), 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
+        <div className="px-3 py-2 bg-stone-50 border-b border-stone-200 flex items-center gap-2">
+          <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600">ISR por salarios</p>
+          <span className="text-[11px] text-stone-500">una semana por renglón · solo el ISR entra al impuesto</span>
+          <button onClick={() => setNom([...nom, { semana: "", isr: "" }])}
+            className="ml-auto px-2 py-1 text-[11px] rounded border border-stone-300 hover:bg-stone-50">+ Semana</button>
+        </div>
+        {nom.length === 0
+          ? <p className="px-3 py-3 text-xs text-stone-400">Sin semanas capturadas.</p>
+          : (
+            <table className="w-full text-[11px]">
+              <thead className="text-[9px] uppercase tracking-wider text-stone-400">
+                <tr><th className="px-2 py-1 text-left">Semana</th>
+                  {COLS_NOMINA.map(([k, t]) => <th key={k} className="px-2 py-1 text-right">{t}</th>)}
+                  <th className="px-2 py-1"></th></tr>
+              </thead>
+              <tbody>
+                {nom.map((n, i) => (
+                  <tr key={i} className="border-t border-stone-100">
+                    <td className="px-2 py-1">
+                      <input value={n.semana || ""} placeholder="WW45"
+                        onChange={(e) => setNom(nom.map((x, j) => (j === i ? { ...x, semana: e.target.value } : x)))}
+                        className="w-20 px-1.5 py-1 text-[11px] font-mono border border-stone-300 rounded" />
+                    </td>
+                    {COLS_NOMINA.map(([k]) => (
+                      <td key={k} className="px-1 py-1">
+                        <input type="number" step="0.01" value={n[k] ?? ""}
+                          onChange={(e) => setNom(nom.map((x, j) => (j === i ? { ...x, [k]: e.target.value } : x)))}
+                          className={inp} style={{ minWidth: 76 }} />
+                      </td>
+                    ))}
+                    <td className="px-1 py-1">
+                      <button onClick={() => setNom(nom.filter((_, j) => j !== i))} className="text-stone-400 hover:text-red-600">×</button>
+                    </td>
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-stone-300 bg-stone-50 font-semibold">
+                  <td className="px-2 py-1">Totales</td>
+                  {COLS_NOMINA.map(([k]) => <td key={k} className="px-2 py-1 text-right font-mono tabular-nums">{mx(totNom(k))}</td>)}
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+      </div>
+
+      <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
+        <div className="px-3 py-2 bg-stone-50 border-b border-stone-200 flex items-center gap-2">
+          <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600">ISR retenciones al extranjero</p>
+          <span className="text-[11px] text-stone-500">dólares × TC del día × un tercio</span>
+          <button onClick={() => setRet([...ret, { fecha: hoy(), dlls: "", tc: "", pct: RETENCION }])}
+            className="ml-auto px-2 py-1 text-[11px] rounded border border-stone-300 hover:bg-stone-50">+ Pago</button>
+        </div>
+        {ret.length === 0
+          ? <p className="px-3 py-3 text-xs text-stone-400">Sin pagos capturados.</p>
+          : (
+            <table className="w-full text-[11px]">
+              <thead className="text-[9px] uppercase tracking-wider text-stone-400">
+                <tr><th className="px-2 py-1 text-left">Fecha de pago</th><th className="px-2 py-1 text-right">Dólares pagados</th>
+                  <th className="px-2 py-1 text-right">TC del día</th><th className="px-2 py-1 text-right">% retención</th><th className="px-2 py-1 text-right">Asimilado MXN</th>
+                  <th className="px-2 py-1 text-right">Impuesto a pagar</th><th className="px-2 py-1 text-right">Total MXN</th><th></th></tr>
+              </thead>
+              <tbody>
+                {ret.map((r, i) => {
+                  const c = retenciones[i] || {};
+                  return (
+                    <tr key={i} className="border-t border-stone-100">
+                      <td className="px-2 py-1">
+                        <input type="date" value={r.fecha || ""}
+                          onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, fecha: e.target.value } : x)))}
+                          className="px-1.5 py-1 text-[11px] font-mono border border-stone-300 rounded" />
+                      </td>
+                      <td className="px-1 py-1"><input type="number" step="0.01" value={r.dlls ?? ""}
+                        onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, dlls: e.target.value } : x)))} className={inp} /></td>
+                      <td className="px-1 py-1"><input type="number" step="0.0001" value={r.tc ?? ""}
+                        onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, tc: e.target.value } : x)))} className={inp} /></td>
+                      <td className="px-1 py-1"><input type="number" step="0.00000001" value={r.pct ?? RETENCION}
+                        title="Un tercio por omisión. La hoja de Jesús lo enseña como 0.33 pero guarda 0.33333333."
+                        onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, pct: e.target.value } : x)))} className={inp} /></td>
+                      <td className="px-2 py-1 text-right font-mono tabular-nums text-stone-600">{mx(c.asimilado || 0)}</td>
+                      <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{mx(c.impPagar || 0)}</td>
+                      <td className="px-2 py-1 text-right font-mono tabular-nums text-stone-600">{mx(c.totalMxn || 0)}</td>
+                      <td className="px-1 py-1"><button onClick={() => setRet(ret.filter((_, j) => j !== i))} className="text-stone-400 hover:text-red-600">×</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+      </div>
+    </div>
+  );
+}
+
+
 function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }) {
   const [modo, setModo] = useState("resumen"); // resumen | nueva | movimientos
   const [editando, setEditando] = useState(null);
@@ -8283,6 +8711,7 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
           <button onClick={() => setModo("resumen")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "resumen" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Resumen</button>
           <button onClick={() => setModo("flujo")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "flujo" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Flujo semanal</button>
           <button onClick={() => setModo("movimientos")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "movimientos" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Movimientos</button>
+          <button onClick={() => setModo("libro")} className={`px-3 py-2 text-xs font-medium rounded ${modo === "libro" ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>Libro de bancos</button>
           <button onClick={() => setModo("nueva")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">+ Nueva operación</button>
         </div>
       </div>
@@ -8290,6 +8719,7 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
       {modo === "resumen" && <ResumenTesoreria {...{ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix, refrescarBancos, porRegistrar }} />}
       {modo === "flujo" && <FlujoSemanal {...{ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta }} />}
       {modo === "movimientos" && <Movimientos {...{ operaciones, saveOperaciones, cta, setAviso, onEditar: setEditando, refrescarBancos }} />}
+      {modo === "libro" && <LibroBancos {...{ operaciones, cta, tcFix, setAviso }} />}
     </div>
   );
 }
