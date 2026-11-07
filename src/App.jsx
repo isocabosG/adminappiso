@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 12";
+const RELEASE = "FACTURAS COMPRAS 13";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -2145,6 +2145,23 @@ const MODO_ZOHO = {
   "NOTA CREDITO": "Bank Transfer",
 };
 const modoZohoDe = (fp) => MODO_ZOHO[String(fp || "").toUpperCase()] || "Bank Transfer";
+
+// LO QUE NUNCA VA A TRAER FACTURA.  [7-nov-2026]
+//
+// Fran: «las comisiones bancarias no generan factura, por lo que no debe
+// escribir PENDIENTE; se registra como gasto en Zoho y se pone de referencia
+// el folio del ingreso que generó la comisión».
+//
+// PENDIENTE significa «viene una factura y hay que amarrarla». Ponérselo a un
+// cargo bancario deja un pendiente que nadie va a poder cerrar nunca, y a los
+// tres meses la lista de pendientes es puro ruido que ya nadie revisa.
+//
+// El banco no factura sus comisiones ni sus intereses: los cobra. Por eso
+// estos conceptos van derecho a gasto, y su referencia no es un folio fiscal
+// sino el FOLIO DEL MOVIMIENTO QUE LOS GENERÓ — el depósito que cobró la
+// comisión. Así el cargo queda amarrado a su causa y se puede auditar.
+const SIN_CFDI = /COMISION|COMISIONES|BANCARIA|TASAS BANCARIAS|INTERES|CARGOS DE TARJETA|CAMBIO DIVISA|PERDIDAS DE CAMBIO|GANANCIAS O PERDIDAS/;
+const noLleva  = (concepto) => SIN_CFDI.test(String(concepto || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase());
 
 const FORMAS_PAGO = [
   "CHEQUE", "EFECTIVO", "TRANSFERENCIA", "TARJ. CREDITO", "TARJ. DEBITO",
@@ -8752,7 +8769,7 @@ const comoIA = (file, b64) => {
   return null;
 };
 
-function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho, sinFactura, nPendiente, puedeGasto, faltaGasto }) {
+function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho, sinFactura, esperaFactura, nPendiente, puedeGasto, faltaGasto, concepto }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const refFac = useRef(null), refComp = useRef(null);
   const [sobreF, setSobreF] = useState(false), [sobreC, setSobreC] = useState(false);
@@ -8939,10 +8956,23 @@ Responde SOLO JSON compacto, sin markdown:
 
       {sinFactura && (
         <>
-          <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
-            Sin factura todavía: este movimiento se registra como <b>PENDIENTE {nPendiente}</b>. Cuando llegue la
-            factura, se edita el movimiento, se carga aquí y el folio pendiente se reemplaza por el número real.
-          </p>
+          {esperaFactura ? (
+            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
+              Sin factura todavía: este movimiento se registra como <b>PENDIENTE {nPendiente}</b>. Cuando llegue la
+              factura, se edita el movimiento, se carga aquí y el folio pendiente se reemplaza por el número real.
+            </p>
+          ) : (
+            <p className="text-[11px] text-stone-700 bg-stone-100 border border-stone-300 rounded px-2 py-1.5">
+              <b>Esto no va a traer factura.</b> El banco no factura sus comisiones ni sus intereses: los cobra. No se
+              marca como pendiente —sería un pendiente que nadie puede cerrar— y en Zoho va directo a gasto, con la
+              cuenta contable del concepto. En <b>Referencia</b> va el folio del ingreso que lo generó.
+            </p>
+          )}
+          <label className="flex items-start gap-2 text-[11px] text-stone-600">
+            <input type="checkbox" className="mt-0.5" checked={!!sm.noFactura || noLleva(concepto)} disabled={noLleva(concepto)}
+              onChange={(e) => setSm((x) => ({ ...x, noFactura: e.target.checked }))} />
+            <span>Este movimiento no va a tener factura{noLleva(concepto) ? <span className="text-stone-400"> — el concepto «{concepto}» nunca la trae</span> : null}.</span>
+          </label>
           <label className={`flex items-start gap-2 text-[11px] rounded px-2 py-1.5 border ${puedeGasto ? "bg-emerald-50 border-emerald-300 text-emerald-900" : "bg-stone-100 border-stone-300 text-stone-500"}`}>
             <input type="checkbox" className="mt-0.5" disabled={!puedeGasto} checked={!!sm.aGasto && !!puedeGasto}
               onChange={(e) => setSm((x) => ({ ...x, aGasto: e.target.checked }))} />
@@ -9118,6 +9148,11 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
   // renglón o se restaura un respaldo, y entonces hay dos PENDIENTE 7.
   const nPendiente = 1 + (operaciones || []).reduce((n, o) => Math.max(n, Number(String(o.pendiente || "").replace(/\D/g, "")) || 0), 0);
   const sinFactura = tipo === "egreso" && !sm.facturas.length;
+  // Un cargo bancario no espera factura: ni se marca pendiente ni se le
+  // reserva folio. `sm.noFactura` deja marcarlo a mano para los casos que la
+  // lista de conceptos no alcanza a cubrir.
+  const noEsperaFactura = sinFactura && (noLleva(f.concepto) || !!sm.noFactura);
+  const esperaFactura = sinFactura && !noEsperaFactura;
 
   const sumaFact = sm.facturas.reduce((a, x) => a + (+x.total || 0), 0);
   const cuadraSmart = sm.facturas.length === 0 || Math.abs(sumaFact - (+f.monto || 0)) < 0.5;
@@ -9173,7 +9208,8 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
       // Sin factura, el movimiento se queda con su folio de pendiente. Cuando
       // la factura llegue, se edita el movimiento, se carga en el campo smart
       // y este folio desaparece.
-      if (sinFactura) op.pendiente = inicial?.pendiente || `PENDIENTE ${nPendiente}`;
+      if (esperaFactura) op.pendiente = inicial?.pendiente || `PENDIENTE ${nPendiente}`;
+      else if (noEsperaFactura) { op.pendiente = ""; op.sinFacturaEsperada = true; }
       if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; }
       if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
       if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
@@ -9257,7 +9293,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
         ))}
       </div>
 
-      {tipo === "egreso" && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago), sinFactura, nPendiente, puedeGasto, faltaGasto }} />}
+      {tipo === "egreso" && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago), sinFactura, esperaFactura, nPendiente, puedeGasto, faltaGasto, concepto: f.concepto }} />}
 
       <div className="bg-white border border-stone-200 rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></div>
@@ -9316,7 +9352,17 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
         )}
 
 
-        <div><Lbl>Referencia</Lbl><input className={inp} value={f.referencia} onChange={(e) => set("referencia", e.target.value)} placeholder="Factura, SO, PO…" /></div>
+        <div><Lbl>{noEsperaFactura ? "Referencia · folio del ingreso que lo generó" : "Referencia"}</Lbl>
+          <input className={inp} list={noEsperaFactura ? "folios-ingresos" : undefined}
+            value={f.referencia} onChange={(e) => set("referencia", e.target.value)}
+            placeholder={noEsperaFactura ? "el depósito o movimiento que cobró el cargo" : "Factura, SO, PO…"} />
+          {noEsperaFactura && (
+            <datalist id="folios-ingresos">
+              {(operaciones || []).filter((o) => o.tipo === "ingreso" && o.referencia)
+                .slice(0, 60).map((o) => <option key={o.id} value={o.referencia}>{o.fecha} · {o.contraparte || ""} · {mx(o.monto)}</option>)}
+            </datalist>
+          )}
+        </div>
 
         <div className="md:col-span-3">
           <Lbl>Comprobante</Lbl>
@@ -9592,7 +9638,9 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
                     <td className="px-3 py-2 text-xs">{c?.nombre} {c?.moneda}</td>
                     <td className="px-3 py-2 text-xs font-mono text-stone-600">
                       {(o.smart?.facturas || []).map((fa) => fa.folio).filter(Boolean).join(", ")
-                        || (o.pendiente ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">{o.pendiente}</span> : <span className="text-stone-300">—</span>)}
+                        || (o.pendiente ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">{o.pendiente}</span>
+                          : o.sinFacturaEsperada ? <span className="text-[10px] text-stone-500">sin factura</span>
+                          : <span className="text-stone-300">—</span>)}
                       {o.smart?.pagoEnZoho?.numero && <span className="block text-[9px] text-emerald-700">pago Zoho #{o.smart.pagoEnZoho.numero}</span>}
                     </td>
                     <td className={`px-3 py-2 text-right font-mono ${o.tipo === "ingreso" ? "text-teal-700" : o.tipo === "egreso" ? "text-red-600" : "text-stone-600"}`}>
