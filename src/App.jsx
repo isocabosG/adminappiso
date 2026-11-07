@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FECHA LOCAL 3";
+const RELEASE = "PROVEEDOR EN SU CAMPO 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8108,6 +8108,44 @@ function Flujo({ tcFix, setAviso }) {
 
 const CATALOGOS_KEY = "iso3-zoho-catalogos";
 
+/* ---------------------------------------------------------------------------
+   LOS PROVEEDORES DE ZOHO, BIEN TRAIDOS  [7-nov-2026]
+
+   Dos cosas estaban mal en como se pedian:
+
+   1. `contact_type: "vendor"` NO FILTRA. Zoho lo acepta y devuelve clientes
+      igual —de 200 contactos, 107 eran clientes— y encima le pone
+      `vendor_name` a todos, asi que parecian proveedores. La lista del campo
+      PROVEEDOR venia medio llena de clientes, y el id de un cliente puesto
+      como `vendor_id` de un gasto Zoho lo rechaza. Se filtra aqui por
+      `contact_type`, que si viene bien en cada contacto.
+
+   2. Se pedia UNA pagina de 200 y `has_more_page` venia en true: los
+      proveedores de mas abajo del alfabeto no aparecian en la lista. Ahora se
+      recorren las paginas hasta que Zoho diga que ya no hay mas, con tope de
+      ocho (1,600 contactos) para que un catalogo enorme no deje la pantalla
+      colgada. Esto se baja UNA vez al dia.
+--------------------------------------------------------------------------- */
+async function traerProveedores() {
+  const out = [];
+  try {
+    for (let page = 1; page <= 8; page++) {
+      const r = await window.zohoBooks({ action: "list_contacts", params: { filter_by: "Status.Active", per_page: "200", page: String(page) } });
+      for (const x of (r?.contacts || [])) {
+        if (x.contact_type !== "vendor") continue;
+        const nombre = x.vendor_name || x.contact_name;
+        if (nombre) out.push({ id: String(x.contact_id), nombre });
+      }
+      if (!r?.page_context?.has_more_page) break;
+    }
+  } catch { /* lo que se alcanzo a traer sirve; el campo acepta texto libre */ }
+  return out;
+}
+
+// Para comparar lo que alguien escribio contra el nombre de Zoho sin que un
+// acento, un punto o una mayuscula lo tiren.
+const claveProv = (x) => String(x || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
 function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }) {
   const [modo, setModo] = useState("resumen"); // resumen | nueva | movimientos
   const [editando, setEditando] = useState(null);
@@ -8133,13 +8171,13 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
         if (v?.proveedores?.length && vivo) setCat(v);
         if (v?.fecha === hoy()) return;              // ya se bajó hoy
         const [pv, cc, ix] = await Promise.all([
-          window.zohoBooks({ action: "list_contacts", params: { contact_type: "vendor", filter_by: "Status.Active", per_page: "200" } }).catch(() => null),
+          traerProveedores(),
           window.zohoBooks({ action: "list_chart_of_accounts", params: { filter_by: "AccountType.Expense", per_page: "200" } }).catch(() => null),
           window.zohoBooks({ action: "list_taxes", params: { per_page: "100" } }).catch(() => null),
         ]);
         const nuevo = {
           fecha: hoy(),
-          proveedores: (pv?.contacts || []).map((x) => ({ id: x.contact_id, nombre: x.vendor_name || x.contact_name })).filter((x) => x.nombre),
+          proveedores: pv,
           conceptos: (cc?.chartofaccounts || []).filter((x) => x.is_active !== false)
             .map((x) => ({ id: x.account_id, nombre: x.account_name, codigo: x.account_code || "" })).filter((x) => x.nombre),
           impuestos: (ix?.taxes || []).filter((x) => x.is_inactive !== true)
@@ -9338,6 +9376,12 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
   // nombre: una casilla gris sin explicacion obliga a adivinar.  [7-nov-2026]
   const ctaApp = cuentas.find((c) => c.id === f.cuentaId);
   const rastreo = sm.pago?.claveRastreo || f.referencia || "";
+  // El contacto de Zoho detras del nombre escrito, si lo hay.
+  const provZoho = useMemo(() => {
+    const k = claveProv(f.contraparte);
+    return k ? (cat.proveedores || []).find((v) => claveProv(v.nombre) === k) || null : null;
+  }, [f.contraparte, cat.proveedores]);
+
   const faltaZoho = !sm.vendorId ? "primero busca las facturas en Zoho"
     : sm.facturas.some((x) => !x.billId) ? "falta amarrar alguna factura"
     : !cuadraSmart ? "la suma de las facturas no cuadra con el monto"
@@ -9416,6 +9460,10 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
           conceptoId: conceptoZoho.id, concepto: conceptoZoho.nombre,
           cuentaZohoId: ctaApp.zohoAccountId, fecha: f.fecha, monto: +f.monto || 0,
           referencia: f.referencia, proveedor: f.contraparte, nota: f.nota,
+          // El proveedor va en SU CAMPO de Zoho, no escondido en la nota.
+          // El campo es un datalist y un datalist solo da el nombre, asi que
+          // el id se busca aqui contra el catalogo que ya se bajo.
+          vendorId: provZoho?.id || "",
           taxId: f.taxId, impuestoIncluido: !!f.ivaIncluido,
         });
       }
@@ -9497,6 +9545,14 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
               <input className={inp} list="zoho-proveedores" value={f.contraparte} onChange={(e) => set("contraparte", e.target.value)}
                 placeholder={cat.proveedores.length ? "escribe y escoge de Zoho…" : ""} />
               <datalist id="zoho-proveedores">{cat.proveedores.map((v) => <option key={v.id} value={v.nombre} />)}</datalist>
+              {/* Que se vea ANTES de guardar si el nombre amarra con un
+                  contacto de Zoho. Despues ya no hay forma de saberlo sin
+                  abrir el gasto allá. */}
+              {tipo === "egreso" && f.contraparte.trim() && (
+                provZoho
+                  ? <p className="mt-1 text-[10px] text-emerald-700">✓ En Zoho: <b>{provZoho.nombre}</b> — se registra en el campo Proveedor.</p>
+                  : <p className="mt-1 text-[10px] text-amber-700">Este nombre no está en el catálogo de Zoho. El gasto se registra <b>sin proveedor</b> y el nombre queda en la descripción.</p>
+              )}
             </div>
           </>
         )}

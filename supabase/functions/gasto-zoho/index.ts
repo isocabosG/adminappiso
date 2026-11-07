@@ -151,19 +151,47 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: `No se pudo validar la cuenta bancaria: ${String((e as Error)?.message || e).slice(0, 180)}` }, 502);
     }
 
+    // EL PROVEEDOR VA EN SU CAMPO.  [7-nov-2026]
+    // Fran: «no salió el proveedor, más bien lo capturaste en notas, debe
+    // salir en proveedor». Antes solo se escribia el nombre en la descripcion
+    // porque la pantalla nunca mandaba el id. Ahora si lo manda, y aqui se
+    // comprueba que sea un contacto de tipo proveedor: el id de un CLIENTE
+    // puesto como `vendor_id` lo rechaza Zoho con un error que no dice nada.
+    let vendorOk = "";
+    if (vendorId) {
+      try {
+        const c = await z.get(`/contacts/${encodeURIComponent(vendorId)}`);
+        const ct: any = c?.contact;
+        if (!ct) return json({ ok: false, error: "Ese proveedor ya no existe en Zoho." }, 400);
+        if (txt(ct.contact_type) !== "vendor") {
+          return json({ ok: false, error: `«${txt(ct.contact_name)}» está en Zoho como cliente, no como proveedor. No se registró nada.` }, 400);
+        }
+        if (txt(ct.status) && txt(ct.status) !== "active") {
+          return json({ ok: false, error: `El proveedor «${txt(ct.contact_name)}» está inactivo en Zoho.` }, 400);
+        }
+        vendorOk = vendorId;
+      } catch (e) {
+        return json({ ok: false, error: `No se pudo validar el proveedor, asi que no se registro el gasto: ${String((e as Error)?.message || e).slice(0, 180)}` }, 502);
+      }
+    }
+
+    // El nombre solo se escribe en la descripcion cuando NO se pudo amarrar a
+    // un contacto: ahi es lo unico que queda para saber a quien se le pago.
+    const quien = vendorOk ? "" : proveedor;
+
     const cuerpo: Record<string, unknown> = {
       account_id: conceptoId,
       date: fecha,
       amount: Number(monto.toFixed(2)),
       paid_through_account_id: cuentaZoho,
       reference_number: referencia,
-      description: nota || [conceptoNombre, proveedor].filter(Boolean).join(" · ")
+      description: nota || [conceptoNombre, quien].filter(Boolean).join(" · ")
         || `Gasto registrado desde AdminAppISO${actor ? ` por ${actor}` : ""}`,
       is_inclusive_tax: taxId ? impuestoIncluido : false,
     };
     if (taxId) cuerpo.tax_id = taxId;
     if (currencyId) cuerpo.currency_id = currencyId;
-    if (vendorId) cuerpo.vendor_id = vendorId;
+    if (vendorOk) cuerpo.vendor_id = vendorOk;
 
     let creado: any;
     try { creado = await z.post("/expenses", cuerpo); }
@@ -175,6 +203,7 @@ Deno.serve(async (req) => {
       gastoId: txt(g.expense_id), referencia,
       cuenta: bancoNombre, concepto: conceptoNombre,
       impuesto: taxNombre || "sin impuesto", impuestoIncluido: taxId ? impuestoIncluido : false,
+      proveedor: txt(g.vendor_name) || proveedor, vendorId: vendorOk,
     };
 
     try {
