@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 7";
+const RELEASE = "FACTURAS COMPRAS 10";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -2114,6 +2114,37 @@ const TIPO_BANCOS = [
   "MATERIAL X IMPORTAR", "MATERIAL IMPORTADO", "GASOLINA", "VIATICOS",
   "CAJA CHICA", "FONACOT", "FLETE EXTRANJERO", "-",
 ];
+
+// CÓMO SE LLAMA CADA FORMA DE PAGO **EN ZOHO**.  [7-nov-2026]
+//
+// Fran: «te inventaste un método de pago que se llama banktransfer y ya
+// teníamos uno que se llama Bank Transfer; hay que usar los que están dados de
+// alta en Zoho».
+//
+// Zoho acepta cualquier cadena en `payment_mode` y da de alta un modo nuevo si
+// no la reconoce. Por eso mandar "banktransfer" creó un gemelo del "Bank
+// Transfer" que ya existía. Dos modos que significan lo mismo ensucian los
+// reportes y nadie los vuelve a juntar.
+//
+// Los de los pagos de CLIENTES en esta organización están en español del SAT
+// ("Transferencia electrónica de fondos", "Cheque nominativo", "Efectivo",
+// "Tarjeta de crédito"); el de proveedores que Fran vio se llama "Bank
+// Transfer". Lo que no esté confirmado cae en el más seguro y la pantalla
+// SIEMPRE enseña la cadena exacta que se va a mandar, para corregirla aquí en
+// vez de descubrirla en el reporte del mes.
+const MODO_ZOHO = {
+  "TRANSFERENCIA": "Bank Transfer",
+  "DISPERSION": "Bank Transfer",
+  "CARGO AUT.": "Bank Transfer",
+  "CAMBIO DIVISA": "Bank Transfer",
+  "EFECTIVO": "Efectivo",
+  "DEP. EFECTIVO": "Efectivo",
+  "CHEQUE": "Cheque nominativo",
+  "TARJ. CREDITO": "Tarjeta de crédito",
+  "TARJ. DEBITO": "Bank Transfer",
+  "NOTA CREDITO": "Bank Transfer",
+};
+const modoZohoDe = (fp) => MODO_ZOHO[String(fp || "").toUpperCase()] || "Bank Transfer";
 
 const FORMAS_PAGO = [
   "CHEQUE", "EFECTIVO", "TRANSFERENCIA", "TARJ. CREDITO", "TARJ. DEBITO",
@@ -8681,7 +8712,7 @@ const comoIA = (file, b64) => {
   return null;
 };
 
-function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho }) {
+function SmartEgreso({ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho }) {
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const refFac = useRef(null), refComp = useRef(null);
   const [sobreF, setSobreF] = useState(false), [sobreC, setSobreC] = useState(false);
@@ -8944,7 +8975,7 @@ Responde SOLO JSON compacto, sin markdown:
             <span>
               <b>Aplicar el pago en Zoho</b> y dejar estas facturas en <b>pagadas</b>.
               {puedeZoho
-                ? <span className="block text-[10px] opacity-80">Se registra contra la cuenta de Zoho que tenga asignada la cuenta de arriba. Si ya existe un pago con la misma clave de rastreo, no se crea otro.</span>
+                ? <span className="block text-[10px] opacity-80">Se registra contra la cuenta escogida arriba, con el modo <b>«{modoZoho}»</b>. Si ya existe un pago con la misma clave de rastreo, no se crea otro.</span>
                 : <span className="block text-[10px] text-amber-700">No se puede todavía: {faltaZoho}.</span>}
             </span>
           </label>
@@ -9052,7 +9083,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
         resZoho = await window.pagoProveedor({
           vendorId: sm.vendorId, cuentaZohoId: ctaApp.zohoAccountId,
           fecha: f.fecha, monto: +f.monto || 0, moneda: monedaDe(f.cuentaId), tc: +f.tc || tcFix,
-          referencia: rastreo,
+          referencia: rastreo, modoPago: modoZohoDe(f.formaPago),
           nota: `${f.contraparte || ""} · ${sm.facturas.map((x) => x.folio).filter(Boolean).join(", ")}`.slice(0, 480),
           facturas: sm.facturas.map((x) => ({ billId: x.billId, monto: +x.total || 0 })),
         });
@@ -9108,7 +9139,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
         ))}
       </div>
 
-      {tipo === "egreso" && !editando && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho }} />}
+      {tipo === "egreso" && !editando && <SmartEgreso {...{ sm, setSm, aplicar, puedeZoho, faltaZoho, modoZoho: modoZohoDe(f.formaPago) }} />}
 
       <div className="bg-white border border-stone-200 rounded-lg p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><Lbl>Fecha</Lbl><input type="date" className={inp} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></div>
@@ -9152,10 +9183,6 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
           </>
         )}
 
-        <div><Lbl>Estatus</Lbl><select className={inp} value={f.estatus} onChange={(e) => set("estatus", e.target.value)}>
-          <option value="confirmado">Confirmado (ya cayó / pagado)</option>
-          <option value="planeado">Planeado (por pagar / esperado)</option>
-        </select></div>
 
         <div><Lbl>Referencia</Lbl><input className={inp} value={f.referencia} onChange={(e) => set("referencia", e.target.value)} placeholder="Factura, SO, PO…" /></div>
 
@@ -9183,11 +9210,196 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial }) {
   );
 }
 
+/* ---------------------------------------------------------------------------
+   VISOR DE UN MOVIMIENTO  [7-nov-2026]
+
+   Fran: «poder ver ahí un pop up con las previas de la factura, el pago y los
+   documentos de cada movimiento».
+
+   Junta en una sola pantalla las tres cosas que hoy viven separadas: lo que
+   dice el CFDI, lo que dice el banco y lo que quedó registrado en Zoho. Quien
+   revisa un pago tres meses después no tiene que abrir tres sistemas para
+   saber si cuadra.
+
+   Los archivos viven en un bucket PRIVADO, así que no tienen URL fija: se pide
+   una liga firmada que dura una hora. Si el bucket o el archivo ya no están,
+   se dice en vez de dejar un recuadro roto.
+--------------------------------------------------------------------------- */
+function VisorMovimiento({ op, cuenta, onCerrar }) {
+  const sm = op.smart || {};
+  const [ligas, setLigas] = useState({});   // ruta -> url firmada | "error"
+  const archivos = [
+    ...(sm.archivos || []).map((a) => ({ ...a, que: "Factura" })),
+    ...(sm.comprobanteArchivo ? [{ ...sm.comprobanteArchivo, que: "Comprobante" }] : []),
+  ];
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const out = {};
+      for (const a of archivos) {
+        try {
+          const { data, error } = await supabase.storage.from(BUCKET_TES).createSignedUrl(a.ruta, 3600);
+          out[a.ruta] = error ? "error" : data?.signedUrl || "error";
+        } catch { out[a.ruta] = "error"; }
+      }
+      if (vivo) setLigas(out);
+    })();
+    return () => { vivo = false; };
+  }, [op.id]);
+
+  const esImagen = (n) => /\.(png|jpe?g|webp|gif)$/i.test(String(n || ""));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 overflow-y-auto" onClick={onCerrar}>
+      <div className="bg-white rounded-xl max-w-4xl w-full my-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-5 py-3 border-b border-stone-200">
+          <div>
+            <p className="text-sm font-semibold">{op.contraparte || TIPOS_OP[op.tipo]}</p>
+            <p className="text-[11px] text-stone-500">
+              {op.fecha} · {cuenta?.nombre} {cuenta?.moneda} · {op.categoria || "—"} · {op.formaPago || "—"}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-lg font-mono font-semibold">{op.moneda} ${mx(op.monto)}</p>
+            <button onClick={onCerrar} className="text-xs text-stone-500 hover:text-stone-800">Cerrar ✕</button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Facturas */}
+          {(sm.facturas || []).length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Facturas</p>
+              <table className="w-full text-[11px]">
+                <thead className="text-[9px] uppercase tracking-wider text-stone-400">
+                  <tr><th className="text-left py-0.5">Folio</th><th className="text-left">Fecha</th>
+                    <th className="text-right">Subtotal</th><th className="text-right">IVA</th><th className="text-right">Total</th>
+                    <th className="text-left pl-3">En Zoho</th></tr>
+                </thead>
+                <tbody>
+                  {sm.facturas.map((fa, i) => (
+                    <tr key={i} className="border-t border-stone-100">
+                      <td className="py-1 font-mono font-semibold">{fa.folio || "—"}
+                        {fa.uuid && <span className="block text-[9px] font-normal text-stone-400">{fa.uuid}</span>}</td>
+                      <td className="text-stone-600">{fa.fecha || "—"}</td>
+                      <td className="text-right font-mono">{mx(fa.subtotal)}</td>
+                      <td className="text-right font-mono">{mx(fa.iva)}</td>
+                      <td className="text-right font-mono font-semibold">{mx(fa.total)}</td>
+                      <td className="pl-3 font-mono text-stone-600">{fa.billNumero || "—"}
+                        {fa.empatePor && <span className="block text-[9px] text-stone-400">por {fa.empatePor}</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* El pago */}
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">El pago, según el banco</p>
+              <dl className="text-[11px] space-y-0.5">
+                {[["Banco origen", sm.pago?.bancoOrigen], ["Cuenta origen", sm.pago?.cuentaOrigen],
+                  ["Beneficiario", sm.pago?.beneficiario], ["Cuenta destino", sm.pago?.cuentaDestino],
+                  ["Clave de rastreo", sm.pago?.claveRastreo], ["Folio del banco", sm.pago?.folioBanco]]
+                  .filter(([, v]) => v).map(([k, v]) => (
+                    <div key={k} className="flex gap-2"><dt className="text-stone-400 w-32 shrink-0">{k}</dt>
+                      <dd className="font-mono text-stone-700 break-all">{v}</dd></div>
+                  ))}
+              </dl>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">En Zoho</p>
+              {sm.pagoEnZoho?.pagoId ? (
+                <div className="text-[11px] bg-emerald-50 border border-emerald-300 rounded p-2">
+                  <p className="text-emerald-900 font-semibold">Pago #{sm.pagoEnZoho.numero} aplicado</p>
+                  <p className="text-emerald-800">Proveedor: {sm.zohoProveedor || sm.proveedor}</p>
+                  {sm.pagoEnZoho.yaExistia && <p className="text-amber-700">Ya existía con esa clave de rastreo; no se creó otro.</p>}
+                  <p className="text-[9px] font-mono text-stone-400 mt-1">{sm.pagoEnZoho.pagoId}</p>
+                </div>
+              ) : (
+                <p className="text-[11px] text-stone-500 bg-stone-50 border border-stone-200 rounded p-2">
+                  No se aplicó en Zoho. Este movimiento solo vive en la libreta de la app.
+                </p>
+              )}
+              {sm.descuadrado && (
+                <p className="mt-2 text-[11px] text-red-700 bg-red-50 border border-red-300 rounded p-2">
+                  Se registró <b>sin cuadrar</b>: las facturas suman ${mx(sm.descuadrado.suma)} y el pago fue ${mx(sm.descuadrado.pago)}.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Los documentos */}
+          {archivos.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Documentos</p>
+              <div className="grid md:grid-cols-2 gap-3">
+                {archivos.map((a) => {
+                  const u = ligas[a.ruta];
+                  return (
+                    <div key={a.ruta} className="border border-stone-200 rounded overflow-hidden">
+                      <div className="flex items-center justify-between px-2 py-1 bg-stone-50 border-b border-stone-200">
+                        <span className="text-[10px] font-mono text-stone-600 truncate">{a.que} · {a.nombre}</span>
+                        {u && u !== "error" && <a href={u} target="_blank" rel="noreferrer" className="text-[10px] text-teal-700 hover:underline shrink-0 ml-2">Abrir</a>}
+                      </div>
+                      <div className="h-64 bg-stone-100 flex items-center justify-center">
+                        {!u ? <span className="text-[11px] text-stone-400">Cargando…</span>
+                          : u === "error" ? <span className="text-[11px] text-red-600 px-3 text-center">No se pudo abrir el archivo. Puede que ya no esté en el almacén.</span>
+                          : esImagen(a.nombre) ? <img src={u} alt={a.nombre} className="max-h-full max-w-full object-contain" />
+                          : <iframe src={u} title={a.nombre} className="w-full h-full" />}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {op.nota && <p className="text-[11px] text-stone-600"><span className="text-stone-400">Nota: </span>{op.nota}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Todo lo que de un movimiento se puede buscar escribiendo. Se arma una sola
+// cadena por renglón y se buscan TODAS las palabras del buscador dentro de
+// ella: así «mifel kca» encuentra lo que trae las dos, en cualquier orden, sin
+// que nadie tenga que escoger primero en qué columna busca.  [7-nov-2026]
+const textoBuscable = (o, c, cd) => [
+  o.fecha, TIPOS_OP[o.tipo], o.contraparte, o.categoria, o.formaPago, o.referencia,
+  o.nota, o.comprobante, c?.nombre, c?.moneda, cd?.nombre, cd?.moneda,
+  o.smart?.proveedor, o.smart?.zohoProveedor, o.smart?.rfc,
+  o.smart?.pago?.bancoOrigen, o.smart?.pago?.beneficiario, o.smart?.pago?.claveRastreo,
+  o.smart?.pagoEnZoho?.numero,
+  ...(o.smart?.facturas || []).flatMap((f) => [f.folio, f.billNumero, f.uuid]),
+  String(o.monto ?? ""),
+].filter(Boolean).join(" ").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
 function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) {
   const [filtro, setFiltro] = useState("todos");
+  const [busca, setBusca] = useState("");
+  const [orden, setOrden] = useState("desc");   // por fecha
+  const [viendo, setVer] = useState(null);      // operación abierta en el visor
   const [confirmando, setConfirmando] = useState(null); // op
   const [paso, setPaso] = useState(1);
-  const rows = operaciones.filter((o) => filtro === "todos" || o.tipo === filtro || (filtro === "planeado" && o.estatus === "planeado"));
+
+  const rows = useMemo(() => {
+    const palabras = busca.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().split(/\s+/).filter(Boolean);
+    return operaciones
+      .filter((o) => filtro === "todos" || o.tipo === filtro || (filtro === "planeado" && o.estatus === "planeado"))
+      .filter((o) => {
+        if (!palabras.length) return true;
+        const t = textoBuscable(o, cta(o.cuentaId), o.cuentaDestinoId ? cta(o.cuentaDestinoId) : null);
+        return palabras.every((w) => t.includes(w));
+      })
+      .sort((a, b) => {
+        const d = String(b.fecha || "").localeCompare(String(a.fecha || ""));
+        return orden === "desc" ? d : -d;
+      });
+  }, [operaciones, filtro, busca, orden, cta]);
 
   const confirmar = (id) => {
     saveOperaciones(operaciones.map((o) => (o.id === id ? { ...o, estatus: "confirmado" } : o)));
@@ -9208,6 +9420,14 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
         {[["todos", "Todos"], ["ingreso", "Ingresos"], ["egreso", "Egresos"], ["traspaso", "Traspasos"], ["cambio", "Cambios"], ["planeado", "Planeados"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`px-2.5 py-1.5 text-xs rounded ${filtro === k ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>{t}</button>
         ))}
+        <input value={busca} onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar proveedor, banco, tipo, factura, fecha…"
+          className="px-2 py-1.5 border border-stone-300 rounded text-xs w-72" />
+        <button onClick={() => setOrden(orden === "desc" ? "asc" : "desc")}
+          title="Ordenar por fecha" className="px-2.5 py-1.5 text-xs rounded border border-stone-300 text-stone-600">
+          Fecha {orden === "desc" ? "↓ reciente primero" : "↑ antigua primero"}
+        </button>
+        <span className="text-xs text-stone-500 self-center">{rows.length} de {operaciones.length}</span>
       </div>
       {rows.length === 0 ? (
         <div className="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">Sin operaciones. Registra la primera con "+ Nueva operación".</div>
@@ -9216,7 +9436,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
           <table className="w-full min-w-[760px] text-sm">
             <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
               <th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Tipo</th><th className="text-left px-3 py-2">Detalle</th>
-              <th className="text-left px-3 py-2">Cuenta</th><th className="text-right px-3 py-2">Monto</th><th className="text-left px-3 py-2">Estatus</th><th className="px-3 py-2"></th>
+              <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Factura</th><th className="text-right px-3 py-2">Monto</th><th className="text-left px-3 py-2">Estatus</th><th className="px-3 py-2"></th>
             </tr></thead>
             <tbody>
               {rows.slice(0, 300).map((o) => {
@@ -9231,13 +9451,20 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
                       {o.comprobante && <span className="text-teal-600"> · 📎</span>}
                     </td>
                     <td className="px-3 py-2 text-xs">{c?.nombre} {c?.moneda}</td>
+                    <td className="px-3 py-2 text-xs font-mono text-stone-600">
+                      {(o.smart?.facturas || []).map((fa) => fa.folio).filter(Boolean).join(", ") || <span className="text-stone-300">—</span>}
+                      {o.smart?.pagoEnZoho?.numero && <span className="block text-[9px] text-emerald-700">pago Zoho #{o.smart.pagoEnZoho.numero}</span>}
+                    </td>
                     <td className={`px-3 py-2 text-right font-mono ${o.tipo === "ingreso" ? "text-teal-700" : o.tipo === "egreso" ? "text-red-600" : "text-stone-600"}`}>
                       {o.tipo === "ingreso" ? "+" : o.tipo === "egreso" ? "−" : ""}{mx(o.monto)}
                     </td>
                     <td className="px-3 py-2">
-                      <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${o.estatus === "confirmado" ? "bg-teal-100 text-teal-800" : "bg-amber-100 text-amber-800"}`}>{o.estatus === "confirmado" ? "Confirmado" : "Planeado"}</span>
+                      {/* «Pagado», como dice Zoho. El dato interno sigue siendo
+                          `confirmado`: lo usa el saldo y el flujo semanal. */}
+                      <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${o.estatus === "confirmado" ? "bg-teal-100 text-teal-800" : "bg-amber-100 text-amber-800"}`}>{o.estatus === "confirmado" ? "Pagado" : "Planeado"}</span>
                     </td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">
+                      {o.smart && <button onClick={() => setVer(o)} className="px-2 py-1 text-[11px] text-violet-700 hover:bg-violet-50 rounded font-medium">Ver</button>}
                       <button onClick={() => pedirEditar(o)} className="px-2 py-1 text-[11px] text-stone-600 hover:bg-stone-100 rounded">Editar</button>
                       {o.estatus === "planeado" && <button onClick={() => confirmar(o.id)} className="px-2 py-1 text-[11px] text-teal-700 hover:bg-teal-50 rounded">Confirmar</button>}
                       <button onClick={() => borrar(o.id)} className="px-2 py-1 text-[11px] text-stone-400 hover:text-red-600">×</button>
@@ -9249,6 +9476,8 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar }) 
           </table>
         </div>
       )}
+
+      {viendo && <VisorMovimiento op={viendo} cuenta={cta(viendo.cuentaId)} onCerrar={() => setVer(null)} />}
 
       {/* Modal ¡AGUAS! doble confirmación */}
       {confirmando && (

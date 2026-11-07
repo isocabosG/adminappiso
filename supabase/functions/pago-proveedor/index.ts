@@ -74,6 +74,12 @@ Deno.serve(async (req) => {
     const referencia = txt(body.referencia);          // clave de rastreo del SPEI
     const moneda = txt(body.moneda) || "MXN";
     const nota = txt(body.nota).slice(0, 500);
+    // EL MODO DE PAGO LO DA LA APP, Y TIENE QUE SER UNO QUE YA EXISTA EN ZOHO.
+    // [7-nov-2026] La primera version mandaba "banktransfer" a secas y Zoho,
+    // que acepta cualquier cadena, dio de alta un modo NUEVO al lado del
+    // "Bank Transfer" que ya existia. Dos modos que significan lo mismo
+    // ensucian los reportes de contabilidad y nadie los vuelve a juntar.
+    const modoPago = txt(body.modoPago) || "Bank Transfer";
     const facturas = Array.isArray(body.facturas) ? body.facturas : [];
 
     if (!vendorId) return json({ ok: false, error: "Falta el proveedor de Zoho." }, 400);
@@ -135,7 +141,7 @@ Deno.serve(async (req) => {
       vendor_id: vendorId,
       date: fecha,
       amount: Number(monto.toFixed(2)),
-      payment_mode: "banktransfer",
+      payment_mode: modoPago,
       paid_through_account_id: cuentaZoho,
       reference_number: referencia,
       description: nota || `Pago registrado desde AdminAppISO${actor ? ` por ${actor}` : ""}`,
@@ -163,7 +169,7 @@ Deno.serve(async (req) => {
       });
       let prev: any[] = [];
       if (r.ok) { const rows = await r.json(); if (rows?.[0]?.value) prev = JSON.parse(rows[0].value)?.registros || []; }
-      const registros = [{ ts: new Date().toISOString(), actor, vendorId, cuentaZoho, fecha, monto, referencia, ...salida }, ...prev].slice(0, 500);
+      const registros = [{ ts: new Date().toISOString(), actor, vendorId, cuentaZoho, fecha, monto, referencia, modoPago, ...salida }, ...prev].slice(0, 500);
       await fetch(`${SB}/rest/v1/adm_kv`, {
         method: "POST",
         headers: { apikey: SRV, Authorization: `Bearer ${SRV}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
