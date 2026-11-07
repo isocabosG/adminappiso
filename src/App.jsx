@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "COMPLEMENTO DE PAGO 1";
+const RELEASE = "COMPLEMENTO Y OC 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8934,6 +8934,16 @@ function FlujoSemanal({ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta
    propia revisión: es la primera vez que esta app mueve dinero allá.
 --------------------------------------------------------------------------- */
 const BUCKET_TES = "tesoreria";
+
+// Sube un archivo al bucket privado y devuelve su ruta. El nombre se limpia:
+// Storage no acepta acentos ni espacios.
+const subirTes = async (file, carpeta) => {
+  const limpio = String(file.name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9._-]/g, "_");
+  const ruta = `${carpeta}/${Date.now()}-${limpio}`;
+  const { error } = await supabase.storage.from(BUCKET_TES).upload(ruta, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw new Error(`No se pudo subir ${file.name}: ${error.message}`);
+  return ruta;
+};
 const limpiaFolio = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 // LOS PRIMEROS 8 DEL FOLIO FISCAL.  [7-nov-2026]
@@ -9293,8 +9303,8 @@ Responde SOLO JSON compacto, sin markdown:
 function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { proveedores: [], conceptos: [], impuestos: [] }, operaciones = [] }) {
   const [tipo, setTipo] = useState(inicial?.tipo || "egreso");
   const [f, setF] = useState(inicial
-    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "", concepto: inicial.concepto || "", taxId: inicial.taxId || "", ivaIncluido: inicial.ivaIncluido !== false }
-    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "", concepto: "", taxId: "", ivaIncluido: true });
+    ? { fecha: inicial.fecha || hoy(), cuentaId: inicial.cuentaId || cuentas[0]?.id || "", cuentaDestinoId: inicial.cuentaDestinoId || "", contraparte: inicial.contraparte || "", categoria: inicial.categoria || "", monto: inicial.monto ?? "", montoDestino: inicial.montoDestino ?? "", tc: inicial.tc || tcFix, estatus: inicial.estatus || "confirmado", referencia: inicial.referencia || "", comprobante: inicial.comprobante || "", nota: inicial.nota || "", formaPago: inicial.formaPago || "", concepto: inicial.concepto || "", taxId: inicial.taxId || "", ivaIncluido: inicial.ivaIncluido !== false, ocOv: inicial.ocOv || "" }
+    : { fecha: hoy(), cuentaId: cuentas[0]?.id || "", cuentaDestinoId: "", contraparte: "", categoria: "", monto: "", montoDestino: "", tc: tcFix, estatus: "confirmado", referencia: "", comprobante: "", nota: "", formaPago: "", concepto: "", taxId: "", ivaIncluido: true, ocOv: "" });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const inp = "w-full px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
   const monedaDe = (id) => cuentas.find((c) => c.id === id)?.moneda || "";
@@ -9382,6 +9392,46 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
     return k ? (cat.proveedores || []).find((v) => claveProv(v.nombre) === k) || null : null;
   }, [f.contraparte, cat.proveedores]);
 
+  /* -------------------------------------------------------------------------
+     LA ORDEN DE COMPRA, SOLA  [7-nov-2026]
+
+     Fran: «cuando damos de alta un nuevo movimiento, la casilla de OC / OVTA
+     es donde, si existe en Zoho una orden de compra, ahí pone en automático la
+     orden de compra».
+
+     Es la columna OC / OVTA del libro de bancos, la que amarra un pago con lo
+     que se ordenó. Hoy se escribe a mano o se deja en blanco, y en blanco no
+     sirve para nada: nadie puede cruzar el pago contra la orden después.
+
+     En cuanto el proveedor amarra con un contacto de Zoho se le piden SUS
+     órdenes de compra. Si tiene una sola, se pone; si tiene varias se ofrecen
+     en la lista con fecha e importe, porque adivinar cuál de cuatro sería
+     peor que no poner nada. Un proveedor de servicios normalmente no tiene
+     ninguna —KCA Consulting, por ejemplo— y entonces el campo se queda libre.
+  ------------------------------------------------------------------------- */
+  const [ordenes, setOrdenes] = useState([]);
+  const [buscandoOC, setBuscandoOC] = useState(false);
+  useEffect(() => {
+    const vid = provZoho?.id;
+    if (!vid || tipo !== "egreso" || typeof window.zohoBooks !== "function") { setOrdenes([]); return; }
+    let vivo = true;
+    setBuscandoOC(true);
+    (async () => {
+      try {
+        const r = await window.zohoBooks({ action: "list_purchase_orders", params: { vendor_id: vid, per_page: "50", sort_column: "date" } });
+        const lista = (r?.purchaseorders || []).map((x) => ({
+          numero: x.purchaseorder_number || "", fecha: x.date || "", total: +x.total || 0, estado: x.status || "",
+        })).filter((x) => x.numero);
+        if (!vivo) return;
+        setOrdenes(lista);
+        // Una sola: se pone. Varias: que escoja, pero sin pisar lo escrito.
+        if (lista.length === 1) setF((x) => (x.ocOv ? x : { ...x, ocOv: lista[0].numero }));
+      } catch { if (vivo) setOrdenes([]); }
+      finally { if (vivo) setBuscandoOC(false); }
+    })();
+    return () => { vivo = false; };
+  }, [provZoho?.id, tipo]);
+
   const faltaZoho = !sm.vendorId ? "primero busca las facturas en Zoho"
     : sm.facturas.some((x) => !x.billId) ? "falta amarrar alguna factura"
     : !cuadraSmart ? "la suma de las facturas no cuadra con el monto"
@@ -9431,7 +9481,7 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
       // y este folio desaparece.
       if (esperaFactura) op.pendiente = inicial?.pendiente || `PENDIENTE ${nPendiente}`;
       else if (noEsperaFactura) { op.pendiente = ""; op.sinFacturaEsperada = true; }
-      if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; }
+      if (tipo === "ingreso" || tipo === "egreso") { op.contraparte = f.contraparte; op.ocOv = f.ocOv || ""; }
       if (tipo === "traspaso") { op.cuentaDestinoId = f.cuentaDestinoId; }
       if (tipo === "cambio") { op.cuentaDestinoId = f.cuentaDestinoId; op.tc = +f.tc || tcFix; op.montoDestino = +f.montoDestino || (monedaDe(f.cuentaId) === "MXN" ? (+f.monto || 0) / (+f.tc || tcFix) : (+f.monto || 0) * (+f.tc || tcFix)); }
 
@@ -9554,6 +9604,23 @@ function NuevaOperacion({ cuentas, tcFix, onCancel, onSave, inicial, cat = { pro
                   : <p className="mt-1 text-[10px] text-amber-700">Este nombre no está en el catálogo de Zoho. El gasto se registra <b>sin proveedor</b> y el nombre queda en la descripción.</p>
               )}
             </div>
+
+            <div><Lbl>OC / OVTA</Lbl>
+              <input className={inp} list="zoho-ordenes" value={f.ocOv} onChange={(e) => set("ocOv", e.target.value)}
+                placeholder={tipo === "egreso" ? (buscandoOC ? "buscando órdenes en Zoho…" : ordenes.length ? "escoge la orden de compra…" : "orden de compra, si hay") : "orden de venta, si hay"} />
+              <datalist id="zoho-ordenes">
+                {ordenes.map((oc) => <option key={oc.numero} value={oc.numero}>{`${oc.fecha} · $${mx(oc.total)}`}</option>)}
+              </datalist>
+              {tipo === "egreso" && provZoho && !buscandoOC && (
+                ordenes.length === 1 && f.ocOv === ordenes[0].numero
+                  ? <p className="mt-1 text-[10px] text-emerald-700">Única orden de compra de este proveedor en Zoho — puesta sola.</p>
+                  : ordenes.length > 1
+                    ? <p className="mt-1 text-[10px] text-stone-500">{ordenes.length} órdenes de compra de este proveedor en Zoho. Escoge cuál.</p>
+                    : ordenes.length === 0
+                      ? <p className="mt-1 text-[10px] text-stone-400">Este proveedor no tiene órdenes de compra en Zoho.</p>
+                      : null
+              )}
+            </div>
           </>
         )}
 
@@ -9656,6 +9723,7 @@ function VisorMovimiento({ op, cuenta, onCerrar }) {
   const archivos = [
     ...(sm.archivos || []).map((a) => ({ ...a, que: "Factura" })),
     ...(sm.comprobanteArchivo ? [{ ...sm.comprobanteArchivo, que: "Comprobante" }] : []),
+    ...(op.complemento?.archivo ? [{ ...op.complemento.archivo, que: "Complemento de pago" }] : []),
   ];
 
   useEffect(() => {
@@ -9859,7 +9927,7 @@ function renglonesLibro(o, cta) {
     tipo: guion(o.categoria),
     formaPago: guion(o.formaPago),
     nombre: guion(o.contraparte || o.concepto),
-    ocOv: "-",
+    ocOv: guion(o.ocOv),
     factura: guion(facturas || o.pendiente),
     complemento: guion(o.complemento?.numero),
     referencia: guion(o.referencia),
@@ -10015,7 +10083,7 @@ const textoBuscable = (o, c, cd) => [
   o.nota, o.comprobante, c?.nombre, c?.moneda, cd?.nombre, cd?.moneda,
   o.smart?.proveedor, o.smart?.zohoProveedor, o.smart?.rfc,
   o.smart?.pago?.bancoOrigen, o.smart?.pago?.beneficiario, o.smart?.pago?.claveRastreo,
-  o.smart?.pagoEnZoho?.numero, o.pendiente, o.concepto, o.complemento?.numero,
+  o.smart?.pagoEnZoho?.numero, o.pendiente, o.concepto, o.complemento?.numero, o.ocOv,
   ...(o.smart?.facturas || []).flatMap((f) => [f.folio, f.billNumero, f.uuid]),
   String(o.monto ?? ""),
 ].filter(Boolean).join(" ").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -10094,7 +10162,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
      bancos, que es donde Jesús lo necesita.
   ------------------------------------------------------------------------- */
   const [sel, setSel] = useState(() => new Set());
-  const [comp, setComp] = useState({ numero: "", fecha: "" });
+  const [comp, setComp] = useState({ numero: "", fecha: "", uuid: "", archivo: null, leyendo: false, err: null, guardando: false });
 
   // Un traspaso entre cuentas propias no genera complemento: no hay CFDI.
   const aplicaComp = (o) => o.tipo === "egreso" || o.tipo === "ingreso";
@@ -10108,24 +10176,88 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
   const seleccionados = operaciones.filter((o) => sel.has(o.id));
   const algunoConComp = seleccionados.some(tieneComp);
 
-  const aplicarComplemento = () => {
+  const limpiarComp = () => { setSel(new Set()); setComp({ numero: "", fecha: "", uuid: "", archivo: null, leyendo: false, err: null, guardando: false }); };
+
+  /* EL PDF ESCRIBE EL FOLIO, NO JESUS.
+     Fran: «mi idea era que arrastre Jesús el archivo PDF, que lo guarde, y que
+     escriba el folio en la casilla COMPLEMENTO».
+
+     Teclear un folio de CFDI a mano es la forma más fácil de equivocarse en un
+     dígito, y un complemento con el folio mal puesto no sirve para nada: no
+     amarra con la factura cuando el SAT o el contador lo busquen. Se lee del
+     PDF y se deja editable, por si el documento viene raro.
+
+     Mismo criterio que con las facturas: manda el folio del documento, y si no
+     trae —un REP sin serie ni folio visible— se usan los primeros 8 del folio
+     fiscal, que es lo que ya se hace en el campo smart. */
+  const leerComplemento = async (file) => {
+    if (!file) return;
+    setComp((x) => ({ ...x, archivo: file, leyendo: true, err: null }));
+    try {
+      const b = comoIA(file, await fileToB64(file));
+      if (!b) throw new Error("Ese archivo no se puede leer. Sube el PDF del complemento.");
+      const data = await window.aiExtract({ model: "claude-sonnet-5", max_tokens: 1200, messages: [{ role: "user", content: [b, { type: "text", text: `Eres contador en una empresa mexicana. Te paso un CFDI de COMPLEMENTO DE PAGO (REP, tipo de comprobante "P") que un proveedor nos emitió.
+
+Responde SOLO JSON compacto, sin markdown:
+{"folio":"","uuid":"","fecha":"YYYY-MM-DD","emisor":"","importe":0}
+
+- "folio" es el número del documento que imprime el proveedor (serie y folio, por ejemplo "REP-1182" o "A 2273"). NO el folio fiscal.
+- "uuid" es el folio fiscal del SAT, 36 caracteres con guiones.
+- "fecha" es la fecha de emisión del complemento.
+- "importe" es el monto total pagado que ampara el complemento.
+- Si un dato no aparece, déjalo en "" o en 0. No inventes nada.
+- Solo el JSON.` }] }] });
+      if (data && (data.error || data.type === "error")) throw new Error("Anthropic: " + (data.error?.message || JSON.stringify(data.error)));
+      const txt = (data.content || []).filter((i) => i.type === "text").map((i) => i.text).join("").replace(/```json|```/g, "").trim();
+      const r = extraerJSON(txt);
+      const folio = String(r.folio || "").trim() || uuid8(r.uuid);
+      setComp((x) => ({
+        ...x, leyendo: false,
+        numero: folio || x.numero,
+        fecha: r.fecha || x.fecha,
+        uuid: String(r.uuid || "").trim(),
+        err: folio ? null : "No se encontró el folio en el PDF. Escríbelo a mano.",
+      }));
+    } catch (e) {
+      setComp((x) => ({ ...x, leyendo: false, err: e?.message || String(e) }));
+    }
+  };
+
+  const aplicarComplemento = async () => {
     const numero = comp.numero.trim();
-    if (!numero || !sel.size) return;
-    const complemento = { numero, fecha: comp.fecha || hoy(), ts: new Date().toISOString() };
-    saveOperaciones(operaciones.map((o) => (sel.has(o.id) ? { ...o, complemento } : o)));
-    setAviso({ t: "ok", m: `Complemento ${numero} aplicado a ${sel.size} movimiento${sel.size === 1 ? "" : "s"}.` });
-    setSel(new Set()); setComp({ numero: "", fecha: "" });
+    if (!numero || !sel.size || comp.guardando) return;
+    setComp((x) => ({ ...x, guardando: true, err: null }));
+    try {
+      // El PDF se sube UNA vez: es un solo documento que ampara varios pagos,
+      // no una copia por movimiento.
+      let archivo = null;
+      if (comp.archivo) {
+        const ruta = await subirTes(comp.archivo, `complementos/${String(comp.fecha || hoy()).slice(0, 4)}`);
+        archivo = { nombre: comp.archivo.name, ruta };
+      }
+      const complemento = { numero, fecha: comp.fecha || hoy(), uuid: comp.uuid || "", archivo, ts: new Date().toISOString() };
+      const cuantos = sel.size;
+      saveOperaciones(operaciones.map((o) => (sel.has(o.id) ? { ...o, complemento: { ...complemento, archivo: archivo || o.complemento?.archivo || null } } : o)));
+      setAviso({ t: "ok", m: `Complemento ${numero} aplicado a ${cuantos} movimiento${cuantos === 1 ? "" : "s"}${archivo ? " con su PDF" : ""}.` });
+      limpiarComp();
+    } catch (e) {
+      setComp((x) => ({ ...x, guardando: false, err: e?.message || String(e) }));
+    }
   };
 
   const quitarComplemento = () => {
     if (!sel.size) return;
+    const cuantos = sel.size;
     saveOperaciones(operaciones.map((o) => (sel.has(o.id) ? { ...o, complemento: null } : o)));
-    setAviso({ t: "ok", m: `Complemento quitado de ${sel.size} movimiento${sel.size === 1 ? "" : "s"}.` });
-    setSel(new Set()); setComp({ numero: "", fecha: "" });
+    setAviso({ t: "ok", m: `Complemento quitado de ${cuantos} movimiento${cuantos === 1 ? "" : "s"}.` });
+    limpiarComp();
   };
 
   // «Cambiar»: lo deja solo en la barra, con su folio puesto.
-  const editarComp = (o) => { setSel(new Set([o.id])); setComp({ numero: o.complemento?.numero || "", fecha: o.complemento?.fecha || "" }); };
+  const editarComp = (o) => {
+    setSel(new Set([o.id]));
+    setComp({ numero: o.complemento?.numero || "", fecha: o.complemento?.fecha || "", uuid: o.complemento?.uuid || "", archivo: null, leyendo: false, err: null, guardando: false });
+  };
 
   const [borrando, setBorrando] = useState(null);   // { op, trabajando, err }
   const pedirBorrar = (o) => setBorrando({ op: o, trabajando: false, err: null });
@@ -10190,21 +10322,37 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
               {sel.size > 3 ? ` · y ${sel.size - 3} más` : ""}
             </p>
           </div>
+          {/* Arrastra el PDF aquí y él escribe el folio. Teclearlo a mano es
+              donde se cambia un dígito y el complemento deja de amarrar. */}
+          <label
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); leerComplemento(e.dataTransfer.files?.[0]); }}
+            className="flex items-center gap-2 px-3 py-2 border-2 border-dashed border-emerald-400 rounded cursor-pointer bg-white/60 hover:bg-white">
+            <input type="file" accept="application/pdf,image/*" className="hidden"
+              onChange={(e) => { leerComplemento(e.target.files?.[0]); e.target.value = ""; }} />
+            <span className="text-sm">📄</span>
+            <span className="text-[10px] leading-tight text-emerald-900">
+              {comp.leyendo ? <b>Leyendo el complemento…</b>
+                : comp.archivo ? <><b>{comp.archivo.name}</b><br /><span className="text-emerald-700">se guarda al aplicar</span></>
+                : <><b>Arrastra el PDF del complemento</b><br /><span className="text-emerald-700">se guarda y de ahí sale el folio</span></>}
+            </span>
+          </label>
           <div>
             <label className="block text-[9px] uppercase tracking-widest text-emerald-800">Folio del complemento</label>
             <input value={comp.numero} onChange={(e) => setComp((x) => ({ ...x, numero: e.target.value }))}
-              placeholder="el folio del CFDI de pago"
+              placeholder="sale del PDF, o escríbelo"
               onKeyDown={(e) => { if (e.key === "Enter") aplicarComplemento(); }}
-              className="px-2 py-1 text-xs font-mono bg-white border border-emerald-300 rounded w-64 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+              className="px-2 py-1 text-xs font-mono bg-white border border-emerald-300 rounded w-56 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+            {comp.uuid && <p className="text-[9px] font-mono text-emerald-700 mt-0.5">folio fiscal {comp.uuid}</p>}
           </div>
           <div>
             <label className="block text-[9px] uppercase tracking-widest text-emerald-800">Fecha</label>
             <input type="date" value={comp.fecha} onChange={(e) => setComp((x) => ({ ...x, fecha: e.target.value }))}
               className="px-2 py-1 text-xs font-mono bg-white border border-emerald-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-600" />
           </div>
-          <button onClick={aplicarComplemento} disabled={!comp.numero.trim()}
+          <button onClick={aplicarComplemento} disabled={!comp.numero.trim() || comp.leyendo || comp.guardando}
             className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
-            Aplicar a {sel.size}
+            {comp.guardando ? "Guardando…" : `Aplicar a ${sel.size}`}
           </button>
           {algunoConComp && (
             <button onClick={quitarComplemento}
@@ -10212,8 +10360,8 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
               Quitar complemento
             </button>
           )}
-          <button onClick={() => { setSel(new Set()); setComp({ numero: "", fecha: "" }); }}
-            className="px-2 py-1.5 text-xs text-emerald-800 hover:underline">cancelar</button>
+          <button onClick={limpiarComp} className="px-2 py-1.5 text-xs text-emerald-800 hover:underline">cancelar</button>
+          {comp.err && <p className="w-full text-[11px] text-red-700">{comp.err}</p>}
         </div>
       )}
 
@@ -10255,6 +10403,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
                     <td className="px-3 py-2 text-xs text-stone-600">
                       {o.tipo === "traspaso" || o.tipo === "cambio" ? `→ ${cd?.nombre} ${cd?.moneda}` : o.contraparte}
                       {o.categoria && <span className="text-stone-400"> · {o.categoria}</span>}
+                      {o.ocOv && <span className="text-stone-500 font-mono"> · OC {o.ocOv}</span>}
                       {o.comprobante && <span className="text-teal-600"> · 📎</span>}
                     </td>
                     <td className="px-3 py-2 text-xs">{rotuloCuenta(c)}</td>
@@ -10269,6 +10418,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
                       {tieneComp(o) ? (
                         <>
                           <span className="text-stone-700">{o.complemento.numero}</span>
+                          {o.complemento.archivo && <span className="text-teal-600" title={o.complemento.archivo.nombre}> 📎</span>}
                           <button onClick={() => editarComp(o)} className="block text-[9px] text-violet-700 hover:underline">cambiar</button>
                         </>
                       ) : aplicaComp(o) ? <span className="text-stone-300">—</span> : <span className="text-stone-200">—</span>}
@@ -10282,7 +10432,7 @@ function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, re
                       <span className={`px-2 py-0.5 text-[10px] rounded font-medium ${o.estatus === "confirmado" ? "bg-teal-100 text-teal-800" : "bg-amber-100 text-amber-800"}`}>{o.estatus === "confirmado" ? "Pagado" : "Planeado"}</span>
                     </td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">
-                      {(o.smart || o.pendiente) && <button onClick={() => setVer(o)} className="px-2 py-1 text-[11px] text-violet-700 hover:bg-violet-50 rounded font-medium">Ver</button>}
+                      {(o.smart || o.pendiente || o.complemento) && <button onClick={() => setVer(o)} className="px-2 py-1 text-[11px] text-violet-700 hover:bg-violet-50 rounded font-medium">Ver</button>}
                       <button onClick={() => pedirEditar(o)} className="px-2 py-1 text-[11px] text-stone-600 hover:bg-stone-100 rounded">Editar</button>
                       {o.estatus === "planeado" && <button onClick={() => confirmar(o.id)} className="px-2 py-1 text-[11px] text-teal-700 hover:bg-teal-50 rounded">Confirmar</button>}
                       <button onClick={() => pedirBorrar(o)} className="px-2 py-1 text-[11px] text-stone-400 hover:text-red-600">×</button>
