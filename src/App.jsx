@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "FACTURAS COMPRAS 5";
+const RELEASE = "FACTURAS COMPRAS 7";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -2062,23 +2062,31 @@ const SEED_CUENTAS = [
 // origen». Primero se compara la terminación, que es exacta; si la cuenta no
 // la tiene capturada, se cae al nombre del banco con la moneda. Si ni así,
 // NO se adivina: se pide que la escojan a mano.
+// Palabras que no distinguen a un banco de otro. Sin quitarlas, «Banca Mifel
+// Pesos» y «Banca Mifel Dólares» empatan con cualquier cosa que diga BANCA.
+const RUIDO_BANCO = new Set(["BANCA", "BANCO", "PESOS", "DOLARES", "MXN", "USD", "SA", "CV", "DE",
+  "CUENTA", "EFECTIVO", "INVERSION", "FONDO", "FONDOS", "CHICA", "TARJETA", "CREDITO", "DEBITO"]);
+const señas = (x) => String(x || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase()
+  .split(/[^A-Z0-9]+/).filter((t) => t.length > 2 && !RUIDO_BANCO.has(t));
+
 const cuentaDelPago = (pago, cuentas) => {
   const fin = String(pago?.cuentaOrigen || "").replace(/\D/g, "").slice(-4);
   if (fin) {
     const c = (cuentas || []).find((x) => String(x.ultimos || "").replace(/\D/g, "").slice(-4) === fin);
     if (c) return { cuenta: c, como: `terminación ${fin}` };
   }
-  const banco = String(pago?.bancoOrigen || "").toUpperCase();
+  // Las señas del banco del comprobante contra las del nombre de la cuenta, en
+  // los dos sentidos: el comprobante dice «Mifel» y Zoho «Banca Mifel Pesos».
+  const delBanco = señas(pago?.bancoOrigen);
   const mon = String(pago?.moneda || "MXN").toUpperCase();
-  if (banco) {
-    const pri = banco.split(/\s+/)[0];
-    const delBanco = (cuentas || []).filter((x) => {
-      const n = String(x.nombre || "").toUpperCase();
-      return n && (banco.includes(n) || (pri.length > 2 && n.includes(pri)));
-    });
-    const exacta = delBanco.find((x) => String(x.moneda || "").toUpperCase() === mon);
-    if (exacta) return { cuenta: exacta, como: `banco y moneda (${exacta.nombre} ${exacta.moneda})` };
-    if (delBanco.length === 1) return { cuenta: delBanco[0], como: `banco (${delBanco[0].nombre})` };
+  if (delBanco.length) {
+    const candidatas = (cuentas || []).filter((x) => señas(x.nombre).some((t) => delBanco.includes(t)));
+    const mismaMoneda = candidatas.filter((x) => String(x.moneda || "").toUpperCase() === mon);
+    // Entre varias de la misma moneda gana la del nombre más corto: «Banca
+    // Mifel Pesos» antes que «Banca Mifel Dólares Inversion».
+    const elegida = [...mismaMoneda].sort((a, b) => String(a.nombre).length - String(b.nombre).length)[0];
+    if (elegida) return { cuenta: elegida, como: `banco y moneda (${elegida.nombre})` };
+    if (candidatas.length === 1) return { cuenta: candidatas[0], como: `banco (${candidatas[0].nombre})` };
   }
   return null;
 };
@@ -2230,7 +2238,45 @@ function App({ perfil, correo }) {
       setCatalogo(await load("iso3-catalogo", SEED_CATALOGO));
       setFletes(await load("iso3-fletes", SEED_FLETES));
       setPedimentos(await load("iso3-pedimentos", []));
-      setCuentas(await load("iso3-cuentas", SEED_CUENTAS));
+      // LAS CUENTAS SON LAS DE ZOHO.  [7-nov-2026]
+      //
+      // Fran: «ahí deberían salir las cuentas que el resumen sí jala de Zoho,
+      // así se asocia». Tiene razón y mata un problema entero: hasta hoy la app
+      // tenía su propio catálogo de ocho cuentas inventadas —«Mifel MXN»— que
+      // había que amarrar a mano con las de Zoho —«Banca Mifel Pesos»—. Dos
+      // listas que no se llaman igual y que alguien tiene que mantener a la par
+      // no es un catálogo, es una fuente de errores con dos nombres.
+      //
+      // Ahora la cuenta que escoges ES la de Zoho: su `id` es el
+      // `paid_through_account_id` contra el que se registra el pago. No hay
+      // nada que asociar.
+      //
+      // De la app solo sobrevive `ultimos` (la terminación que imprime el
+      // comprobante del banco), que Zoho no tiene y sirve para reconocer de
+      // dónde salió un pago. Se guarda en `iso3-cuentas` por id de Zoho y se
+      // pega encima. Si el caché de Zoho todavía no existe, se usa la semilla
+      // vieja para no dejar la pantalla sin cuentas.
+      const extra = await load("iso3-cuentas", []);
+      const porId = new Map((Array.isArray(extra) ? extra : []).map((c) => [String(c.id), c]));
+      let bancos = [];
+      try {
+        const rb = await window.storage?.get(BANCOS_KEY);
+        const vb = rb?.value ? JSON.parse(rb.value) : null;
+        bancos = (vb?.cuentas || []).filter((b) => b.activa !== false);
+      } catch { /* sin caché de Zoho se cae a la semilla */ }
+      setCuentas(bancos.length
+        ? bancos.map((b) => ({
+            id: String(b.id), nombre: b.nombre, moneda: b.moneda,
+            // El saldo que reporta Zoho hoy es la base, igual que antes lo era
+            // la semilla capturada a mano. Encima se suman las operaciones de
+            // la app. OJO: el día que una operación se aplique TAMBIÉN en Zoho,
+            // se contaría dos veces — está anotado como la decisión pendiente.
+            saldoZoho: +b.saldo || 0, saldo: +b.saldo || 0, tipo: b.tipo || "bank",
+            // La cuenta de Zoho es ella misma: ya no hay dos catálogos.
+            zohoAccountId: String(b.id),
+            ultimos: porId.get(String(b.id))?.ultimos || "",
+          }))
+        : (Array.isArray(extra) && extra.length ? extra : SEED_CUENTAS));
       setOperaciones(await load("iso3-operaciones", []));
       setTcFix(await load("iso3-tcfix", 17.5));
       setProyData(await load("iso3-proyectos", {}));
@@ -8301,19 +8347,7 @@ function SaldosZoho({ tcFix }) {
 }
 
 function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix }) {
-  // Las cuentas bancarias de Zoho, del cache que deja el panel de arriba. Hacen
-  // falta para decir DE CUAL sale el pago cuando se registra alla: la app tiene
-  // su propia lista y los dos catalogos no se parecen. Pagar desde la cuenta
-  // equivocada no se corrige con un clic, asi que se escoge una vez, aqui, y no
-  // en la prisa de cada pago.  [7-nov-2026]
-  const [bancosZ, setBancosZ] = useState([]);
-  useEffect(() => { (async () => {
-    try {
-      const r = await window.storage?.get(BANCOS_KEY);
-      const v = r?.value ? JSON.parse(r.value) : null;
-      setBancosZ((v?.cuentas || []).filter((b) => b.activa !== false));
-    } catch { /* sin cache, el selector sale vacio y se dice */ }
-  })(); }, []);
+
   return (
     <div className="space-y-4">
       {/* Saldos REALES de Zoho — es el numero bueno */}
@@ -8350,7 +8384,6 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
           <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
             <th className="text-left px-3 py-2">Cuenta</th><th className="text-left px-3 py-2">Moneda</th>
             <th className="text-left px-3 py-2" title="Los últimos dígitos que imprime el comprobante del banco. Con esto el campo smart de egresos reconoce de qué cuenta salió el pago.">Últimos 4</th>
-            <th className="text-left px-3 py-2" title="Contra qué cuenta de Zoho se registra el pago. Sin esto, el egreso se queda solo en la libreta de la app.">Cuenta en Zoho</th>
             <th className="text-right px-3 py-2">Saldo</th><th className="text-right px-3 py-2">USD equiv.</th>
           </tr></thead>
           <tbody>
@@ -8363,14 +8396,6 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
                     onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, ultimos: e.target.value.replace(/\D/g, "").slice(0, 4) } : x)))}
                     className="w-16 px-1.5 py-0.5 text-xs font-mono border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
                 </td>
-                <td className="px-3 py-2">
-                  <select value={c.zohoAccountId || ""}
-                    onChange={(e) => saveCuentas(cuentas.map((x) => (x.id === c.id ? { ...x, zohoAccountId: e.target.value } : x)))}
-                    className="px-1.5 py-0.5 text-xs border border-stone-300 rounded bg-white max-w-[13rem]">
-                    <option value="">{bancosZ.length ? "— sin asignar —" : "— trae los saldos de Zoho primero —"}</option>
-                    {bancosZ.map((b) => <option key={b.id} value={b.id}>{b.nombre} · {b.moneda}</option>)}
-                  </select>
-                </td>
                 <td className="px-3 py-2 text-right font-mono">{mx(saldos[c.id] || 0)}</td>
                 <td className="px-3 py-2 text-right font-mono text-stone-500">${mx(enUSD(saldos[c.id] || 0, c.moneda, tcFix))}</td>
               </tr>
@@ -8380,6 +8405,11 @@ function ResumenTesoreria({ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix,
       </div>
         </div>
       </details>
+      <p className="text-[11px] text-stone-500">
+        Las cuentas son <b>las de Zoho</b>: la que escoges en un movimiento es contra la que se registra el pago
+        allá. Ya no hay nada que asociar. <b>Últimos 4</b> es lo único que la app guarda por su cuenta — la
+        terminación que imprime el comprobante del banco, con la que el campo smart reconoce de dónde salió un pago.
+      </p>
       <p className="text-xs text-stone-500">La proyección semana a semana está en la pestaña <strong>Flujo semanal</strong> y se calcula sobre la libreta interna, no sobre Zoho.</p>
     </div>
   );
