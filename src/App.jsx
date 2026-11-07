@@ -7238,7 +7238,6 @@ function MrpCompras({ setAviso }) {
               <th className="text-right px-1 py-2 w-10">#</th>
               <th className="text-left px-2 py-2">SKU</th>
               <th className="text-left px-2 py-2">DESCRIPCION</th>
-              <th className="text-left px-2 py-2">PROVEEDOR</th>
               <th className="text-right px-2 py-2">BACK ORDER</th>
               <th className="text-right px-2 py-2" title="Apartado en órdenes de venta abiertas de Zoho. Es lo que reparten las columnas por mes.">POR SURTIR</th>
               <th className="text-right px-2 py-2">STOCK AL DIA</th>
@@ -7249,7 +7248,6 @@ function MrpCompras({ setAviso }) {
             </tr>
             <tr className="bg-stone-50 text-stone-700">
               <td className="px-1 py-1.5" colSpan={4}><span className="text-[10px] font-semibold">TOTALES</span></td>
-              <td className="px-2 py-1.5"></td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("backOrder"))}</td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("porSurtir"))}</td>
               <td className="px-2 py-1.5 text-right font-mono">{mx0(tot("stock"))}</td>
@@ -7260,7 +7258,7 @@ function MrpCompras({ setAviso }) {
             </tr>
           </thead>
           <tbody>
-            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
+            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length} /></tr>}
             {enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
@@ -7285,7 +7283,6 @@ function MrpCompras({ setAviso }) {
                   )}
                 </td>
                 <td className="px-2 text-stone-600 max-w-xs truncate" title={f.desc}>{f.desc}</td>
-                <td className="px-2 text-stone-500 max-w-[10rem] truncate" title={f.prov}>{f.prov}</td>
                 <td className="px-2 text-right font-mono"
                   title={f.lotes.length ? f.lotes.map((l) => `${l.oc}: ${l.qty} pza${l.eta ? ` · llega ${l.eta}` : " · sin fecha"}`).join("\n") : ""}>
                   {f.backOrder || ""}
@@ -7318,7 +7315,7 @@ function MrpCompras({ setAviso }) {
               </tr>
               {detalle === f.sku && (
                 <tr style={{ outline: "2px solid #7e22ce", outlineOffset: "-2px" }} className="bg-purple-50">
-                  <td colSpan={11 + mesesVisibles.length} className="px-3 py-2">
+                  <td colSpan={10 + mesesVisibles.length} className="px-3 py-2">
                     {f.lineas.length === 0 ? (
                       <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta.</p>
                     ) : (
@@ -7348,7 +7345,7 @@ function MrpCompras({ setAviso }) {
               )}
               </Fragment>
             ))}
-            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={11 + mesesVisibles.length} /></tr>}
+            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length} /></tr>}
           </tbody>
         </table>
       </div>
