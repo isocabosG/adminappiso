@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "LIBRO DE BANCOS 3";
+const RELEASE = "CARGAR CONCENTRADO 1";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8483,13 +8483,185 @@ async function exportarLibroMes(ym, E, renglones, libro, cuentas) {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
-function LibroBancos({ operaciones, cuentas, cta, tcFix, setAviso }) {
+/* ---------------------------------------------------------------------------
+   CARGAR EL CONCENTRADO DE JESÚS  [9-nov-2026]
+
+   Fran: «que de ahora en adelante ya se den en la app». Pero el mes ya corrió:
+   al 9 de noviembre Jesús lleva 170 movimientos en su Excel y Tesorería tiene
+   uno. Sin el histórico, el libro de bancos de la app no sirve para declarar ni
+   se puede comparar contra el suyo.
+
+   Esto lee su pestaña Concentrado y crea un movimiento por renglón, con el
+   mismo TIPO que él capturó. El TIPO importa más que el importe: es lo que
+   agrupa todo el Estimado, y es justo lo que Zoho no sabe —allá un pago es un
+   pago, que sea GASOLINA o DTA vive en su catálogo, no en la contabilidad—.
+
+   SE MARCAN COMO IMPORTADOS Y NO SE REENVÍAN A ZOHO. Compras ya los capturó
+   allá; volver a mandarlos duplicaría la contabilidad. Por eso el movimiento
+   entra con `origen: "excel"` y las pantallas que escriben en Zoho lo saltan.
+
+   La cuenta se reconoce por la CLAVE del libro —«BM MXN 01600699136»— que es
+   para lo que existe esa columna en el Resumen. Un renglón cuya clave no esté
+   dada de alta no se inventa: se reporta y se queda fuera.
+--------------------------------------------------------------------------- */
+const COL_CONC = { fecha: 1, tipo: 2, moneda: 3, formaPago: 4, banco: 5, cuenta: 6, monto: 7, nombre: 8, ocOv: 9, factura: 10, complemento: 11, referencia: 12 };
+
+const txtCelda = (v) => {
+  if (v == null) return "";
+  if (typeof v === "object" && v.richText) return v.richText.map((t) => t.text).join("");
+  if (typeof v === "object" && v.text) return String(v.text);
+  return String(v).trim();
+};
+const fechaCelda = (v) => {
+  if (v instanceof Date) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  const t = txtCelda(v);
+  return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : "";
+};
+const limpia = (x) => { const t = txtCelda(x); return t === "-" ? "" : t; };
+const claveIgual = (a, b) => String(a || "").replace(/\s+/g, "").toUpperCase() === String(b || "").replace(/\s+/g, "").toUpperCase();
+
+async function leerConcentrado(file, cuentas, operaciones) {
+  const ExcelJS = await traerExcelJS();
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await file.arrayBuffer());
+  const ws = wb.getWorksheet("Concentrado") || wb.worksheets[0];
+  if (!ws) throw new Error("El archivo no trae una pestaña Concentrado.");
+
+  // Por (fecha, monto, referencia) se reconoce un renglón ya cargado: volver a
+  // subir el mismo archivo no debe duplicar nada.
+  const huella = (f, m, r) => `${f}|${Math.round(Math.abs(m) * 100)}|${String(r || "").trim().toUpperCase()}`;
+  const yaEstan = new Set((operaciones || []).map((o) => huella(o.fecha, o.monto, o.referencia)));
+
+  const nuevos = [], sinCuenta = new Map(), repetidos = [];
+  let vacios = 0;
+
+  ws.eachRow((row, n) => {
+    if (n === 1) return;                                   // encabezados
+    const g = (k) => row.getCell(COL_CONC[k]).value;
+    const fecha = fechaCelda(g("fecha"));
+    const monto = Number(txtCelda(g("monto")).replace(/[^0-9.\-]/g, ""));
+    if (!fecha || !isFinite(monto) || monto === 0) { vacios++; return; }
+
+    const clave = limpia(g("cuenta")), banco = limpia(g("banco")), moneda = limpia(g("moneda")) || "MXN";
+    // Primero por clave del libro, que es única. Si el renglón no la trae, se
+    // cae a banco + moneda, que alcanza mientras no haya dos cuentas iguales.
+    let c = (cuentas || []).find((x) => clave && claveIgual(x.clave, clave));
+    if (!c) {
+      const cand = (cuentas || []).filter((x) => bancoCorto(x.nombre) === banco.toUpperCase() && x.moneda === moneda);
+      if (cand.length === 1) c = cand[0];
+    }
+    if (!c) { sinCuenta.set(clave || `${banco} ${moneda}`, (sinCuenta.get(clave || `${banco} ${moneda}`) || 0) + 1); return; }
+
+    const h = huella(fecha, monto, limpia(g("referencia")));
+    if (yaEstan.has(h)) { repetidos.push(fecha); return; }
+    yaEstan.add(h);
+
+    const comp = limpia(g("complemento"));
+    nuevos.push({
+      id: uid(),
+      // El signo del Concentrado manda: negativo sale, positivo entra.
+      tipo: monto < 0 ? "egreso" : "ingreso",
+      fecha, cuentaId: c.id, monto: Math.abs(monto), moneda: c.moneda || moneda,
+      estatus: "confirmado",
+      categoria: limpia(g("tipo")),                        // el TIPO de su catálogo
+      formaPago: limpia(g("formaPago")),
+      contraparte: limpia(g("nombre")),
+      ocOv: limpia(g("ocOv")),
+      referencia: limpia(g("referencia")),
+      facturaTexto: limpia(g("factura")),
+      complemento: comp ? { numero: comp, fecha, importado: true } : null,
+      origen: "excel",                                     // no se reenvía a Zoho
+      nota: "",
+    });
+  });
+
+  return { nuevos, sinCuenta: [...sinCuenta.entries()], repetidos: repetidos.length, vacios };
+}
+
+function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
+  const [subiendo, setSubiendo] = useState(null);   // { trabajando, resumen, err }
+
+  /* Sirve para cualquier mes: cada movimiento se va al mes de SU fecha, no al
+     que esté abierto en pantalla. Acepta varios archivos para subir el año de
+     un jalón. Los movimientos entran marcados como importados —ya viven en
+     Zoho— y no se reenvían. */
+  const subirConcentrado = async (files) => {
+    const lista = [...(files || [])];
+    if (!lista.length) return;
+    setSubiendo({ trabajando: true, total: lista.length });
+    try {
+      // Se acumula sobre la misma lista para que la huella de un renglón ya
+      // cargado valga también entre archivos de la misma tanda.
+      let acum = operaciones, nuevos = 0, repetidos = 0, vacios = 0;
+      const meses = new Set(), sinCuenta = new Map(), fallas = [];
+      for (const f of lista) {
+        setSubiendo({ trabajando: true, total: lista.length, archivo: f.name });
+        try {
+          const r = await leerConcentrado(f, cuentas, acum);
+          acum = [...r.nuevos, ...acum];
+          nuevos += r.nuevos.length; repetidos += r.repetidos; vacios += r.vacios;
+          r.nuevos.forEach((o) => meses.add(mesDe(o.fecha)));
+          r.sinCuenta.forEach(([k, n]) => sinCuenta.set(k, (sinCuenta.get(k) || 0) + n));
+        } catch (e) { fallas.push(`${f.name}: ${e?.message || e}`); }
+      }
+      const resumen = { nuevos, repetidos, vacios, fallas, meses: [...meses].sort(), sinCuenta: [...sinCuenta.entries()] };
+      if (!nuevos) {
+        setSubiendo({ resumen, err: repetidos ? "Todos los renglones ya estaban cargados." : (fallas[0] || "No se encontró ningún renglón aprovechable.") });
+        return;
+      }
+      saveOperaciones(acum);
+      setSubiendo({ resumen });
+      setAviso({ t: "ok", m: `${nuevos} movimiento(s) cargados de ${lista.length} archivo(s).` });
+    } catch (e) {
+      setSubiendo({ err: e?.message || String(e) });
+    }
+  };
+
+  return (
+    <div className="relative inline-block">
+      <label title="Sube el Excel de Jesús (pestaña Concentrado). Puedes seleccionar varios meses a la vez: cada movimiento se va al mes de su fecha y entra marcado como ya registrado en Zoho."
+        className="inline-block px-3 py-1.5 text-xs font-medium rounded border border-emerald-700 text-emerald-800 bg-white hover:bg-emerald-50 cursor-pointer">
+        <input type="file" accept=".xlsx" multiple className="hidden" disabled={!!subiendo?.trabajando}
+          onChange={(e) => { subirConcentrado(e.target.files); e.target.value = ""; }} />
+        {subiendo?.trabajando ? `Leyendo ${subiendo.archivo || "…"}` : "⤒ Subir Excel de Jesús"}
+      </label>
+
+      {/* Lo que entró, lo que no, y por qué. Un importador que solo dice
+          «listo» esconde justo lo que hay que revisar. */}
+      {subiendo && !subiendo.trabajando && (
+        <div className={`absolute left-0 mt-2 w-[30rem] max-w-[90vw] z-30 px-3 py-2 rounded border shadow-lg text-sm text-left ${subiendo.err ? "bg-amber-50 border-amber-300 text-amber-900" : "bg-teal-50 border-teal-300 text-teal-900"}`}>
+          {subiendo.err && <p>{subiendo.err}</p>}
+          {subiendo.resumen && (
+            <>
+              <p><b>{subiendo.resumen.nuevos}</b> movimiento(s) cargados
+                {subiendo.resumen.meses.length > 0 && <> en {subiendo.resumen.meses.map(nombreMes).join(", ")}</>}
+                {subiendo.resumen.repetidos > 0 && <> · <b>{subiendo.resumen.repetidos}</b> ya estaban y se saltaron</>}
+                {subiendo.resumen.vacios > 0 && <> · {subiendo.resumen.vacios} renglón(es) sin fecha o sin importe</>}</p>
+              {subiendo.resumen.fallas.length > 0 && (
+                <p className="mt-1 text-[12px]">No se pudo leer: {subiendo.resumen.fallas.join(" · ")}</p>
+              )}
+              {subiendo.resumen.sinCuenta.length > 0 && (
+                <p className="mt-1 text-[12px]">
+                  <b>No se cargaron</b> los renglones de estas cuentas porque su clave no está dada de alta en el Resumen:{" "}
+                  {subiendo.resumen.sinCuenta.map(([k, n]) => `${k} (${n})`).join(" · ")}. Captúrala en la columna
+                  «Clave en el libro» y vuelve a subir el archivo.
+                </p>
+              )}
+            </>
+          )}
+          <button onClick={() => setSubiendo(null)} className="mt-1 text-[11px] underline">cerrar</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAviso }) {
   const [ym, setYm] = useState(() => mesDe(hoy()));
   const [libro, setLibro] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [cerrando, setCerrando] = useState(false);
   const [bajando, setBajando] = useState(false);
-
   // Un documento por mes, en su propia llave. Cargar otro mes es cambiar de
   // documento, no filtrar el mismo.
   useEffect(() => {
@@ -8607,6 +8779,7 @@ function LibroBancos({ operaciones, cuentas, cta, tcFix, setAviso }) {
                 onChange={(e) => grabar({ ...libro, tc: +e.target.value || 0 })}
                 className="w-24 px-2 py-1 text-sm font-mono rounded bg-white/15 border border-white/30 text-white placeholder-emerald-200 disabled:opacity-50" />
             </div>
+            <SubirConcentrado {...{ cuentas, operaciones, saveOperaciones, setAviso }} />
             <button onClick={bajar} disabled={bajando}
               title="Las tres pestañas en el mismo acomodo que la hoja de Jesús, celda por celda."
               className="px-3 py-1.5 text-xs rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-50">
@@ -8923,8 +9096,8 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
 
       {modo === "resumen" && <ResumenTesoreria {...{ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix, refrescarBancos, porRegistrar }} />}
       {modo === "flujo" && <FlujoSemanal {...{ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta }} />}
-      {modo === "movimientos" && <Movimientos {...{ operaciones, saveOperaciones, cta, setAviso, onEditar: setEditando, refrescarBancos }} />}
-      {modo === "libro" && <LibroBancos {...{ operaciones, cuentas, cta, tcFix, setAviso }} />}
+      {modo === "movimientos" && <Movimientos {...{ operaciones, saveOperaciones, cuentas, cta, setAviso, onEditar: setEditando, refrescarBancos }} />}
+      {modo === "libro" && <LibroBancos {...{ operaciones, saveOperaciones, cuentas, cta, tcFix, setAviso }} />}
     </div>
   );
 }
@@ -10563,7 +10736,7 @@ function renglonesLibro(o, cta) {
     formaPago: guion(o.formaPago),
     nombre: guion(o.contraparte || o.concepto),
     ocOv: guion(o.ocOv),
-    factura: guion(facturas || o.pendiente),
+    factura: guion(facturas || o.pendiente || o.facturaTexto),
     complemento: guion(o.complemento?.numero),
     referencia: guion(o.referencia),
   };
@@ -10723,7 +10896,7 @@ const textoBuscable = (o, c, cd) => [
   String(o.monto ?? ""),
 ].filter(Boolean).join(" ").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
-function Movimientos({ operaciones, saveOperaciones, cta, setAviso, onEditar, refrescarBancos }) {
+function Movimientos({ operaciones, saveOperaciones, cuentas, cta, setAviso, onEditar, refrescarBancos }) {
   const [filtro, setFiltro] = useState("todos");
   const [busca, setBusca] = useState("");
   const [orden, setOrden] = useState("desc");   // por fecha
@@ -10941,6 +11114,7 @@ Responde SOLO JSON compacto, sin markdown:
           className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
           {exportando ? "Armando…" : "⤓ Exportar a Excel"}
         </button>
+        <SubirConcentrado {...{ cuentas, operaciones, saveOperaciones, setAviso }} />
       </div>
       {errExcel && <p className="text-[11px] text-red-700">{errExcel}</p>}
 
