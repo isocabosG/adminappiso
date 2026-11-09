@@ -8527,10 +8527,29 @@ async function leerConcentrado(file, cuentas, operaciones) {
   const ws = wb.getWorksheet("Concentrado") || wb.worksheets[0];
   if (!ws) throw new Error("El archivo no trae una pestaña Concentrado.");
 
-  // Por (fecha, monto, referencia) se reconoce un renglón ya cargado: volver a
-  // subir el mismo archivo no debe duplicar nada.
-  const huella = (f, m, r) => `${f}|${Math.round(Math.abs(m) * 100)}|${String(r || "").trim().toUpperCase()}`;
-  const yaEstan = new Set((operaciones || []).map((o) => huella(o.fecha, o.monto, o.referencia)));
+  /* Un renglón ya cargado se reconoce por fecha + importe + referencia +
+     cuenta + signo. La cuenta y el signo van dentro porque un traspaso son dos
+     renglones con la MISMA referencia y el mismo importe —uno sale de una
+     cuenta y entra en la otra— y los dos tienen que cargarse.
+
+     Y se cuenta, no se marca: el libro trae renglones legítimamente idénticos
+     (dos pagos al mismo proveedor, mismo importe, misma referencia, el mismo
+     día) y su propio Estimado los suma los dos. Así que se permiten tantas
+     copias como ya haya, y a partir de ahí se saltan. Volver a subir el mismo
+     archivo no duplica nada, y un renglón repetido de verdad sí entra. */
+  const huella = (f, m, r, c, t) => `${f}|${Math.round(Math.abs(m) * 100)}|${String(r || "").trim().toUpperCase()}|${c || ""}|${t}`;
+  const yaEstan = new Map();
+  const apunta = (h) => yaEstan.set(h, (yaEstan.get(h) || 0) + 1);
+  (operaciones || []).forEach((o) => {
+    apunta(huella(o.fecha, o.monto, o.referencia, o.cuentaId, o.tipo));
+    // Un movimiento capturado en la app guarda como referencia la clave de
+    // rastreo del banco; en el libro viejo Jesús anota la referencia corta del
+    // comprobante. Son el mismo pago. Se apuntan las dos para que el renglón
+    // se reconozca y no entre otra vez.
+    const refPago = o.smart?.pago?.referencia;
+    if (refPago && String(refPago).trim().toUpperCase() !== String(o.referencia || "").trim().toUpperCase())
+      apunta(huella(o.fecha, o.monto, refPago, o.cuentaId, o.tipo));
+  });
 
   const nuevos = [], sinCuenta = new Map(), repetidos = [];
   let vacios = 0;
@@ -8546,15 +8565,28 @@ async function leerConcentrado(file, cuentas, operaciones) {
     // Primero por clave del libro, que es única. Si el renglón no la trae, se
     // cae a banco + moneda, que alcanza mientras no haya dos cuentas iguales.
     let c = (cuentas || []).find((x) => clave && claveIgual(x.clave, clave));
+    if (c && moneda && c.moneda && c.moneda !== moneda) c = null;   // clave pegada de otro renglón
     if (!c) {
-      const cand = (cuentas || []).filter((x) => bancoCorto(x.nombre) === banco.toUpperCase() && x.moneda === moneda);
+      let cand = (cuentas || []).filter((x) => bancoCorto(x.nombre) === banco.toUpperCase() && x.moneda === moneda);
+      // Una cuenta de banco antes que una tarjeta, un préstamo o una caja: un
+      // renglón del concentrado es dinero que entró o salió del banco.
+      if (cand.length > 1) {
+        const bancarias = cand.filter((x) => (x.tipo || "bank") === "bank");
+        if (bancarias.length) cand = bancarias;
+      }
+      // Y entre varias bancarias, la del nombre más corto: «BBVA Dólares»
+      // antes que «BBVA Dólares Dep. Garantía», que es otra cosa.
+      if (cand.length > 1) {
+        const corto = Math.min(...cand.map((x) => String(x.nombre).length));
+        cand = cand.filter((x) => String(x.nombre).length === corto);
+      }
       if (cand.length === 1) c = cand[0];
     }
     if (!c) { sinCuenta.set(clave || `${banco} ${moneda}`, (sinCuenta.get(clave || `${banco} ${moneda}`) || 0) + 1); return; }
 
-    const h = huella(fecha, monto, limpia(g("referencia")));
-    if (yaEstan.has(h)) { repetidos.push(fecha); return; }
-    yaEstan.add(h);
+    const h = huella(fecha, monto, limpia(g("referencia")), c.id, monto < 0 ? "egreso" : "ingreso");
+    const cuantos = yaEstan.get(h) || 0;
+    if (cuantos > 0) { yaEstan.set(h, cuantos - 1); repetidos.push(fecha); return; }
 
     const comp = limpia(g("complemento"));
     nuevos.push({
@@ -8619,11 +8651,11 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
 
   return (
     <div className="relative inline-block">
-      <label title="Sube el Excel de Jesús (pestaña Concentrado). Puedes seleccionar varios meses a la vez: cada movimiento se va al mes de su fecha y entra marcado como ya registrado en Zoho."
+      <label title="Sube el libro de bancos viejo en Excel (pestaña Concentrado). Puedes seleccionar varios meses a la vez: cada movimiento se va al mes de su fecha y entra marcado como ya registrado en Zoho."
         className="inline-block px-3 py-1.5 text-xs font-medium rounded border border-emerald-700 text-emerald-800 bg-white hover:bg-emerald-50 cursor-pointer">
         <input type="file" accept=".xlsx" multiple className="hidden" disabled={!!subiendo?.trabajando}
           onChange={(e) => { subirConcentrado(e.target.files); e.target.value = ""; }} />
-        {subiendo?.trabajando ? `Leyendo ${subiendo.archivo || "…"}` : "⤒ Subir Excel de Jesús"}
+        {subiendo?.trabajando ? `Leyendo ${subiendo.archivo || "…"}` : "⤒ Subir Libro de Bancos Antiguo"}
       </label>
 
       {/* Lo que entró, lo que no, y por qué. Un importador que solo dice
