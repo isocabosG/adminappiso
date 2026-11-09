@@ -53,7 +53,7 @@ function extraerJSON(txt) {
 // `__BUILD__` dice QUE build corre, pero es un numero que nadie reconoce de
 // memoria. Este rotulo dice QUE TRAE, y es lo que se mira de un vistazo para
 // saber si el despliegue ya entro. Se cambia a mano en cada entrega con nombre.
-const RELEASE = "LIBRO DE BANCOS 1";
+const RELEASE = "LIBRO DE BANCOS 3";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const mx = (n) => (isFinite(n) ? n.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—");
@@ -8172,14 +8172,27 @@ const IVA_TASA = 1.16;
 // Los seis renglones fijos de cada bloque, en el orden de la hoja.
 const SEIS = [["BANREGIO", "MXN"], ["BANREGIO", "USD"], ["BBVA", "MXN"], ["BBVA", "USD"], ["MIFEL", "MXN"], ["MIFEL", "USD"]];
 
-/* Los conceptos de importación, cada uno con SU regla de IVA. Esto es criterio
+/* Los conceptos de importación, cada uno con SU regla. Esto es criterio
    contable de Jesús leído de sus fórmulas, no una convención general:
+
      todoIva  — el importe completo es IVA (el IVA de importación lo es)
      desglosa — 16% incluido, se parte en subtotal e IVA
-     sinIva   — no lleva IVA (DTA, IGI e incrementables son derechos, no IVA) */
+     sinIva   — no lleva IVA (DTA, IGI e incrementables son derechos, no IVA)
+
+     prevalida — como `desglosa`, pero el SUBTOTAL va en la columna TOTAL MXN y
+       la de subtotal se deja en «-». Se ve mal y es a propósito: así está en la
+       hoja de Jesús y Fran pidió que cuadre tal cual («SI NECESITAMOS QUE CUADRE
+       TAL CUAL LO TIENE EL», 9-nov-2026). Las dos hojas tienen que poder
+       compararse celda contra celda; si la app «corrige» el acomodo, el gran
+       total de TOTAL MXN difiere y parece que la app está mal.
+       El IVA no cambia en ningún caso, así que el impuesto sale igual.
+
+   Dato de Jesús que lo confirma: la prevalidación cuesta **383 MXN por evento**,
+   IVA incluido. Noviembre trae 3 eventos → 1,149 de total, 990.52 de subtotal y
+   158.48 de IVA, que son exactamente los números de su hoja. */
 const IMPO = [
   { label: "IVA", tipo: "IVA IMPORTACION", regla: "todoIva" },
-  { label: "PREVALIDACION", tipo: "PREVALIDACION", regla: "desglosa" },
+  { label: "PREVALIDACION", tipo: "PREVALIDACION", regla: "prevalida" },
   { label: "DTA", tipo: "DTA", regla: "sinIva" },
   { label: "IGI", tipo: "IGI", regla: "sinIva" },
   { label: "INCREMENTABLES", tipo: "INCREMENTABLES IMPO", regla: "sinIva" },
@@ -8223,6 +8236,11 @@ const bloqueImpo = (rs) => {
   for (const banca of BANCOS_IMPO) {
     for (const c of IMPO) {
       const mon = sumif(rs, c.tipo, banca, "MXN");
+      if (c.regla === "prevalida") {
+        const mxn = mon / IVA_TASA;                 // el subtotal, en la columna del total
+        out.push({ banca, moneda: "MXN", concepto: c.label, mon, mxn, sub: null, iva: mon - mxn });
+        continue;
+      }
       const sub = c.regla === "desglosa" ? mon / IVA_TASA : null;
       const iva = c.regla === "todoIva" ? mon : c.regla === "desglosa" ? mon - sub : null;
       out.push({ banca, moneda: "MXN", concepto: c.label, mon, mxn: mon, sub, iva });
@@ -8292,11 +8310,185 @@ function calcularEstimado(rs, libro) {
   };
 }
 
-function LibroBancos({ operaciones, cta, tcFix, setAviso }) {
+/* ---------------------------------------------------------------------------
+   EL LIBRO DEL MES, EN EL FORMATO DE JESÚS  [7-nov-2026]
+
+   Fran: «ese libro de bancos debe poderse exportar en Excel en el formato
+   idéntico al de Jesús».
+
+   Idéntico quiere decir LAS MISMAS CELDAS, no parecido: sus tres pestañas
+   —Estimado, Concentrado y Datos— con cada bloque arrancando donde arranca en
+   su archivo. Así puede abrir los dos lado a lado y comparar celda contra
+   celda, que es como se gana la confianza en un número de impuestos.
+
+   Mapa del Estimado, tal cual su hoja:
+     A1  INGRESOS                 I1  DEPÓSITOS EN GARANTÍA   Q1  GASTOS DE IMPORTACIÓN
+     A11 EGRESOS                  I11 TRASPASOS               Q19 SERVICIOS AL EXTRANJERO
+     A21 el cálculo de impuestos  I21 NO DEDUCIBLES
+     A32 nómina por semana        A42 retenciones al extranjero
+--------------------------------------------------------------------------- */
+const COLS_CONC = [
+  { h: "FECHA", k: "fecha", w: 12 }, { h: "TIPO", k: "tipo", w: 22 },
+  { h: "MONEDA", k: "moneda", w: 9 }, { h: "FORMA PAGO", k: "formaPago", w: 17 },
+  { h: "BANCO", k: "banco", w: 12 }, { h: "CUENTA", k: "cuenta", w: 24 },
+  { h: "MONTO", k: "monto", w: 15 }, { h: "NOMBRE", k: "nombre", w: 40 },
+  { h: "OC / OVTA", k: "ocOv", w: 14 }, { h: "FACTURA", k: "factura", w: 18 },
+  { h: "COMPLEMENTO", k: "complemento", w: 15 }, { h: "REFERENCIA", k: "referencia", w: 22 },
+];
+
+async function exportarLibroMes(ym, E, renglones, libro, cuentas) {
+  const ExcelJS = await traerExcelJS();
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "AdminAppISO · Innovación Solar";
+  wb.created = new Date();
+
+  const dinero = "#,##0.00;[Red]-#,##0.00";
+  const es = wb.addWorksheet("Estimado", { views: [{ state: "frozen", ySplit: 2 }] });
+  es.columns = [{ width: 15 }, { width: 9 }, { width: 9 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 3 },
+    { width: 15 }, { width: 9 }, { width: 9 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 3 },
+    { width: 3 }, { width: 3 }, { width: 15 }, { width: 9 }, { width: 17 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }];
+
+  const pon = (f, c, v, o = {}) => {
+    const cel = es.getCell(f, c);
+    cel.value = v;
+    if (o.num) { cel.numFmt = dinero; cel.alignment = { horizontal: "right" }; }
+    if (o.b) cel.font = { bold: true, size: o.size || 11, color: { argb: o.color || "FF1C1917" } };
+    if (o.fill) cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: o.fill } };
+    return cel;
+  };
+  const titulo = (f, c, t) => pon(f, c, t, { b: true, size: 12, color: "FFFFFFFF", fill: VERDE_ISO });
+  const encab = (f, c, hs) => hs.forEach((h, i) => pon(f, c + i, h, { b: true, size: 9, fill: VERDE_CLARO }));
+  const nada = (v) => (v == null ? "-" : v);
+
+  // Un bloque de seis renglones: banca, moneda, tc, total mon, total mxn, subtotal, iva.
+  const bloque = (f0, c0, nombre, filas, total, conTotal = true) => {
+    titulo(f0, c0, nombre);
+    encab(f0 + 1, c0, ["BANCA", "MONEDA", "TC", "TOTAL MON", "TOTAL MXN", "SUBTOTAL", "IVA"]);
+    filas.forEach((x, i) => {
+      const f = f0 + 2 + i;
+      pon(f, c0, x.banca); pon(f, c0 + 1, x.moneda); pon(f, c0 + 2, x.tc);
+      pon(f, c0 + 3, x.mon, { num: true }); pon(f, c0 + 4, x.mxn, { num: true });
+      pon(f, c0 + 5, nada(x.sub), { num: x.sub != null }); pon(f, c0 + 6, nada(x.iva), { num: x.iva != null });
+    });
+    if (!conTotal) return;
+    const f = f0 + 2 + filas.length;
+    pon(f, c0 + 2, "GRAN TOTAL", { b: true });
+    pon(f, c0 + 3, total.mon, { num: true, b: true }); pon(f, c0 + 4, total.mxn, { num: true, b: true });
+    pon(f, c0 + 5, total.sub, { num: true, b: true }); pon(f, c0 + 6, total.iva, { num: true, b: true });
+  };
+
+  bloque(1, 1, "INGRESOS", E.bloques.ingresos, E.totales.ingresos);
+  bloque(11, 1, "EGRESOS", E.bloques.egresos, E.totales.egresos);
+  bloque(1, 9, "DEPOSITOS EN GARANTIA", E.bloques.garantia, E.totales.garantia);
+  bloque(11, 9, "TRASPASOS ENTRE CUENTAS", E.bloques.traspasos, E.totales.traspasos, false);
+  bloque(21, 9, "NO DEDUCIBLES", E.bloques.noDeducibles, E.totales.noDeducibles);
+
+  // Importación: lleva CONCEPTO en vez de TC.
+  titulo(1, 17, "GASTOS DE IMPORTACION");
+  encab(2, 17, ["BANCA", "MONEDA", "CONCEPTO", "TOTAL MON", "TOTAL MXN", "SUBTOTAL", "IVA"]);
+  E.bloques.importacion.forEach((x, i) => {
+    const f = 3 + i;
+    pon(f, 17, x.banca); pon(f, 18, x.moneda); pon(f, 19, x.concepto);
+    pon(f, 20, x.mon, { num: true }); pon(f, 21, x.mxn, { num: true });
+    pon(f, 22, nada(x.sub), { num: x.sub != null }); pon(f, 23, nada(x.iva), { num: x.iva != null });
+  });
+  pon(15, 19, "GRAN TOTAL", { b: true });
+  pon(15, 20, E.totales.importacion.mon, { num: true, b: true }); pon(15, 21, E.totales.importacion.mxn, { num: true, b: true });
+  pon(15, 22, E.totales.importacion.sub, { num: true, b: true }); pon(15, 23, E.totales.importacion.iva, { num: true, b: true });
+
+  bloque(19, 17, "PAGOS SERVICIOS PROVEEDOR EXTRANJERO", E.bloques.extranjero, E.totales.extranjero);
+
+  // El cálculo de impuestos, en la columna A como en su hoja.
+  const I = E.impuestos;
+  const linea = (f, t, v, fuerte) => { pon(f, 1, t, { b: !!fuerte }); pon(f, 4, v, { num: true, b: !!fuerte }); };
+  linea(21, "TOTAL IVA TRASLADADO", I.ivaTrasladado);
+  linea(22, "TOTAL IVA ACREDITABLE", I.ivaAcreditable);
+  linea(23, "DIFERENCIA", I.diferencia);
+  linea(24, "ISR POR SALARIOS", I.isrSalarios);
+  linea(25, "ISR RETENCIONES EXTRANJERO", I.isrExtranjero);
+  linea(27, "TOTAL DE IMPUESTOS ESTIMADOS SALARIOS", I.totalSalarios, true);
+  linea(28, "TOTAL DE IMPUESTOS ESTIMADOS IVA", I.totalIva, true);
+  pon(29, 1, "GRAN TOTAL IMPUESTOS", { b: true, size: 12, color: "FFFFFFFF", fill: VERDE_ISO });
+  pon(29, 4, I.granTotal, { num: true, b: true, size: 12, color: "FFFFFFFF", fill: VERDE_ISO });
+
+  // Nómina por semana
+  pon(32, 1, "ISR POR SALARIOS", { b: true, color: "FFFFFFFF", fill: VERDE_ISO });
+  const hN = ["ISR", "IMSS", "FONACOT", "SAR", "IMP ESTATAL", "RIESGO TRAB", "IMSS EMP", "INFONAVIT", "GUARDERIA", "PMO EMPR", "INFONAVIT EMP", "AJUSTE", "ART174"];
+  encab(32, 2, hN);
+  const kN = ["isr", "imss", "fonacot", "sar", "impEstatal", "riesgo", "imssEmp", "infonavit", "guarderia", "pmoEmpr", "infonavitEmp", "ajuste", "art174"];
+  (libro.nomina || []).forEach((n, i) => {
+    pon(33 + i, 1, n.semana || "");
+    kN.forEach((k, j) => pon(33 + i, 2 + j, +n[k] || 0, { num: true }));
+  });
+  const fT = 33 + Math.max((libro.nomina || []).length, 1);
+  pon(fT, 1, "TOTALES", { b: true });
+  kN.forEach((k, j) => pon(fT, 2 + j, (libro.nomina || []).reduce((a, n) => a + (+n[k] || 0), 0), { num: true, b: true }));
+
+  // Retenciones al extranjero, una columna por pago, como su hoja
+  const fR = fT + 2;
+  pon(fR, 1, "ISR RETENCIONES EXTRANJERO", { b: true, color: "FFFFFFFF", fill: VERDE_ISO });
+  const etiquetas = ["CONCEPTO", "FECHA PAGO", "DLLS PAGADOS", "TC DIA", "ASIMILADO MXN", "% RETENCION", "IMP A PAGAR", "TOTAL MXN", "GRAN TOTAL MXN", "TOTAL USD"];
+  etiquetas.forEach((t, i) => pon(fR + 1 + i, 1, t, { b: i === 0 }));
+  (E.retenciones || []).forEach((r, j) => {
+    const c = 2 + j;
+    pon(fR + 1, c, `PAGO ${j + 1}`, { b: true });
+    pon(fR + 2, c, r.fecha || "");
+    pon(fR + 3, c, +r.dlls || 0, { num: true });
+    pon(fR + 4, c, +r.tc || 0);
+    pon(fR + 5, c, r.asimilado, { num: true });
+    pon(fR + 6, c, r.pct);
+    pon(fR + 7, c, r.impPagar, { num: true });
+    pon(fR + 8, c, r.totalMxn, { num: true });
+    pon(fR + 9, c, r.impPagar, { num: true, b: true });
+    pon(fR + 10, c, r.totalUsd, { num: true });
+  });
+
+  /* ---- Concentrado: los movimientos del mes, 12 columnas ---- */
+  const co = wb.addWorksheet("Concentrado", { views: [{ state: "frozen", ySplit: 1 }] });
+  co.columns = COLS_CONC.map((c) => ({ key: c.k, width: c.w }));
+  const hr = co.getRow(1);
+  COLS_CONC.forEach((c, i) => {
+    const cel = hr.getCell(i + 1);
+    cel.value = c.h;
+    cel.font = { bold: true, size: 10, color: { argb: "FFFFFFFF" } };
+    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF047857" } };
+    cel.alignment = { vertical: "middle", indent: 1 };
+  });
+  hr.height = 20;
+  renglones.forEach((d) => {
+    const r = co.addRow(d);
+    const cf = r.getCell(1); cf.numFmt = "dd/mm/yyyy"; if (d.fecha) cf.value = new Date(d.fecha + "T12:00:00");
+    const cm = r.getCell(7); cm.numFmt = dinero;
+    cm.font = { bold: true, color: { argb: d.monto < 0 ? "FFB91C1C" : "FF065F46" } };
+  });
+  co.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: COLS_CONC.length } };
+
+  /* ---- Datos: los catálogos de las listas ---- */
+  const da = wb.addWorksheet("Datos");
+  da.columns = [{ width: 24 }, { width: 10 }, { width: 18 }, { width: 12 }, { width: 24 }];
+  ["TIPO", "MONEDA", "FORMA PAGO", "BANCO", "CUENTA"].forEach((h, i) => {
+    const cel = da.getCell(1, i + 1);
+    cel.value = h; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF047857" } };
+  });
+  const claves = [...new Set((cuentas || []).map((c) => c.clave).filter(Boolean))];
+  const cols = [TIPO_BANCOS, ["MXN", "USD"], FORMAS_PAGO, ["BBVA", "BANREGIO", "MIFEL", "-"], [...claves, "-"]];
+  cols.forEach((lista, c) => lista.forEach((v, f) => { da.getCell(2 + f, c + 1).value = v; }));
+
+  const buf = await wb.xlsx.writeBuffer();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  a.download = `Libro de Bancos ${nombreMes(ym)}${libro.cerrado ? " (cerrado)" : ""}.xlsx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function LibroBancos({ operaciones, cuentas, cta, tcFix, setAviso }) {
   const [ym, setYm] = useState(() => mesDe(hoy()));
   const [libro, setLibro] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [cerrando, setCerrando] = useState(false);
+  const [bajando, setBajando] = useState(false);
 
   // Un documento por mes, en su propia llave. Cargar otro mes es cambiar de
   // documento, no filtrar el mismo.
@@ -8331,16 +8523,23 @@ function LibroBancos({ operaciones, cta, tcFix, setAviso }) {
 
   if (!libro) return <p className="text-xs text-stone-500">Cargando el libro de {nombreMes(ym)}…</p>;
 
+  const bajar = async () => {
+    setBajando(true);
+    try { await exportarLibroMes(ym, E, renglones, libro, cuentas); }
+    catch (e) { setAviso({ t: "err", m: e?.message || String(e) }); }
+    finally { setBajando(false); }
+  };
+
   const cerrar = async () => {
     if (!vivo) return;
     setCerrando(true);
     await grabar({ ...libro, cerrado: true, cerradoEl: new Date().toISOString(), foto: vivo });
     setCerrando(false);
-    setAviso({ t: "ok", m: `Libro de ${nombreMes(ym)} cerrado. Los movimientos que entren después ya no lo mueven.` });
+    setAviso({ t: "ok", m: `Libro de ${nombreMes(ym)} congelado. Los movimientos que entren después ya no lo mueven.` });
   };
   const reabrir = async () => {
     await grabar({ ...libro, cerrado: false, cerradoEl: "", foto: null });
-    setAviso({ t: "ok", m: `Libro de ${nombreMes(ym)} reabierto: vuelve a calcularse con los movimientos.` });
+    setAviso({ t: "ok", m: `Libro de ${nombreMes(ym)} descongelado: vuelve a calcularse con los movimientos.` });
   };
 
   const col = (v, neg) => `px-2 py-1 text-right font-mono tabular-nums ${neg && v < 0 ? "text-red-700" : ""}`;
@@ -8408,15 +8607,20 @@ function LibroBancos({ operaciones, cta, tcFix, setAviso }) {
                 onChange={(e) => grabar({ ...libro, tc: +e.target.value || 0 })}
                 className="w-24 px-2 py-1 text-sm font-mono rounded bg-white/15 border border-white/30 text-white placeholder-emerald-200 disabled:opacity-50" />
             </div>
+            <button onClick={bajar} disabled={bajando}
+              title="Las tres pestañas en el mismo acomodo que la hoja de Jesús, celda por celda."
+              className="px-3 py-1.5 text-xs rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-50">
+              {bajando ? "Armando…" : "⤓ Excel"}
+            </button>
             {libro.cerrado
-              ? <button onClick={reabrir} className="px-3 py-1.5 text-xs rounded bg-white/15 hover:bg-white/25 border border-white/25">Reabrir</button>
-              : <button onClick={cerrar} disabled={cerrando} className="px-3 py-1.5 text-xs font-medium rounded bg-white text-emerald-800 hover:bg-emerald-50 disabled:opacity-50">{cerrando ? "Cerrando…" : "Cerrar el mes"}</button>}
+              ? <button onClick={reabrir} className="px-3 py-1.5 text-xs rounded bg-white/15 hover:bg-white/25 border border-white/25">Descongelar</button>
+              : <button onClick={cerrar} disabled={cerrando} className="px-3 py-1.5 text-xs font-medium rounded bg-white text-emerald-800 hover:bg-emerald-50 disabled:opacity-50">{cerrando ? "Congelando…" : "❄ Congelar el mes"}</button>}
           </div>
         </div>
         <p className="text-[11px] text-emerald-100/90 mt-2">
           {libro.cerrado
-            ? <>Mes <b>cerrado</b> el {String(libro.cerradoEl).slice(0, 10)}. Las cifras son la foto de ese día: los movimientos que entren o se corrijan después ya no lo mueven.</>
-            : <>Mes <b>abierto</b>: {renglones.length} renglón{renglones.length === 1 ? "" : "es"} del Concentrado, recalculándose con cada movimiento. Ciérralo cuando declares.</>}
+            ? <>Mes <b>congelado</b> el {String(libro.cerradoEl).slice(0, 10)}. Las cifras son la foto de ese día: los movimientos que entren o se corrijan después ya no lo mueven.</>
+            : <>Mes <b>abierto</b>: {renglones.length} renglón{renglones.length === 1 ? "" : "es"} del Concentrado, recalculándose con cada movimiento. Congélalo cuando declares.</>}
           {guardando && <span className="ml-2 text-emerald-200">guardando…</span>}
         </p>
       </div>
@@ -8452,8 +8656,9 @@ function LibroBancos({ operaciones, cta, tcFix, setAviso }) {
       <p className="text-[11px] text-stone-500">
         Cada concepto de importación lleva su propia regla, como en la hoja de Jesús: el <b>IVA de importación</b> es todo IVA;
         <b> prevalidación</b> y <b>honorarios</b> se desglosan al 16%; <b>DTA</b>, <b>IGI</b> e <b>incrementables</b> no llevan IVA.
-        Ojo al comparar: en su Excel el renglón de prevalidación trae el subtotal en la columna del total, y por eso su gran
-        total de TOTAL MXN sale unos pesos abajo. Aquí el total es el total.
+        En <b>prevalidación</b> el subtotal va en la columna del total y la de subtotal queda en «-»: así está en la hoja de
+        Jesús y así se replica, para que las dos cuadren celda por celda. La prevalidación cuesta <b>383 MXN por evento</b>,
+        IVA incluido.
       </p>
 
       {!libro.cerrado && <TablasCaptura libro={libro} grabar={grabar} retenciones={E.retenciones} />}
@@ -8719,7 +8924,7 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
       {modo === "resumen" && <ResumenTesoreria {...{ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix, refrescarBancos, porRegistrar }} />}
       {modo === "flujo" && <FlujoSemanal {...{ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta }} />}
       {modo === "movimientos" && <Movimientos {...{ operaciones, saveOperaciones, cta, setAviso, onEditar: setEditando, refrescarBancos }} />}
-      {modo === "libro" && <LibroBancos {...{ operaciones, cta, tcFix, setAviso }} />}
+      {modo === "libro" && <LibroBancos {...{ operaciones, cuentas, cta, tcFix, setAviso }} />}
     </div>
   );
 }
