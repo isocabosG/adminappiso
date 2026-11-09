@@ -8942,8 +8942,9 @@ function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAvi
               <label className="block text-[9px] uppercase tracking-widest text-emerald-100">TC del mes</label>
               <div className="flex items-center gap-1">
                 <input type="number" step="0.0001" value={libro.tc} disabled={libro.cerrado}
+                  title="Se captura a mano. Arranca del TC fijo de la app."
                   onChange={(e) => grabar({ ...libro, tc: +e.target.value || 0 })}
-                  className="w-24 px-2 py-1 text-sm font-mono rounded bg-white/15 border border-white/30 text-white placeholder-emerald-200 disabled:opacity-50" />
+                  className="w-24 px-2 py-1 text-sm font-mono rounded bg-amber-50 border border-amber-300 text-stone-900 disabled:opacity-50" />
                 {!libro.cerrado && +tcFix > 0 && +libro.tc !== +tcFix && (
                   <button onClick={() => grabar({ ...libro, tc: +tcFix })}
                     title={`Volver al TC fijo de la app: ${tcFix}`}
@@ -9025,7 +9026,20 @@ function TablasCaptura({ libro, grabar, retenciones }) {
   const nom = libro.nomina || [], ret = libro.retenciones || [];
   const setNom = (l) => grabar({ ...libro, nomina: l });
   const setRet = (l) => grabar({ ...libro, retenciones: l });
-  const inp = "w-full px-1.5 py-1 text-[11px] font-mono text-right border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600";
+  /* Amarillo = se captura a mano. [9-nov-2026, a pedido de Fran]
+
+     En estas dos tablas conviven dos clases de casilla: las que alguien teclea
+     —la nómina de la contadora, los dólares del pago al extranjero— y las que
+     salen de una cuenta. Si se ven igual, uno acaba tratando de corregir un
+     resultado. El amarillo dice dónde sí se puede escribir; lo gris es cálculo
+     y cambia solo. Es el mismo código de color de la hoja de Jesús. */
+  const inp = "w-full px-1.5 py-1 text-[11px] font-mono text-right bg-amber-50 border border-amber-300 rounded focus:outline-none focus:ring-2 focus:ring-amber-500";
+  const calc = "px-2 py-1 text-right font-mono tabular-nums bg-stone-50 text-stone-600";
+  const Leyenda = () => (
+    <span className="ml-auto flex items-center gap-1.5 text-[10px] text-stone-500">
+      <span className="inline-block w-3 h-3 rounded-sm bg-amber-50 border border-amber-300" /> se captura a mano
+    </span>
+  );
   const totNom = (k) => nom.reduce((a, n) => a + (+n[k] || 0), 0);
 
   return (
@@ -9035,7 +9049,8 @@ function TablasCaptura({ libro, grabar, retenciones }) {
           <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600">ISR por salarios</p>
           <span className="text-[11px] text-stone-500">una semana por renglón · solo el ISR entra al impuesto</span>
           <button onClick={() => setNom([...nom, { semana: "", isr: "" }])}
-            className="ml-auto px-2 py-1 text-[11px] rounded border border-stone-300 hover:bg-stone-50">+ Semana</button>
+            className="px-2 py-1 text-[11px] rounded border border-stone-300 hover:bg-stone-50">+ Semana</button>
+          <Leyenda />
         </div>
         {nom.length === 0
           ? <p className="px-3 py-3 text-xs text-stone-400">Sin semanas capturadas.</p>
@@ -9052,7 +9067,7 @@ function TablasCaptura({ libro, grabar, retenciones }) {
                     <td className="px-2 py-1">
                       <input value={n.semana || ""} placeholder="WW45"
                         onChange={(e) => setNom(nom.map((x, j) => (j === i ? { ...x, semana: e.target.value } : x)))}
-                        className="w-20 px-1.5 py-1 text-[11px] font-mono border border-stone-300 rounded" />
+                        className="w-20 px-1.5 py-1 text-[11px] font-mono bg-amber-50 border border-amber-300 rounded focus:outline-none focus:ring-2 focus:ring-amber-500" />
                     </td>
                     {COLS_NOMINA.map(([k]) => (
                       <td key={k} className="px-1 py-1">
@@ -9081,7 +9096,8 @@ function TablasCaptura({ libro, grabar, retenciones }) {
           <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600">ISR retenciones al extranjero</p>
           <span className="text-[11px] text-stone-500">dólares × TC del día × un tercio</span>
           <button onClick={() => setRet([...ret, { fecha: hoy(), dlls: "", tc: "", pct: RETENCION }])}
-            className="ml-auto px-2 py-1 text-[11px] rounded border border-stone-300 hover:bg-stone-50">+ Pago</button>
+            className="px-2 py-1 text-[11px] rounded border border-stone-300 hover:bg-stone-50">+ Pago</button>
+          <Leyenda />
         </div>
         {ret.length === 0
           ? <p className="px-3 py-3 text-xs text-stone-400">Sin pagos capturados.</p>
@@ -9100,7 +9116,7 @@ function TablasCaptura({ libro, grabar, retenciones }) {
                       <td className="px-2 py-1">
                         <input type="date" value={r.fecha || ""}
                           onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, fecha: e.target.value } : x)))}
-                          className="px-1.5 py-1 text-[11px] font-mono border border-stone-300 rounded" />
+                          className="px-1.5 py-1 text-[11px] font-mono bg-amber-50 border border-amber-300 rounded focus:outline-none focus:ring-2 focus:ring-amber-500" />
                       </td>
                       <td className="px-1 py-1"><input type="number" step="0.01" value={r.dlls ?? ""}
                         onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, dlls: e.target.value } : x)))} className={inp} /></td>
@@ -9109,9 +9125,9 @@ function TablasCaptura({ libro, grabar, retenciones }) {
                       <td className="px-1 py-1"><input type="number" step="0.00000001" value={r.pct ?? RETENCION}
                         title="Un tercio por omisión. La hoja de Jesús lo enseña como 0.33 pero guarda 0.33333333."
                         onChange={(e) => setRet(ret.map((x, j) => (j === i ? { ...x, pct: e.target.value } : x)))} className={inp} /></td>
-                      <td className="px-2 py-1 text-right font-mono tabular-nums text-stone-600">{mx(c.asimilado || 0)}</td>
-                      <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{mx(c.impPagar || 0)}</td>
-                      <td className="px-2 py-1 text-right font-mono tabular-nums text-stone-600">{mx(c.totalMxn || 0)}</td>
+                      <td className={calc}>{mx(c.asimilado || 0)}</td>
+                      <td className={`${calc} font-semibold text-stone-800`}>{mx(c.impPagar || 0)}</td>
+                      <td className={calc}>{mx(c.totalMxn || 0)}</td>
                       <td className="px-1 py-1"><button onClick={() => setRet(ret.filter((_, j) => j !== i))} className="text-stone-400 hover:text-red-600">×</button></td>
                     </tr>
                   );
