@@ -8712,7 +8712,7 @@ async function leerConcentrado(file, cuentas, operaciones) {
   return { nuevos, sinCuenta: [...sinCuenta.entries()], repetidos: repetidos.length, vacios, estimado, ym };
 }
 
-function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
+function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso, alCargarTablas }) {
   const [subiendo, setSubiendo] = useState(null);   // { trabajando, resumen, err }
 
   /* Sirve para cualquier mes: cada movimiento se va al mes de SU fecha, no al
@@ -8759,6 +8759,8 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
         } catch (e) { fallas.push(`${f.name}: ${e?.message || e}`); }
       }
       const resumen = { nuevos, repetidos, vacios, fallas, tablas, meses: [...meses].sort(), sinCuenta: [...sinCuenta.entries()] };
+      // Si el libro del mes está en pantalla, que se entere y se recargue.
+      if (tablas) alCargarTablas?.(resumen.meses);
       if (!nuevos) {
         setSubiendo({ resumen, err: repetidos ? "Todos los renglones ya estaban cargados." : (fallas[0] || "No se encontró ningún renglón aprovechable.") });
         if (tablas) setAviso({ t: "ok", m: `Nómina y retenciones cargadas en ${resumen.meses.map(nombreMes).join(", ")}.` });
@@ -8793,7 +8795,7 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
                 {subiendo.resumen.repetidos > 0 && <> · <b>{subiendo.resumen.repetidos}</b> ya estaban y se saltaron</>}
                 {subiendo.resumen.vacios > 0 && <> · {subiendo.resumen.vacios} renglón(es) sin fecha o sin importe</>}</p>
               {subiendo.resumen.tablas > 0 && (
-                <p className="mt-1 text-[12px]">Se cargaron también la nómina por semana y las retenciones al extranjero de la pestaña Estimado. Si tienes el libro abierto, cambia de mes y regresa para verlas.</p>
+                <p className="mt-1 text-[12px]">Se cargaron también la nómina por semana y las retenciones al extranjero de la pestaña Estimado.</p>
               )}
               {subiendo.resumen.fallas.length > 0 && (
                 <p className="mt-1 text-[12px]">No se pudo leer: {subiendo.resumen.fallas.join(" · ")}</p>
@@ -8820,6 +8822,7 @@ function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAvi
   const [guardando, setGuardando] = useState(false);
   const [cerrando, setCerrando] = useState(false);
   const [bajando, setBajando] = useState(false);
+  const [recarga, setRecarga] = useState(0);
   // Un documento por mes, en su propia llave. Cargar otro mes es cambiar de
   // documento, no filtrar el mismo.
   useEffect(() => {
@@ -8835,7 +8838,7 @@ function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAvi
       if (vivo) setLibro(v);
     })();
     return () => { vivo = false; };
-  }, [ym]);
+  }, [ym, recarga]);
 
   const grabar = async (next) => {
     setLibro(next);
@@ -8948,7 +8951,8 @@ function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAvi
                 )}
               </div>
             </div>
-            <SubirConcentrado {...{ cuentas, operaciones, saveOperaciones, setAviso }} />
+            <SubirConcentrado {...{ cuentas, operaciones, saveOperaciones, setAviso }}
+              alCargarTablas={(ms) => { if (ms.includes(ym)) setRecarga((n) => n + 1); }} />
             <button onClick={bajar} disabled={bajando}
               title="Las tres pestañas en el mismo acomodo que la hoja de Jesús, celda por celda."
               className="px-3 py-1.5 text-xs rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-50">
