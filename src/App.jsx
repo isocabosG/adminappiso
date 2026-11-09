@@ -11069,13 +11069,41 @@ function Movimientos({ operaciones, saveOperaciones, cuentas, cta, setAviso, onE
   const [filtro, setFiltro] = useState("todos");
   const [busca, setBusca] = useState("");
   const [orden, setOrden] = useState("desc");   // por fecha
+  /* Un mes a la vez, igual que el libro de bancos. [9-nov-2026]
+
+     Fran: «termina el mes y vienen nuevos movimientos». Con el año entero en
+     una sola lista, para diciembre son dos mil renglones y encontrar algo es
+     imposible. El mes es además la unidad real del trabajo: es lo que se
+     declara y lo que se congela.
+
+     `todo` sirve para buscar: cuando se teclea algo en el buscador, la
+     búsqueda pasa por encima del mes sola —buscar un pago de marzo desde
+     noviembre es justo lo que uno quiere—, y se avisa en pantalla. */
+  const [ym, setYm] = useState(() => {
+    // El mes de hoy si ya tiene movimientos; si no, el último que tenga, para
+    // no abrir en una pantalla vacía cuando apenas se subió el libro viejo.
+    const h = mesDe(hoy());
+    const ms = [...new Set((operaciones || []).map((o) => mesDe(o.fecha)).filter(Boolean))].sort();
+    return ms.includes(h) ? h : (ms[ms.length - 1] || h);
+  });
+  const [todo, setTodo] = useState(false);
   const [viendo, setVer] = useState(null);      // operación abierta en el visor
   const [confirmando, setConfirmando] = useState(null); // op
   const [paso, setPaso] = useState(1);
 
+  // Cuántos movimientos tiene cada mes: alimenta las flechas y el rótulo.
+  const meses = useMemo(() => {
+    const m = new Map();
+    operaciones.forEach((o) => { const k = mesDe(o.fecha); if (k) m.set(k, (m.get(k) || 0) + 1); });
+    return m;
+  }, [operaciones]);
+  const buscando = busca.trim().length > 0;
+  const porMes = !todo && !buscando;
+
   const rows = useMemo(() => {
     const palabras = busca.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().split(/\s+/).filter(Boolean);
     return operaciones
+      .filter((o) => !porMes || mesDe(o.fecha) === ym)
       .filter((o) => filtro === "todos" || o.tipo === filtro || (filtro === "planeado" && o.estatus === "planeado"))
       .filter((o) => {
         if (!palabras.length) return true;
@@ -11086,7 +11114,7 @@ function Movimientos({ operaciones, saveOperaciones, cuentas, cta, setAviso, onE
         const d = String(b.fecha || "").localeCompare(String(a.fecha || ""));
         return orden === "desc" ? d : -d;
       });
-  }, [operaciones, filtro, busca, orden, cta]);
+  }, [operaciones, filtro, busca, orden, cta, ym, porMes]);
 
   const confirmar = (id) => {
     saveOperaciones(operaciones.map((o) => (o.id === id ? { ...o, estatus: "confirmado" } : o)));
@@ -11266,6 +11294,21 @@ Responde SOLO JSON compacto, sin markdown:
 
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 bg-white border border-stone-200 rounded-lg px-2 py-1.5">
+        <button onClick={() => setYm(mesSiguiente(ym, -1))} disabled={!porMes}
+          className="px-2 py-1 rounded border border-stone-300 text-stone-600 hover:bg-stone-50 disabled:opacity-30">←</button>
+        <span className="text-sm font-semibold capitalize min-w-[9rem] text-center">{nombreMes(ym)}</span>
+        <button onClick={() => setYm(mesSiguiente(ym, 1))} disabled={!porMes}
+          className="px-2 py-1 rounded border border-stone-300 text-stone-600 hover:bg-stone-50 disabled:opacity-30">→</button>
+        <span className="text-xs text-stone-500">{meses.get(ym) || 0} movimiento(s) en el mes</span>
+        <button onClick={() => setTodo(!todo)}
+          title="Ver el año completo en una sola lista."
+          className={`ml-auto px-2.5 py-1 text-xs rounded ${todo ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>
+          Todos los meses
+        </button>
+      </div>
+      {buscando && !todo && <p className="text-[11px] text-teal-800">Buscando en <b>todos los meses</b>; borra el texto para volver a {nombreMes(ym)}.</p>}
+
       <div className="flex flex-wrap gap-1">
         {[["todos", "Todos"], ["ingreso", "Ingresos"], ["egreso", "Egresos"], ["traspaso", "Traspasos"], ["cambio", "Cambios"], ["planeado", "Planeados"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`px-2.5 py-1.5 text-xs rounded ${filtro === k ? "bg-emerald-700 text-white" : "border border-stone-300 text-stone-600"}`}>{t}</button>
@@ -11277,7 +11320,7 @@ Responde SOLO JSON compacto, sin markdown:
           title="Ordenar por fecha" className="px-2.5 py-1.5 text-xs rounded border border-stone-300 text-stone-600">
           Fecha {orden === "desc" ? "↓ reciente primero" : "↑ antigua primero"}
         </button>
-        <span className="text-xs text-stone-500 self-center">{rows.length} de {operaciones.length}</span>
+        <span className="text-xs text-stone-500 self-center">{rows.length} de {porMes ? (meses.get(ym) || 0) : operaciones.length}</span>
         <button onClick={bajarExcel} disabled={!rows.length || exportando}
           title="Las mismas columnas del Concentrado de Jesús, con formato. Exporta lo que está filtrado."
           className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
@@ -11344,7 +11387,11 @@ Responde SOLO JSON compacto, sin markdown:
       )}
 
       {rows.length === 0 ? (
-        <div className="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">Sin operaciones. Registra la primera con "+ Nueva operación".</div>
+        <div className="bg-white border border-stone-200 rounded-lg p-8 text-center text-sm text-stone-500">
+          {porMes && (meses.get(ym) || 0) === 0
+            ? <>Sin movimientos en {nombreMes(ym)}. Usa las flechas para moverte de mes, o sube el libro viejo con el botón de arriba.</>
+            : <>Sin operaciones que cumplan el filtro.</>}
+        </div>
       ) : (
         <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
           <table className="w-full min-w-[940px] text-sm">
