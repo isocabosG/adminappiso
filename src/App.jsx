@@ -2488,7 +2488,7 @@ function App({ perfil, correo }) {
         {vistaSegura === "articulos" && <Articulos catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
         {vistaSegura === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol: perfil?.role || null, puedeAjustar: !!perfil?.puede_ajustar }} />}
         {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
-        {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />}
+        {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} correo={correo} />}
         {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} />}
         {vistaSegura === "flujo" && <Flujo tcFix={tcFix} setAviso={setAviso} />}
         {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
@@ -5705,6 +5705,120 @@ function Fletes({ fletes, saveFletes }) {
 
 const nfMrp = new Intl.NumberFormat("es-MX");
 const INV_FISICO_KEY = "iso3-inventario-fisico";
+
+/* ---------------------------------------------------------------------------
+   EL REPORTE DE INVENTARIO SE CONGELA, IGUAL QUE EL LIBRO DE BANCOS. [9-nov-2026]
+
+   Fran: «lo que exportó Jesús para octubre lo descargó, reportó y ya quedó,
+   pero no quedó en la app». Ese es el problema entero. El reporte se arma al
+   vuelo con el inventario físico de hoy y lo comprometido de hoy: mañana da
+   otro número, y el de octubre ya no existe en ningún lado más que en el CSV
+   que alguien bajó.
+
+   Un número que salió de la empresa tiene que poder reconstruirse tal cual se
+   mandó. Por eso al cerrar el mes se guarda la FOTO: los renglones, el corte,
+   el criterio y quién lo congeló. De ahí en adelante ese mes no se recalcula,
+   se consulta —y se vuelve a bajar idéntico si el contador lo pide—.
+
+   Se congela con botón, no solo. Lo decidió Fran: el mes queda cerrado cuando
+   alguien dice que ya se reportó, no el día 1 a medianoche, porque el corte
+   con el que se reportó no siempre es el último día del mes.
+--------------------------------------------------------------------------- */
+const INV_CIERRE_PREF = "iso3-inv-cierre-";
+
+const bajarTexto = (texto, nombre, tipo) => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([texto], { type: tipo }));
+  a.download = nombre;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+};
+
+/* El CSV del contador. Vive aquí, y no dentro de la pantalla, porque lo usan
+   los dos: el reporte vivo y un mes ya congelado. Tener la plantilla escrita
+   dos veces es la forma segura de que el archivo que se vuelve a bajar en
+   marzo no sea el que se mandó en noviembre. */
+const csvReporteInv = (p) => {
+  const r2 = (n) => Math.round((+n || 0) * 100) / 100;
+  const col = ["SKU", "Descripcion", "Cantidad", "Costo unitario", "Valor al costo", "Precio de venta", "Valor a la venta"];
+  const cuerpo = (p.filas || []).slice()
+    .sort((x, y) => y.cant * y.costo - x.cant * x.costo)
+    .map((f) => [f.sku, f.desc, f.cant, r2(f.costo), r2(f.cant * f.costo),
+                 f.venta == null ? "" : r2(f.venta),
+                 f.venta == null ? "" : r2(f.cant * f.venta)].map(csvCell).join(","));
+  return "\uFEFF" + [
+    "Reporte de inventario - Innovacion Solar",
+    `Corte,${p.fechaFisico}`,
+    `Criterio,"Existencia fisica de los almacenes propios (ALMACEN CENTRAL y ALMACEN LOGISTICO) que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
+    `Costo,"Costo de adquisicion del catalogo de Importaciones (promedio ponderado). El precio de venta sale del campo rate de Zoho."`,
+    ...(p.politica?.skus
+      ? [`Excluidos por politica,"${p.politica.skus} SKU de uso continuo (cable a granel, que se consume en varias obras a la vez) por ${r2(p.politica.valor)} al costo. No se declaran como existencia libre."`]
+      : []),
+    ...(p.ajustes?.forzados || p.ajustes?.quitados
+      ? [`Ajustes manuales,"${p.ajustes.forzados} SKU incluidos a mano pese a estar comprometidos; ${p.ajustes.quitados} quitados del criterio automatico."`]
+      : []),
+    ...(p.congeladoEl ? [`Mes cerrado,"${p.ym} - congelado el ${String(p.congeladoEl).slice(0, 10)}${p.congeladoPor ? " por " + p.congeladoPor : ""}"`] : []),
+    `SKU,${p.tot.skus}`,
+    `Piezas,${p.tot.piezas}`,
+    `VALOR TOTAL AL COSTO,${r2(p.tot.valor)}`,
+    `Valor a precio de venta,${r2(p.tot.valorVenta)}`,
+    ...(p.tot.sinVenta ? [`SKU sin precio de venta en Zoho,${p.tot.sinVenta}`] : []),
+    "",
+    col.map(csvCell).join(","),
+    ...cuerpo,
+  ].join("\r\n");
+};
+
+// Un renglón de CSV con comillas. Pequeño a propósito: el archivo lo generamos
+// nosotros, no es un parser de propósito general.
+const celdasCsv = (linea) => {
+  const out = []; let act = "", dentro = false;
+  for (let i = 0; i < linea.length; i++) {
+    const c = linea[i];
+    if (dentro) {
+      if (c === '"' && linea[i + 1] === '"') { act += '"'; i++; }
+      else if (c === '"') dentro = false;
+      else act += c;
+    } else if (c === '"') dentro = true;
+    else if (c === ",") { out.push(act); act = ""; }
+    else act += c;
+  }
+  out.push(act);
+  return out;
+};
+
+/* Leer un reporte viejo —el CSV que ya se mandó al contador— y devolverlo como
+   paquete para congelarlo en su mes. El archivo se guarda tal cual junto con la
+   foto: cuando alguien lo vuelva a bajar, baja el que se mandó, no uno nuevo. */
+async function leerCsvReporteInv(file) {
+  const txt = (await file.text()).replace(/^\uFEFF/, "");
+  const lineas = txt.split(/\r?\n/);
+  let fechaFisico = "", iCab = -1;
+  for (let i = 0; i < lineas.length; i++) {
+    const c = celdasCsv(lineas[i]);
+    if (c[0] === "Corte" && c[1]) fechaFisico = c[1].trim();
+    if (c[0] === "SKU" && /^descripci/i.test(String(c[1] || "").normalize("NFD").replace(/[\u0300-\u036f]/g, ""))) { iCab = i; break; }
+  }
+  if (iCab < 0) throw new Error("No parece un reporte de inventario: no encontré el renglón de encabezados «SKU, Descripcion…».");
+  const num = (v) => { const x = Number(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isFinite(x) ? x : 0; };
+  const filas = [];
+  for (let i = iCab + 1; i < lineas.length; i++) {
+    if (!lineas[i].trim()) continue;
+    const c = celdasCsv(lineas[i]);
+    if (!c[0]) continue;
+    filas.push({ sku: c[0].trim(), desc: String(c[1] || "").trim(), cant: num(c[2]), costo: num(c[3]),
+                 venta: String(c[5] || "").trim() === "" ? null : num(c[5]) });
+  }
+  if (!filas.length) throw new Error("El archivo trae encabezados pero ningún renglón.");
+  const tot = {
+    skus: filas.length,
+    piezas: filas.reduce((t, f) => t + f.cant, 0),
+    valor: filas.reduce((t, f) => t + f.cant * f.costo, 0),
+    valorVenta: filas.reduce((t, f) => t + (f.venta != null ? f.cant * f.venta : 0), 0),
+    sinVenta: filas.filter((f) => f.venta == null).length,
+  };
+  return { fechaFisico: fechaFisico || "—", fechaComp: "—", filas, tot, csv: txt, origen: "csv" };
+}
 const ESTATUS_MRP = new Set(["calendarizado", "postventa"]);
 const esCalendarizado = (p) => ESTATUS_MRP.has(String(p?.status || "").toLowerCase());
 const LOTE_GET_ITEM = 6;   // llamadas en paralelo; subirlo arriesga el rate-limit de Zoho
@@ -5819,7 +5933,7 @@ async function completarComprometido(items, orden, onProg) {
 // inventario del que hay, que es el error que no se ve.
 const REPFUERA_KEY = "iso3-inv-reporte-fuera";
 
-function Inventario({ catalogo, saveCatalogo, setAviso }) {
+function Inventario({ catalogo, saveCatalogo, setAviso, correo }) {
   const [busca, setBusca] = useState("");
   const q = busca.trim().toLowerCase();
   // ---- Existencias FISICAS netas de la empresa, como las reporta Zoho. Cache + refresco diario. ----
@@ -6048,6 +6162,84 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
   // camina el almacen, no la formula.
   const [incluidos, setIncluidos] = useState(() => new Set());
 
+  /* ---- El cierre del mes: la foto de lo que se reportó ---- */
+  const [cierreYm, setCierreYm] = useState(() => mesDe(hoy()));
+  const [cierre, setCierre] = useState(undefined);      // undefined = cargando, null = no hay
+  const [recargaC, setRecargaC] = useState(0);
+  const [congelarYm, setCongelarYm] = useState("");
+  const [subiendoRep, setSubiendoRep] = useState(null); // { trabajando, err }
+
+  useEffect(() => {
+    let vivo = true;
+    setCierre(undefined);
+    (async () => {
+      let v = null;
+      try { const r = await window.storage?.get(INV_CIERRE_PREF + cierreYm); if (r?.value) v = JSON.parse(r.value); } catch { }
+      if (vivo) setCierre(v);
+    })();
+    return () => { vivo = false; };
+  }, [cierreYm, recargaC]);
+
+  const guardarCierre = async (ym, paq) => {
+    await window.storage?.set(INV_CIERRE_PREF + ym, JSON.stringify({ ...paq, ym }));
+    setCierreYm(ym);
+    setRecargaC((n) => n + 1);
+  };
+
+  // Congelar lo que está en pantalla. Se guardan los renglones tal como
+  // quedaron las casillas, no el criterio: si alguien incluyó a mano un SKU
+  // comprometido, eso fue lo que se reportó y eso es lo que tiene que quedar.
+  const congelar = async () => {
+    if (!rep || !selTot.skus) return;
+    const ym = congelarYm || mesDe(rep.fechaFisico) || mesDe(hoy());
+    try {
+      const previo = await window.storage?.get(INV_CIERRE_PREF + ym);
+      if (previo?.value && !window.confirm(`${nombreMes(ym)} ya tiene un cierre congelado. ¿Lo reemplazas con este?`)) return;
+    } catch { }
+    try {
+      await guardarCierre(ym, {
+        origen: "app",
+        fechaFisico: rep.fechaFisico, fechaComp: rep.fechaComp,
+        congeladoEl: new Date().toISOString(), congeladoPor: correo || "",
+        filas: seleccion.map((f) => ({ sku: f.sku, desc: f.desc, cant: f.cant, costo: f.costo, venta: f.venta ?? null })),
+        tot: { skus: selTot.skus, piezas: selTot.piezas, valor: selTot.valor, valorVenta: selTot.valorVenta, sinVenta: selTot.sinVenta },
+        politica: { skus: porPolitica.length, valor: valPolitica },
+        ajustes: { forzados: selTot.forzados, quitados: selTot.quitados },
+      });
+      setAviso({ t: "ok", m: `Inventario de ${nombreMes(ym)} congelado: ${selTot.skus} SKU por $${mx0(selTot.valor)}.` });
+    } catch (e) { setAviso({ t: "err", m: `No se pudo congelar: ${e?.message || e}` }); }
+  };
+
+  const descongelar = async () => {
+    if (!cierre || !window.confirm(`Descongelar ${nombreMes(cierreYm)} borra la foto de lo que se reportó. ¿Seguro?`)) return;
+    try {
+      await window.storage?.set(INV_CIERRE_PREF + cierreYm, "");
+      setRecargaC((n) => n + 1);
+      setAviso({ t: "ok", m: `${nombreMes(cierreYm)} descongelado.` });
+    } catch (e) { setAviso({ t: "err", m: `No se pudo descongelar: ${e?.message || e}` }); }
+  };
+
+  // Lo que se mandó se vuelve a bajar idéntico: si el mes se cargó desde el CSV
+  // viejo, se entrega ESE archivo, no uno regenerado.
+  const bajarCierre = () => {
+    if (!cierre) return;
+    bajarTexto(cierre.csv || csvReporteInv(cierre), `inventario-${cierre.ym}.csv`, "text/csv;charset=utf-8;");
+  };
+
+  const subirReporteViejo = async (file) => {
+    if (!file) return;
+    setSubiendoRep({ trabajando: true });
+    try {
+      const paq = await leerCsvReporteInv(file);
+      const ym = mesDe(paq.fechaFisico) || cierreYm;
+      const previo = await window.storage?.get(INV_CIERRE_PREF + ym);
+      if (previo?.value && !window.confirm(`${nombreMes(ym)} ya tiene un cierre congelado. ¿Lo reemplazas con el del archivo?`)) { setSubiendoRep(null); return; }
+      await guardarCierre(ym, { ...paq, congeladoEl: new Date().toISOString(), congeladoPor: correo || "" });
+      setSubiendoRep(null);
+      setAviso({ t: "ok", m: `${nombreMes(ym)} congelado desde el archivo: ${paq.tot.skus} SKU por $${mx0(paq.tot.valor)}.` });
+    } catch (e) { setSubiendoRep({ err: e?.message || String(e) }); }
+  };
+
   const armarReporte = async () => {
     if (!fis) { setAviso({ t: "err", m: "Primero actualiza el inventario fisico." }); return; }
     setRepCargando(true);
@@ -6229,42 +6421,12 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
 
   const bajarReporte = () => {
     if (!rep) return;
-    const r2 = (n) => Math.round((+n || 0) * 100) / 100;
-    const col = ["SKU", "Descripcion", "Cantidad", "Costo unitario", "Valor al costo", "Precio de venta", "Valor a la venta"];
-    const cuerpo = seleccion
-      .slice()
-      .sort((x, y) => y.cant * y.costo - x.cant * x.costo)
-      .map((f) => [f.sku, f.desc, f.cant, r2(f.costo), r2(f.cant * f.costo),
-                   f.venta == null ? "" : r2(f.venta),
-                   f.venta == null ? "" : r2(f.cant * f.venta)].map(csvCell).join(","));
-    // El criterio va en el archivo: un CSV que llega sin fecha de corte ni
-    // definicion obliga al contador a preguntar, y para entonces nadie se
-    // acuerda de con que se genero.
-    const csv = "\uFEFF" + [
-      "Reporte de inventario - Innovacion Solar",
-      `Corte,${rep.fechaFisico}`,
-      `Criterio,"Existencia fisica de los almacenes propios (ALMACEN CENTRAL y ALMACEN LOGISTICO) que NO esta comprometida a ninguna obra. No incluye RMA, devolucion, desecho, Semi-OK, laboratorio, coordinacion ni almacenes de importacion. El material apartado a un proyecto no se incluye."`,
-      `Costo,"Costo de adquisicion del catalogo de Importaciones (promedio ponderado). El precio de venta sale del campo rate de Zoho."`,
-      ...(porPolitica.length
-        ? [`Excluidos por politica,"${porPolitica.length} SKU de uso continuo (cable a granel, que se consume en varias obras a la vez) por ${r2(valPolitica)} al costo. No se declaran como existencia libre."`]
-        : []),
-      ...(selTot.forzados || selTot.quitados
-        ? [`Ajustes manuales,"${selTot.forzados} SKU incluidos a mano pese a estar comprometidos; ${selTot.quitados} quitados del criterio automatico."`]
-        : []),
-      `SKU,${selTot.skus}`,
-      `Piezas,${selTot.piezas}`,
-      `VALOR TOTAL AL COSTO,${r2(selTot.valor)}`,
-      `Valor a precio de venta,${r2(selTot.valorVenta)}`,
-      ...(selTot.sinVenta ? [`SKU sin precio de venta en Zoho,${selTot.sinVenta}`] : []),
-      "",
-      col.map(csvCell).join(","),
-      ...cuerpo,
-    ].join("\r\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
-    a.download = `inventario-${hoy()}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    bajarTexto(csvReporteInv({
+      fechaFisico: rep.fechaFisico, filas: seleccion,
+      tot: { skus: selTot.skus, piezas: selTot.piezas, valor: selTot.valor, valorVenta: selTot.valorVenta, sinVenta: selTot.sinVenta },
+      politica: { skus: porPolitica.length, valor: valPolitica },
+      ajustes: { forzados: selTot.forzados, quitados: selTot.quitados },
+    }), `inventario-${hoy()}.csv`, "text/csv;charset=utf-8;");
   };
 
   // Archivo SEPARADO, y a proposito. Esto es papel de trabajo interno: que obra
@@ -6354,6 +6516,92 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
         </p>
       </div>
 
+      {/* ---- Lo que ya se reportó, mes por mes. Un mes congelado no se
+              recalcula: se consulta y se vuelve a bajar igual. ---- */}
+      <div className="bg-white border border-stone-200 rounded-lg">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
+          <button onClick={() => setCierreYm(mesSiguiente(cierreYm, -1))}
+            className="px-2 py-1 rounded border border-stone-300 text-stone-600 hover:bg-white">←</button>
+          <span className="text-sm font-semibold capitalize min-w-[9rem] text-center">{nombreMes(cierreYm)}</span>
+          <button onClick={() => setCierreYm(mesSiguiente(cierreYm, 1))}
+            className="px-2 py-1 rounded border border-stone-300 text-stone-600 hover:bg-white">→</button>
+          {cierre === undefined
+            ? <span className="text-[11px] text-stone-400">buscando…</span>
+            : cierre
+              ? <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 text-[10px] font-semibold">❄ Congelado</span>
+              : <span className="text-[11px] text-stone-400">sin cierre</span>}
+          <div className="ml-auto flex flex-wrap gap-1.5">
+            {cierre && (
+              <>
+                <button onClick={bajarCierre}
+                  title={cierre.csv ? "El archivo tal cual se cargó" : "Mismo formato que se mandó al contador"}
+                  className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800">⬇ CSV como se reportó</button>
+                <button onClick={descongelar}
+                  className="px-3 py-1.5 text-xs font-medium rounded border border-stone-300 hover:bg-white">Descongelar</button>
+              </>
+            )}
+            <label title="Carga un reporte viejo desde el CSV que ya se mandó al contador. Queda congelado en el mes de su fecha de corte."
+              className="px-3 py-1.5 text-xs font-medium rounded border border-emerald-700 text-emerald-800 bg-white hover:bg-emerald-50 cursor-pointer">
+              <input type="file" accept=".csv" className="hidden"
+                onChange={(e) => { subirReporteViejo(e.target.files?.[0]); e.target.value = ""; }} />
+              {subiendoRep?.trabajando ? "Leyendo…" : "⤒ Subir reporte viejo"}
+            </label>
+          </div>
+        </div>
+
+        {subiendoRep?.err && (
+          <p className="px-3 py-2 text-sm bg-amber-50 border-b border-amber-300 text-amber-900">{subiendoRep.err}</p>
+        )}
+
+        {cierre === null && (
+          <p className="px-3 py-4 text-sm text-stone-500">
+            {nombreMes(cierreYm)} no tiene cierre. Arma el reporte arriba y dale <b>❄ Congelar el mes</b>, o sube el
+            CSV que ya se mandó al contador.
+          </p>
+        )}
+
+        {cierre && (
+          <div className="p-3">
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-emerald-700">Valor reportado al costo</p>
+                <p className="text-xl font-bold font-mono text-emerald-800">${mx0(cierre.tot.valor)}</p>
+              </div>
+              <p className="text-[11px] text-stone-600">
+                {cierre.tot.skus} SKU · {mx0(cierre.tot.piezas)} piezas · a precio de venta ${mx0(cierre.tot.valorVenta)}
+                {cierre.politica?.skus > 0 && <> · sin {cierre.politica.skus} SKU de uso continuo (${mx0(cierre.politica.valor)})</>}
+                {(cierre.ajustes?.forzados > 0 || cierre.ajustes?.quitados > 0) &&
+                  <> · {cierre.ajustes.forzados} incluidos y {cierre.ajustes.quitados} quitados a mano</>}
+              </p>
+            </div>
+            <p className="mt-1 text-[11px] text-stone-500">
+              Corte al {cierre.fechaFisico}{cierre.fechaComp && cierre.fechaComp !== "—" ? ` · órdenes al ${cierre.fechaComp}` : ""} ·
+              congelado el {String(cierre.congeladoEl || "").slice(0, 10)}{cierre.congeladoPor ? ` por ${cierre.congeladoPor}` : ""}
+              {cierre.origen === "csv" && " · cargado del CSV que se mandó"}
+            </p>
+            <div className="mt-2 max-h-72 overflow-auto border border-stone-200 rounded">
+              <table className="w-full text-[11px] font-mono min-w-[560px]">
+                <thead className="sticky top-0 bg-white shadow-[0_1px_0_#e7e5e4] text-stone-500 text-left">
+                  <tr><th className="px-3 py-1.5">SKU</th><th>Descripción</th>
+                    <th className="text-right">Cant.</th><th className="text-right">Costo u.</th><th className="text-right pr-3">Valor</th></tr>
+                </thead>
+                <tbody>
+                  {(cierre.filas || []).slice().sort((a, b) => b.cant * b.costo - a.cant * a.costo).map((f) => (
+                    <tr key={f.sku} className="border-t border-stone-100">
+                      <td className="px-3 py-1 font-semibold">{f.sku}</td>
+                      <td className="font-sans text-stone-600">{String(f.desc).slice(0, 40)}</td>
+                      <td className="text-right">{mx0(f.cant)}</td>
+                      <td className="text-right text-stone-600">${mx0(f.costo)}</td>
+                      <td className="text-right pr-3">${mx0(f.cant * f.costo)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
       {rep && (
         <div className="bg-white border border-stone-200 rounded-lg p-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -6366,6 +6614,15 @@ function Inventario({ catalogo, saveCatalogo, setAviso }) {
                 className="px-2 py-1.5 border border-stone-300 rounded text-xs w-52" />
               <button onClick={bajarReporte} disabled={!selTot.skus}
                       className="px-3 py-1.5 text-xs font-medium rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">⬇ Descargar CSV</button>
+              {/* Congelar el mes: el corte no siempre cae el último día, así
+                  que el mes se escoge. Por omisión, el del corte. */}
+              <input type="month" value={congelarYm || mesDe(rep.fechaFisico) || mesDe(hoy())}
+                onChange={(e) => setCongelarYm(e.target.value)}
+                title="En qué mes queda guardado este reporte"
+                className="px-2 py-1.5 border border-stone-300 rounded text-xs font-mono" />
+              <button onClick={congelar} disabled={!selTot.skus}
+                title="Guarda la foto de lo que se reportó: los renglones, el corte y el criterio. Ese mes deja de recalcularse."
+                className="px-3 py-1.5 text-xs font-medium rounded bg-sky-700 text-white hover:bg-sky-800 disabled:opacity-40">❄ Congelar el mes</button>
               <button onClick={guardarPolitica}
                 title="Lo que esté desmarcado ahora arranca apagado la próxima vez que se arme el reporte, para todo el equipo"
                 className="px-3 py-1.5 text-xs font-medium rounded border border-stone-300 hover:bg-stone-50">Guardar como la de siempre</button>
