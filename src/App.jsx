@@ -2490,7 +2490,7 @@ function App({ perfil, correo }) {
         {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} correo={correo} />}
         {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} />}
-        {vistaSegura === "flujo" && <Flujo tcFix={tcFix} setAviso={setAviso} />}
+        {vistaSegura === "flujo" && <Flujo {...{ operaciones, cuentas, tcFix }} />}
         {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vistaSegura === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
         {vistaSegura === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
@@ -8122,26 +8122,31 @@ const diaCorto = (iso) => {
   return `${d.getUTCDate()} ${["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"][d.getUTCMonth()]}`;
 };
 
-function Flujo({ tcFix, setAviso }) {
-  const [bancos, setBancos] = useState(null);
-  const [pagos, setPagos] = useState(null);
-  const [gastos, setGastos] = useState(null);
-  const [cargando, setCargando] = useState(true);
+/* DE DÓNDE SALE ESTA PANTALLA  [9-nov-2026]
+
+   Salía de los cachés de Zoho: las entradas de `iso3-pagos-zoho` —1,263 pagos
+   de clientes— y las salidas de `iso3-gastos-zoho`, que guarda la bitácora de
+   lo que la app registró allá y tenía TRES renglones. Encima leía
+   `gastos.gastos` y el blob se llama `registros`, así que las salidas eran
+   cero SIEMPRE y el aviso de «faltan egresos» nunca aparecía porque el blob sí
+   existía. Un flujo con ingresos y sin egresos no está desactualizado: está
+   mal, y se lee peor que no tener la pantalla.
+
+   Ahora sale de los MOVIMIENTOS, que son lo que pasó por el banco: los dos
+   lados, con su TIPO, ya cuadrados contra el libro de Jesús. Cubre las cuentas
+   del libro y los meses cargados; un mes sin libro se dice, no se pinta en
+   cero. Fran, 9-nov: «conforme subamos los libros de bancos anteriores se van
+   poblando».
+
+   OJO CON LOS TRASPASOS: al importar el libro, las dos patas de un traspaso
+   entran como movimientos normales —una sale, otra entra— con TIPO TRASPASO o
+   CAMBIO DE DIVISAS. Contarlas como entrada y salida inflaría noviembre en
+   2.1 millones de ingresos que nunca existieron. Van a su propio renglón. */
+function Flujo({ operaciones, cuentas, tcFix }) {
   const [moneda, setMoneda] = useState("MXN");       // MXN · USD · CONS
   const [dark, setDark] = useState(false);
 
   useEffect(() => { setDark(document.documentElement.classList.contains("dark")); }, []);
-
-  const leer = async (k) => {
-    try { const r = await window.storage?.get(k); return r?.value ? JSON.parse(r.value) : null; }
-    catch { return null; }
-  };
-  const cargar = async () => {
-    setCargando(true);
-    const [b, p, g] = await Promise.all([leer("iso3-bancos-zoho"), leer("iso3-pagos-zoho"), leer("iso3-gastos-zoho")]);
-    setBancos(b); setPagos(p); setGastos(g); setCargando(false);
-  };
-  useEffect(() => { cargar(); }, []);
 
   const C = dark ? FLUJO_COLOR.oscuro : FLUJO_COLOR.claro;
   const anio = new Date().getFullYear();
@@ -8165,35 +8170,96 @@ function Flujo({ tcFix, setAviso }) {
 
   // Saldo de hoy por moneda. Solo cuentas activas: una cuenta dada de baja con
   // saldo residual no es dinero con el que se pueda pagar nómina.
+  /* El ancla del saldo son LAS MISMAS CUENTAS que describen los movimientos.
+
+     Si se anclara en el efectivo de toda la empresa —cajas chicas, fondos sin
+     depositar— pero se caminara hacia atrás con movimientos que solo cubren
+     los cinco bancos del libro, cada peso que entró o salió de una caja
+     chica ensuciaría todos los saldos anteriores sin que nada lo diga. Mejor
+     un número más chico y exacto que uno completo y torcido. Se dice en
+     pantalla cuántas cuentas lo forman. */
+  const cuentasDelFlujo = useMemo(() => {
+    const con = new Set((operaciones || []).map((o) => String(o.cuentaId)));
+    const c1 = (cuentas || []).filter((c) => con.has(String(c.id)));
+    return c1.length ? c1 : (cuentas || []).filter((c) => (c.tipo || "bank") !== "credit_card");
+  }, [cuentas, operaciones]);
+
   const saldoHoy = useMemo(() => {
     const s = { MXN: 0, USD: 0 };
-    for (const c of bancos?.cuentas || []) {
-      if (!c.activa) continue;
+    for (const c of cuentasDelFlujo) {
+      if ((c.tipo || "bank") === "credit_card") continue;      // un préstamo no es caja
       const m = String(c.moneda || "MXN").toUpperCase();
-      if (s[m] != null) s[m] += +c.saldo || 0;
+      if (s[m] != null) s[m] += +(c.saldoZoho ?? c.saldo) || 0;
     }
     return s;
-  }, [bancos]);
+  }, [cuentasDelFlujo]);
 
   // Entradas y salidas por semana y moneda.
+  // Mover dinero entre cuentas propias no es flujo. Al importar el libro, las
+  // patas de un traspaso llegan como ingreso y egreso sueltos, así que el TIPO
+  // es lo único que las delata.
+  const esTraspaso = (o) =>
+    o.tipo === "traspaso" || o.tipo === "cambio" ||
+    /TRASPASO|CAMBIO DE DIVISA/.test(String(o.categoria || "").toUpperCase());
+
+  const porCuenta = useMemo(() => new Map((cuentas || []).map((c) => [String(c.id), c])), [cuentas]);
+
   const movs = useMemo(() => {
     const m = {};
-    const slot = (sem) => (m[sem] = m[sem] || { entMXN: 0, entUSD: 0, salMXN: 0, salUSD: 0, traMXN: 0, traUSD: 0 });
-    for (const p of pagos?.pagos || []) {
-      const sem = lunesDeISO(p.fecha); if (!sem) continue;
-      const s = slot(sem);
-      if (String(p.cur).toUpperCase() === "USD") s.entUSD += +p.monto || 0; else s.entMXN += +p.monto || 0;
-    }
-    for (const g of gastos?.gastos || []) {
-      const sem = g.semana || lunesDeISO(g.fecha); if (!sem) continue;
-      const s = slot(sem);
-      const usd = String(g.moneda).toUpperCase() === "USD";
-      if (g.traspaso) { if (usd) s.traUSD += +g.total || 0; else s.traMXN += +g.totalMXN || 0; }
-      else if (usd) s.salUSD += +g.total || 0;
-      else s.salMXN += +g.totalMXN || 0;
+    const slot = (sem) => (m[sem] = m[sem] || { entMXN: 0, entUSD: 0, salMXN: 0, salUSD: 0, traMXN: 0, traUSD: 0, n: 0 });
+    for (const o of operaciones || []) {
+      if (o.estatus === "planeado") continue;                  // todavía no pasó por el banco
+      const sem = lunesDeISO(o.fecha); if (!sem) continue;
+      const c = porCuenta.get(String(o.cuentaId));
+      const usd = String(o.moneda || c?.moneda || "MXN").toUpperCase() === "USD";
+      const v = Math.abs(+o.monto || 0);
+      const s = slot(sem); s.n++;
+      if (esTraspaso(o)) {
+        // Con signo: las dos patas de un traspaso son movimientos distintos y
+        // dentro de una misma moneda se cancelan. Un cambio de divisas no: le
+        // mete pesos de verdad a la caja en pesos. El saldo se camina con este
+        // número, así que en valor absoluto la tabla no cuadraría contra el banco.
+        const d = o.tipo === "egreso" ? -v : v;
+        if (usd) s.traUSD += d; else s.traMXN += d;
+      }
+      else if (o.tipo === "egreso") { if (usd) s.salUSD += v; else s.salMXN += v; }
+      else { if (usd) s.entUSD += v; else s.entMXN += v; }
     }
     return m;
-  }, [pagos, gastos]);
+  }, [operaciones, porCuenta]);
+
+  // Los meses del año, que es como se lee el negocio. Un mes sin un solo
+  // movimiento es un mes cuyo libro no se ha subido: va en «—», no en cero.
+  const meses = useMemo(() => {
+    const cur = moneda === "USD" ? "USD" : "MXN";
+    const base = [];
+    for (let i = 0; i < 12; i++) base.push({ ym: `${anio}-${String(i + 1).padStart(2, "0")}`, ent: 0, sal: 0, tra: 0, n: 0, ini: null, fin: null });
+    for (const o of operaciones || []) {
+      if (o.estatus === "planeado") continue;
+      const k = mesDe(o.fecha); if (!k || !k.startsWith(String(anio))) continue;
+      const f = base[+k.slice(5, 7) - 1]; if (!f) continue;
+      const c = porCuenta.get(String(o.cuentaId));
+      const usd = String(o.moneda || c?.moneda || "MXN").toUpperCase() === "USD";
+      let v = Math.abs(+o.monto || 0);
+      if (moneda === "CONS") v = usd ? v * tc : v;
+      else if ((cur === "USD") !== usd) continue;              // la otra moneda no entra
+      f.n++;
+      if (esTraspaso(o)) f.tra += (o.tipo === "egreso" ? -v : v);
+      else if (o.tipo === "egreso") f.sal += v; else f.ent += v;
+    }
+    const ancla = moneda === "CONS" ? saldoHoy.MXN + saldoHoy.USD * tc : saldoHoy[cur];
+    const iHoy = new Date().getMonth();
+    const primero = base.findIndex((f) => f.n > 0);
+    if (primero >= 0 && iHoy >= primero) {
+      base[iHoy].fin = ancla;
+      base[iHoy].ini = ancla - base[iHoy].ent + base[iHoy].sal - base[iHoy].tra;
+      for (let i = iHoy - 1; i >= primero; i--) {
+        base[i].fin = base[i + 1].ini;
+        base[i].ini = base[i].fin - base[i].ent + base[i].sal - base[i].tra;
+      }
+    }
+    return base;
+  }, [operaciones, porCuenta, moneda, tc, saldoHoy, anio]);
 
   // La caminata hacia atrás desde el saldo real de hoy.
   const filas = useMemo(() => {
@@ -8207,7 +8273,7 @@ function Flujo({ tcFix, setAviso }) {
     };
     const ancla = moneda === "CONS" ? saldoHoy.MXN + saldoHoy.USD * tc : saldoHoy[cur];
 
-    const out = semanas.map((sem) => ({ sem, ...de(sem), ini: null, fin: null, futura: sem > semanaHoy }));
+    const out = semanas.map((sem) => ({ sem, ...de(sem), n: movs[sem]?.n || 0, ini: null, fin: null, futura: sem > semanaHoy }));
     const iHoy = out.findIndex((f) => f.sem === semanaHoy);
     if (iHoy < 0) return out;
 
@@ -8229,13 +8295,16 @@ function Flujo({ tcFix, setAviso }) {
     return conDato.reduce((a, b) => (b.fin < a.fin ? b : a));
   }, [filas]);
 
-  const sinGastos = !gastos;
   const simbolo = moneda === "USD" ? "USD" : "MXN";
+  // Los meses sin libro cargado no se dibujan: una línea plana desde enero se
+  // lee como «no pasó nada», que es justo lo contrario de «no lo sabemos».
+  const iPrimera = filas.findIndex((f) => f.n > 0);
+  const mesesSinLibro = meses.filter((m) => m.n === 0 && +m.ym.slice(5, 7) <= new Date().getMonth() + 1);
 
   /* -------- gráfica -------- */
   const W = 1040, H = 230, P = { t: 14, r: 10, b: 20, l: 64 };
-  const conDato = filas.filter((f) => !f.futura);
-  const maxBarra = Math.max(1, ...conDato.map((f) => Math.max(f.ent, f.sal)));
+  const conDato = filas.filter((f, i) => !f.futura && (iPrimera < 0 || i >= iPrimera));
+  const maxBarra = Math.max(1, ...conDato.map((f) => Math.max(f.ent, f.sal, Math.abs(f.tra))));
   const finitos = conDato.map((f) => f.fin).filter((v) => v != null);
   const sMin = Math.min(0, ...finitos), sMax = Math.max(0, ...finitos);
   const anchoCol = (W - P.l - P.r) / Math.max(1, conDato.length);
@@ -8260,7 +8329,7 @@ function Flujo({ tcFix, setAviso }) {
                 movimientos capturados a mano; éste no se captura, se lee.
                 Dos pantallas que dicen "flujo" y no coinciden erosionan la
                 confianza en las dos, así que cada una dice su fuente. */}
-            <p className="text-[10px] text-stone-400">Leído de Zoho · pagos, gastos y saldos de banco · sin capturar nada</p>
+            <p className="text-[10px] text-stone-400">Armado con los movimientos del libro de bancos · saldo de hoy leído de Zoho</p>
             {valle ? (
               <p className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: valle.fin < 0 ? C.salidas : undefined }}>
                 ${mx0(valle.fin)} <span className="text-sm font-normal text-stone-500">{simbolo} · semana del {diaCorto(valle.sem)}</span>
@@ -8272,6 +8341,9 @@ function Flujo({ tcFix, setAviso }) {
               <p className="text-[10px] uppercase tracking-widest text-stone-500 font-semibold">Saldo hoy</p>
               <p className="text-sm font-mono">${mx0(saldoHoy.MXN)} MXN</p>
               <p className="text-sm font-mono">{mx0(saldoHoy.USD)} USD</p>
+              <p className="text-[10px] text-stone-400" title={cuentasDelFlujo.map((c) => c.nombre).join(" · ")}>
+                {cuentasDelFlujo.length} cuenta(s) del libro
+              </p>
             </div>
             <div className="flex rounded border border-stone-300 dark:border-stone-600 overflow-hidden text-xs">
               {[["MXN", "Pesos"], ["USD", "Dólares"], ["CONS", `Consolidado @${tc}`]].map(([k, t]) => (
@@ -8279,19 +8351,64 @@ function Flujo({ tcFix, setAviso }) {
                   className={`px-2.5 py-1 ${moneda === k ? "bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900" : "text-stone-600 dark:text-stone-300"}`}>{t}</button>
               ))}
             </div>
-            <button onClick={cargar} className="text-xs underline text-stone-500">Actualizar</button>
+
           </div>
         </div>
       </div>
 
-      {/* Un cero que no se explica se lee como un cero real. Si el blob de
-          egresos no existe, se dice en vez de pintar la tabla en blanco. */}
-      {sinGastos && (
+      {/* Un cero que no se explica se lee como un cero real. */}
+      {mesesSinLibro.length > 0 && (
         <div className="px-3 py-2 rounded text-xs border bg-amber-50 border-amber-300 text-amber-900">
-          <b>Los egresos todavía no se sincronizan.</b> Las salidas salen en cero porque <code>iso3-gastos-zoho</code> no existe —
-          falta desplegar <code>gastos-sync</code> y correrla. Lo que ves abajo son entradas y saldos, no un flujo completo.
+          <b>Faltan {mesesSinLibro.length} mes(es) por cargar:</b> {mesesSinLibro.map((m) => nombreMes(m.ym).split(" ")[0]).join(", ")}.
+          Van en «—», no en cero: todavía no sabemos qué pasó ahí. Súbelos con <b>⤒ Subir Libro de Bancos Antiguo</b> en
+          Tesorería → Movimientos y esta pantalla se puebla sola.
         </div>
       )}
+
+      {/* EL AÑO POR MESES. Es como se lee el negocio y como se declara; las
+          semanas de abajo son el detalle de cuándo pegó. */}
+      <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 overflow-x-auto">
+        <div className="px-3 pt-2.5 pb-1">
+          <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600 dark:text-stone-300">El año por meses · {anio}</p>
+        </div>
+        <table className="text-[11px] font-mono border-collapse w-full">
+          <thead>
+            <tr className="bg-stone-100 dark:bg-stone-800">
+              <th className="sticky left-0 z-10 bg-stone-100 dark:bg-stone-800 px-3 py-2 text-left font-sans font-semibold">Mes</th>
+              {meses.map((m) => (
+                <th key={m.ym} className={`px-2 py-2 text-right whitespace-nowrap capitalize ${+m.ym.slice(5, 7) === new Date().getMonth() + 1 ? "bg-stone-200 dark:bg-stone-700" : ""}`}>
+                  {nombreMes(m.ym).slice(0, 3)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ["Saldo inicial", (m) => m.ini, null],
+              ["Entradas", (m) => (m.n ? m.ent : null), C.entradas],
+              ["Salidas", (m) => (m.n ? m.sal : null), C.salidas],
+              ["Traspasos", (m) => (m.n ? m.tra : null), C.traspasos],
+              ["Neto del mes", (m) => (m.n ? m.ent - m.sal : null), null],
+              ["Saldo final", (m) => m.fin, null],
+            ].map(([t, get, color], ri) => (
+              <tr key={t} className={`border-t border-stone-200 dark:border-stone-700 ${ri === 5 ? "font-semibold bg-stone-50 dark:bg-stone-800/50" : ""}`}>
+                <td className="sticky left-0 z-10 bg-white dark:bg-stone-900 px-3 py-1.5 font-sans whitespace-nowrap">
+                  {color && <span className="inline-block h-2 w-2 rounded-sm mr-1.5 align-middle" style={{ background: color }} />}{t}
+                </td>
+                {meses.map((m) => {
+                  const v = get(m);
+                  return (
+                    <td key={m.ym} title={m.n ? `${m.n} movimiento(s)` : "Sin libro cargado"}
+                        className={`px-2 py-1.5 text-right tabular-nums ${v != null && v < 0 ? "text-red-600" : ""} ${m.n ? "" : "text-stone-300 dark:text-stone-600"}`}>
+                      {v == null ? "—" : mx0(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {/* Barras: entradas arriba, salidas abajo. La línea es el saldo final, que
           es lo que se decide; las barras explican por qué se mueve. */}
@@ -8313,7 +8430,7 @@ function Flujo({ tcFix, setAviso }) {
             <g key={f.sem}>
               {f.ent > 0 && <rect x={x(i) - anchoBarra - 1} y={yBase - hBarra(f.ent)} width={anchoBarra} height={hBarra(f.ent)} rx="2" fill={C.entradas} />}
               {f.sal > 0 && <rect x={x(i) + 1} y={yBase} width={anchoBarra} height={hBarra(f.sal)} rx="2" fill={C.salidas} />}
-              {f.tra > 0 && <rect x={x(i) + 1} y={yBase + hBarra(f.sal)} width={anchoBarra} height={Math.max(1, hBarra(f.tra))} rx="2" fill={C.traspasos} opacity="0.75" />}
+              {f.tra !== 0 && <rect x={x(i) + 1} y={yBase + hBarra(f.sal)} width={anchoBarra} height={Math.max(1, hBarra(Math.abs(f.tra)))} rx="2" fill={C.traspasos} opacity="0.75" />}
               <title>{`Semana del ${diaCorto(f.sem)}\nEntradas $${mx0(f.ent)}\nSalidas $${mx0(f.sal)}\nTraspasos $${mx0(f.tra)}\nSaldo final $${mx0(f.fin)}`}</title>
             </g>
           ))}
@@ -8359,8 +8476,9 @@ function Flujo({ tcFix, setAviso }) {
         El único saldo medido es el de hoy, que sale de los bancos de Zoho. Los de las semanas anteriores se
         derivan caminando hacia atrás desde ése, así que arrastran cualquier movimiento que no esté capturado en
         Zoho. Los traspasos —cambio de divisa y ajustes contables— se muestran aparte y no cuentan como salida,
-        por acuerdo del 19-oct. Las semanas futuras van vacías hasta que entre el pronóstico.
-        {cargando && " · cargando…"}
+        por acuerdo del 19-oct. Las semanas futuras van vacías hasta que entre el pronóstico, y los meses sin
+        libro cargado van en «—»: la semana en que se suban aparecen solas. El mes en curso cierra en el saldo de
+        hoy, no a fin de mes.
       </p>
     </section>
   );
