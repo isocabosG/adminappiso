@@ -6467,9 +6467,9 @@ function Inventario({ catalogo, saveCatalogo, setAviso, correo }) {
             <p className="text-xs text-emerald-100">{fisProg || (fisFecha ? `al ${fisFecha}` : "sin datos")}</p>
             <div className="mt-1 flex flex-wrap gap-1.5 justify-end">
               <button onClick={refrescarFisico} disabled={!!fisProg || noConn} className="px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">↻ Actualizar</button>
-              <button onClick={armarReporte} disabled={!fis || repCargando} title="Reporte 1: lo que tenemos a mano menos lo comprometido en obras"
+              <button onClick={armarReporte} disabled={!fis || repCargando} title="Lo que tenemos a mano menos lo comprometido en obras, con el inventario de hoy"
                       className="px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25 disabled:opacity-40">
-                {repCargando ? "Armando…" : "Crear reporte de inventario"}
+                {repCargando ? "Armando…" : "Armar reporte de hoy"}
               </button>
             </div>
           </div>
@@ -6516,10 +6516,13 @@ function Inventario({ catalogo, saveCatalogo, setAviso, correo }) {
         </p>
       </div>
 
-      {/* ---- Lo que ya se reportó, mes por mes. Un mes congelado no se
-              recalcula: se consulta y se vuelve a bajar igual. ---- */}
+      {/* ---- Los reportes de inventario, mes por mes ---- */}
       <div className="bg-white border border-stone-200 rounded-lg">
-        <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-stone-200 bg-stone-50">
+        <div className="px-3 pt-2.5 pb-1">
+          <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600">Reportes de inventario</p>
+          <p className="text-[11px] text-stone-500">Lo que se le reportó al contador, mes por mes. Un mes congelado no se recalcula: se consulta y se vuelve a bajar igual.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-y border-stone-200 bg-stone-50">
           <button onClick={() => setCierreYm(mesSiguiente(cierreYm, -1))}
             className="px-2 py-1 rounded border border-stone-300 text-stone-600 hover:bg-white">←</button>
           <span className="text-sm font-semibold capitalize min-w-[9rem] text-center">{nombreMes(cierreYm)}</span>
@@ -6606,8 +6609,8 @@ function Inventario({ catalogo, saveCatalogo, setAviso, correo }) {
         <div className="bg-white border border-stone-200 rounded-lg p-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <h3 className="text-sm font-semibold">Reporte de inventario · contadores</h3>
-              <p className="text-[11px] text-stone-500">Corte al {rep.fechaFisico} · órdenes al {rep.fechaComp}</p>
+              <h3 className="text-sm font-semibold">Reporte de hoy · todavía sin congelar</h3>
+              <p className="text-[11px] text-stone-500">Corte al {rep.fechaFisico} · órdenes al {rep.fechaComp} · se recalcula con cada cambio hasta que lo congeles</p>
             </div>
             <div className="flex flex-wrap gap-1.5 items-center">
               <input value={repQ} onChange={(e) => setRepQ(e.target.value)} placeholder="Buscar SKU o descripción…"
