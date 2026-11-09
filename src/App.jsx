@@ -8513,10 +8513,105 @@ const txtCelda = (v) => {
   return String(v).trim();
 };
 const fechaCelda = (v) => {
-  if (v instanceof Date) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  if (v instanceof Date) {
+    /* ExcelJS lee las fechas del archivo como MEDIANOCHE UTC. Leerlas con
+       getDate(), que es hora local, le resta un día a todas en Los Cabos
+       (UTC−7): los 170 movimientos de noviembre entraron fechados el día
+       anterior. Es el mismo error que tenía `hoy()`. Si la hora UTC es
+       medianoche clavada, la fecha buena es la UTC. */
+    const medianoche = v.getUTCHours() === 0 && v.getUTCMinutes() === 0 && v.getUTCSeconds() === 0;
+    const a = medianoche ? v.getUTCFullYear() : v.getFullYear();
+    const m = (medianoche ? v.getUTCMonth() : v.getMonth()) + 1;
+    const d = medianoche ? v.getUTCDate() : v.getDate();
+    return `${a}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
   const t = txtCelda(v);
   return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : "";
 };
+
+/* Las semanas del mes, como las numera Jesús: WW45 es la semana ISO 45 del
+   año, Q21 y Q22 las dos quincenas que caen en el mes. Noviembre 2026 da
+   WW45…WW49 + Q21 y Q22, que son exactamente los siete renglones de su hoja.
+   Se generan solas al abrir un mes nuevo y el nombre se puede editar. */
+const semanaISO = (d) => {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));      // al jueves de su semana
+  const ene1 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t - ene1) / 86400000 + 1) / 7);
+};
+const semanasDelMes = (ym) => {
+  const [a, m] = String(ym || "").split("-").map(Number);
+  if (!a || !m) return [];
+  const out = [], d = new Date(Date.UTC(a, m - 1, 1));
+  while (d.getUTCMonth() === m - 1) {
+    if (d.getUTCDay() === 1) out.push(`WW${semanaISO(d)}`);     // un renglón por lunes
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  out.push(`Q${m * 2 - 1}`, `Q${m * 2}`);
+  return out.map((semana) => ({ semana }));
+};
+
+/* Las dos tablas que NO salen del Concentrado: la nómina por semana y las
+   retenciones al extranjero. Viven en la pestaña Estimado del mismo archivo,
+   en el mismo acomodo que escribe nuestro exportador, así que subir el libro
+   viejo trae también lo que se capturaba a mano. Sin esto el gran total de
+   impuestos sale sin el ISR y no cuadra con su hoja. */
+const sinAcentos = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+const NOM_COLS = [["ISR", "isr"], ["IMSS", "imss"], ["FONACOT", "fonacot"], ["SAR", "sar"],
+  ["IMP ESTATAL", "impEstatal"], ["RIESGO TRAB", "riesgo"], ["IMSS EMP", "imssEmp"],
+  ["INFONAVIT", "infonavit"], ["GUARDERIA", "guarderia"], ["PMO EMPR", "pmoEmpr"],
+  ["INFONAVIT EMP", "infonavitEmp"], ["AJUSTE", "ajuste"], ["ART174", "art174"]];
+
+function leerEstimado(wb) {
+  const ws = wb.getWorksheet("Estimado");
+  if (!ws) return null;
+  const A = (n) => sinAcentos(txtCelda(ws.getRow(n).getCell(1).value));
+  const num = (v) => { const x = Number(txtCelda(v).replace(/[^0-9.\-]/g, "")); return isFinite(x) ? x : 0; };
+
+  let fNom = 0, tc = 0, fin = ws.rowCount || 0;
+  const etiq = {};
+  for (let n = 1; n <= fin; n++) {
+    const a = A(n), b = sinAcentos(txtCelda(ws.getRow(n).getCell(2).value));
+    if (!fNom && a === "ISR POR SALARIOS" && b === "ISR") fNom = n;
+    if (!tc && b === "USD") { const t = num(ws.getRow(n).getCell(3).value); if (t > 1) tc = t; }
+    if (["FECHA PAGO", "DLLS PAGADOS", "TC DIA", "% RETENCION"].includes(a)) etiq[a] = n;
+  }
+
+  // Nómina: las columnas se buscan por su encabezado, no por posición.
+  const nomina = [];
+  if (fNom) {
+    const porCol = new Map();
+    ws.getRow(fNom).eachCell((c, i) => {
+      const h = sinAcentos(txtCelda(c.value));
+      const par = NOM_COLS.find(([t]) => t === h);
+      if (par && i > 1) porCol.set(i, par[1]);
+    });
+    for (let n = fNom + 1; n <= fin; n++) {
+      const semana = txtCelda(ws.getRow(n).getCell(1).value).trim();
+      if (!semana || sinAcentos(semana) === "TOTALES") break;
+      const fila = { semana };
+      porCol.forEach((k, i) => { const v = ws.getRow(n).getCell(i).value; if (v != null && txtCelda(v) !== "") fila[k] = num(v); });
+      nomina.push(fila);
+    }
+  }
+
+  // Retenciones: una columna por pago, como su hoja. Solo las que traen dólares.
+  const retenciones = [];
+  if (etiq["DLLS PAGADOS"]) {
+    const rD = ws.getRow(etiq["DLLS PAGADOS"]);
+    for (let c = 2; c <= Math.max(rD.cellCount, 2); c++) {
+      const dlls = num(rD.getCell(c).value);
+      if (!dlls) continue;
+      retenciones.push({
+        fecha: etiq["FECHA PAGO"] ? fechaCelda(ws.getRow(etiq["FECHA PAGO"]).getCell(c).value) : "",
+        dlls,
+        tc: etiq["TC DIA"] ? num(ws.getRow(etiq["TC DIA"]).getCell(c).value) : 0,
+        pct: etiq["% RETENCION"] ? num(ws.getRow(etiq["% RETENCION"]).getCell(c).value) || RETENCION : RETENCION,
+      });
+    }
+  }
+  return { nomina, retenciones, tc };
+}
 const limpia = (x) => { const t = txtCelda(x); return t === "-" ? "" : t; };
 const claveIgual = (a, b) => String(a || "").replace(/\s+/g, "").toUpperCase() === String(b || "").replace(/\s+/g, "").toUpperCase();
 
@@ -8526,6 +8621,7 @@ async function leerConcentrado(file, cuentas, operaciones) {
   await wb.xlsx.load(await file.arrayBuffer());
   const ws = wb.getWorksheet("Concentrado") || wb.worksheets[0];
   if (!ws) throw new Error("El archivo no trae una pestaña Concentrado.");
+  const estimado = leerEstimado(wb);
 
   /* Un renglón ya cargado se reconoce por fecha + importe + referencia +
      cuenta + signo. La cuenta y el signo van dentro porque un traspaso son dos
@@ -8607,7 +8703,13 @@ async function leerConcentrado(file, cuentas, operaciones) {
     });
   });
 
-  return { nuevos, sinCuenta: [...sinCuenta.entries()], repetidos: repetidos.length, vacios };
+  // El mes del archivo es el de la mayoría de sus renglones: ahí van sus tablas.
+  const porMes = new Map();
+  [...nuevos, ...repetidos.map((fecha) => ({ fecha }))].forEach((o) => {
+    const k = mesDe(o.fecha); if (k) porMes.set(k, (porMes.get(k) || 0) + 1);
+  });
+  const ym = [...porMes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  return { nuevos, sinCuenta: [...sinCuenta.entries()], repetidos: repetidos.length, vacios, estimado, ym };
 }
 
 function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
@@ -8617,6 +8719,25 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
      que esté abierto en pantalla. Acepta varios archivos para subir el año de
      un jalón. Los movimientos entran marcados como importados —ya viven en
      Zoho— y no se reenvían. */
+  /* La nómina y las retenciones no salen del Concentrado: viven en la pestaña
+     Estimado. Se guardan en el libro del mes que trae el archivo. Un mes
+     congelado no se toca: ya se declaró con esos números. */
+  const guardarTablas = async (ym, est) => {
+    if (!ym || !est || (!est.nomina.length && !est.retenciones.length)) return false;
+    let v = null;
+    try { const r = await window.storage?.get(LIBRO_PREF + ym); if (r?.value) v = JSON.parse(r.value); } catch { }
+    if (v?.cerrado) return false;
+    const next = {
+      ...(v || { cerrado: false, cerradoEl: "", foto: null }),
+      ym,
+      tc: est.tc || v?.tc || 17.5,
+      nomina: est.nomina.length ? est.nomina : (v?.nomina || []),
+      retenciones: est.retenciones.length ? est.retenciones : (v?.retenciones || []),
+    };
+    await window.storage?.set(LIBRO_PREF + ym, JSON.stringify(next));
+    return true;
+  };
+
   const subirConcentrado = async (files) => {
     const lista = [...(files || [])];
     if (!lista.length) return;
@@ -8624,7 +8745,7 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
     try {
       // Se acumula sobre la misma lista para que la huella de un renglón ya
       // cargado valga también entre archivos de la misma tanda.
-      let acum = operaciones, nuevos = 0, repetidos = 0, vacios = 0;
+      let acum = operaciones, nuevos = 0, repetidos = 0, vacios = 0, tablas = 0;
       const meses = new Set(), sinCuenta = new Map(), fallas = [];
       for (const f of lista) {
         setSubiendo({ trabajando: true, total: lista.length, archivo: f.name });
@@ -8634,11 +8755,13 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
           nuevos += r.nuevos.length; repetidos += r.repetidos; vacios += r.vacios;
           r.nuevos.forEach((o) => meses.add(mesDe(o.fecha)));
           r.sinCuenta.forEach(([k, n]) => sinCuenta.set(k, (sinCuenta.get(k) || 0) + n));
+          if (await guardarTablas(r.ym, r.estimado)) { tablas++; meses.add(r.ym); }
         } catch (e) { fallas.push(`${f.name}: ${e?.message || e}`); }
       }
-      const resumen = { nuevos, repetidos, vacios, fallas, meses: [...meses].sort(), sinCuenta: [...sinCuenta.entries()] };
+      const resumen = { nuevos, repetidos, vacios, fallas, tablas, meses: [...meses].sort(), sinCuenta: [...sinCuenta.entries()] };
       if (!nuevos) {
         setSubiendo({ resumen, err: repetidos ? "Todos los renglones ya estaban cargados." : (fallas[0] || "No se encontró ningún renglón aprovechable.") });
+        if (tablas) setAviso({ t: "ok", m: `Nómina y retenciones cargadas en ${resumen.meses.map(nombreMes).join(", ")}.` });
         return;
       }
       saveOperaciones(acum);
@@ -8669,6 +8792,9 @@ function SubirConcentrado({ cuentas, operaciones, saveOperaciones, setAviso }) {
                 {subiendo.resumen.meses.length > 0 && <> en {subiendo.resumen.meses.map(nombreMes).join(", ")}</>}
                 {subiendo.resumen.repetidos > 0 && <> · <b>{subiendo.resumen.repetidos}</b> ya estaban y se saltaron</>}
                 {subiendo.resumen.vacios > 0 && <> · {subiendo.resumen.vacios} renglón(es) sin fecha o sin importe</>}</p>
+              {subiendo.resumen.tablas > 0 && (
+                <p className="mt-1 text-[12px]">Se cargaron también la nómina por semana y las retenciones al extranjero de la pestaña Estimado. Si tienes el libro abierto, cambia de mes y regresa para verlas.</p>
+              )}
               {subiendo.resumen.fallas.length > 0 && (
                 <p className="mt-1 text-[12px]">No se pudo leer: {subiendo.resumen.fallas.join(" · ")}</p>
               )}
@@ -8702,7 +8828,11 @@ function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAvi
     (async () => {
       let v = null;
       try { const r = await window.storage?.get(LIBRO_PREF + ym); if (r?.value) v = JSON.parse(r.value); } catch { }
-      if (vivo) setLibro(v || { ym, tc: tcFix || 17.5, nomina: [], retenciones: [], cerrado: false, cerradoEl: "", foto: null });
+      // Las semanas salen solas; el nombre se edita y se pueden quitar o
+      // agregar. El TC arranca del fijo de la app y también se edita.
+      if (!v) v = { ym, tc: tcFix || 17.5, nomina: semanasDelMes(ym), retenciones: [], cerrado: false, cerradoEl: "", foto: null };
+      else if (!v.cerrado && !(v.nomina || []).length) v = { ...v, nomina: semanasDelMes(ym) };
+      if (vivo) setLibro(v);
     })();
     return () => { vivo = false; };
   }, [ym]);
@@ -8807,9 +8937,16 @@ function LibroBancos({ operaciones, saveOperaciones, cuentas, cta, tcFix, setAvi
           <div className="flex items-end gap-3">
             <div>
               <label className="block text-[9px] uppercase tracking-widest text-emerald-100">TC del mes</label>
-              <input type="number" step="0.0001" value={libro.tc} disabled={libro.cerrado}
-                onChange={(e) => grabar({ ...libro, tc: +e.target.value || 0 })}
-                className="w-24 px-2 py-1 text-sm font-mono rounded bg-white/15 border border-white/30 text-white placeholder-emerald-200 disabled:opacity-50" />
+              <div className="flex items-center gap-1">
+                <input type="number" step="0.0001" value={libro.tc} disabled={libro.cerrado}
+                  onChange={(e) => grabar({ ...libro, tc: +e.target.value || 0 })}
+                  className="w-24 px-2 py-1 text-sm font-mono rounded bg-white/15 border border-white/30 text-white placeholder-emerald-200 disabled:opacity-50" />
+                {!libro.cerrado && +tcFix > 0 && +libro.tc !== +tcFix && (
+                  <button onClick={() => grabar({ ...libro, tc: +tcFix })}
+                    title={`Volver al TC fijo de la app: ${tcFix}`}
+                    className="px-1.5 py-1 text-[10px] rounded bg-white/15 hover:bg-white/25 border border-white/25">↺ {tcFix}</button>
+                )}
+              </div>
             </div>
             <SubirConcentrado {...{ cuentas, operaciones, saveOperaciones, setAviso }} />
             <button onClick={bajar} disabled={bajando}
