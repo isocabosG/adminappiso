@@ -4019,6 +4019,12 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const [ajuste, setAjuste] = useState({ importe: "", motivo: "", tambienFactura: true });
   const [ajPrevio, setAjPrevio] = useState(null);
   const [ajBusy, setAjBusy] = useState("");
+  // Reestructurar: material a $0 y el precio al concepto.  [10-nov-2026]
+  const [estr, setEstr] = useState({ importe: "", nombre: "SUMINISTRO E INSTALACION", motivo: "" });
+  // Capturado en dolares: la orden esta en pesos pero el cliente pago en USD.
+  const [estrUsd, setEstrUsd] = useState({ usd: "", tc: "", conIva: true });
+  const [estrPrevio, setEstrPrevio] = useState(null);
+  const [estrBusy, setEstrBusy] = useState("");
   const [recarga, setRecarga] = useState(0);
   const [docCargando, setDocCargando] = useState("");
   // Abre (o descarga) un archivo de Zoho (contrato/adjunto o PDF de factura/OV) vía la Edge Function.
@@ -4161,6 +4167,57 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
       }
     } catch (e) { setAviso({ t: "err", m: `No se pudo ${aplicar ? "aplicar" : "calcular"} el ajuste: ` + (e.message || e) }); }
     setAjBusy("");
+  };
+
+  /*  REESTRUCTURAR LA ORDEN, DESDE LA APP.  [10-nov-2026]
+
+      Fran: «no lo podemos hacer sin el JS, no quiero tener que hacerlo por la
+      terminal del navegador». Tenía razón y el regaño era justo: una operación
+      que se pide pegando JavaScript en una consola no existe para nadie más
+      que para quien sabe pegarlo.
+
+      Qué arregla. Las órdenes heredadas de Innobyte traen el precio repartido
+      en el MATERIAL en vez de en el concepto de suministro e instalación. En
+      SO-00186 son 94 renglones con importe que suman 162,684.80 y ningún
+      concepto. Eso cuenta el material dos veces —como costo y como venta— y
+      envenena el contratado, la utilidad, el flujo y el KPI del cotizador.
+
+      Las CANTIDADES no se tocan, solo el precio: el material ya salió del
+      almacén y Zoho ya lo descontó. Bajar cantidades rompería paquetes y
+      envíos; bajar el precio no mueve una sola pieza. Y los renglones AJUSTE
+      se van, porque existían para tapar justo esto.
+
+      Se calcula antes de escribir, igual que el ajuste: nadie debería aprobar
+      algo que todavía no se le enseñó. */
+  const matConPrecio = (so.line_items || []).filter((l) => {
+    const sku = String(l.sku || "").toUpperCase();
+    if (sku === "AJUSTE" || sku === "INST") return false;
+    if (/SUMINISTRO\s+E?\s*INSTALACI/i.test(String(l.name || ""))) return false;
+    return (+l.rate || 0) > 0;
+  });
+  const estrImporte = +String(estr.importe).replace(/,/g, "") || 0;
+  const pedirEstructura = async (aplicar) => {
+    if (estrImporte <= 0) { setAviso({ t: "err", m: "El importe del concepto tiene que ser mayor que cero." }); return; }
+    if (estr.motivo.trim().length < 5) { setAviso({ t: "err", m: "Escribe el motivo: queda pegado al renglon en Zoho para siempre." }); return; }
+    if (typeof window.soEstructura !== "function") { setAviso({ t: "err", m: "Esta version de la app no trae el modulo de estructura. Recarga la pagina." }); return; }
+    setEstrBusy(aplicar ? "aplicar" : "calcular");
+    try {
+      const d = await window.soEstructura({
+        soId, importeInst: estrImporte,
+        nombreInst: estr.nombre.trim() || "SUMINISTRO E INSTALACION",
+        motivo: estr.motivo.trim(), dryRun: !aplicar,
+      });
+      if (!aplicar) setEstrPrevio(d);
+      else {
+        setEstrPrevio(null);
+        setEstr({ importe: "", nombre: "SUMINISTRO E INSTALACION", motivo: "" });
+        setAviso(d.ok
+          ? { t: "ok", m: `Orden reestructurada. ${d.orden?.numero}: $${mx0(d.orden?.totalAntes)} → $${mx0(d.resultado?.totalDespues)} · ${d.resultado?.materialEnCero} renglon(es) de material en cero` }
+          : { t: "err", m: `Quedo a medias: ${(d.resultado?.problemas || []).join(" · ") || "revisa la orden en Zoho"}` });
+        setRecarga((n) => n + 1);
+      }
+    } catch (e) { setAviso({ t: "err", m: `No se pudo ${aplicar ? "aplicar" : "calcular"}: ` + (e.message || e) }); }
+    setEstrBusy("");
   };
 
   const setDatos = (patch) => saveProyData({ ...proyData, [soId]: { ...datos, ...patch } });
@@ -4395,6 +4452,86 @@ ${porPagar >= 0
           en Mexico ("Agregue los cargos como articulo").
           Solo lo ve quien tiene profiles.puede_ajustar, y el permiso lo vuelve
           a revisar la Edge Function: esconder el boton no es seguridad. */}
+      {puedeAjustar && matConPrecio.length > 0 && (
+        <Section n="1c" t="Estructura de la orden" r={`${matConPrecio.length} renglon(es) de material con precio`}>
+          <div className="p-4 space-y-3">
+            <p className="text-[11px] text-stone-600 bg-amber-50 border border-amber-200 rounded px-2.5 py-2">
+              Esta orden trae el precio repartido en el <b>material</b> ({matConPrecio.length} renglones por
+              ${mx0(matConPrecio.reduce((a, l) => a + (+l.item_total || 0), 0))}) en vez de en el concepto de
+              suministro e instalación. Así el material se cuenta dos veces —como costo y como venta— y
+              descuadra lo contratado, la utilidad y el flujo. Esto lo pasa todo al concepto y deja el
+              material en $0. <b>Las cantidades no se tocan</b>: el material ya salió del almacén.
+            </p>
+
+            {/* LA ORDEN ESTA EN PESOS Y EL CLIENTE PUDO PAGAR EN DOLARES.
+                Pasó en SO-00186: pago de 12,091 USD contra una orden en MXN
+                dada de alta a un TC de 15.61 cuando el dólar valía 19. Pedir
+                aquí el importe ya convertido es pedir que alguien haga la
+                división a mano, y ahí es donde entra el error. */}
+            <div className="border border-stone-200 rounded-lg p-3 space-y-2">
+              <p className="text-[10px] uppercase tracking-widest text-stone-400">¿El cliente pagó en dólares? Conviértelo aquí</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 items-end">
+                <div><Lbl>Pagó (USD)</Lbl><input type="number" step="0.01" className={inp + " font-mono"} placeholder="12091.00" value={estrUsd.usd} onChange={(e) => setEstrUsd({ ...estrUsd, usd: e.target.value })} /></div>
+                <div><Lbl>Tipo de cambio</Lbl><input type="number" step="0.0001" className={inp + " font-mono"} placeholder="19.0000" value={estrUsd.tc} onChange={(e) => setEstrUsd({ ...estrUsd, tc: e.target.value })} /></div>
+                <label className="flex items-center gap-1.5 text-[11px] text-stone-600 pb-2">
+                  <input type="checkbox" checked={estrUsd.conIva} onChange={(e) => setEstrUsd({ ...estrUsd, conIva: e.target.checked })} />
+                  Ese pago ya trae IVA
+                </label>
+                <button
+                  onClick={() => {
+                    const u = +String(estrUsd.usd).replace(/,/g, "") || 0;
+                    const t = +String(estrUsd.tc).replace(/,/g, "") || 0;
+                    if (!u || !t) { setAviso({ t: "err", m: "Captura los dólares y el tipo de cambio." }); return; }
+                    const mxn = u * t;
+                    setEstr({ ...estr, importe: String(Math.round((estrUsd.conIva ? mxn / 1.16 : mxn) * 100) / 100) });
+                    setEstrPrevio(null);
+                  }}
+                  className="px-3 py-2 text-xs rounded border border-stone-300 hover:border-emerald-400">Pasar a pesos</button>
+              </div>
+              {(+estrUsd.usd > 0 && +estrUsd.tc > 0) ? (
+                <p className="text-[11px] text-stone-500 font-mono">
+                  {mx(+estrUsd.usd)} USD × {estrUsd.tc} = ${mx(+estrUsd.usd * +estrUsd.tc)} MXN
+                  {estrUsd.conIva ? ` · sin IVA: $${mx(+estrUsd.usd * +estrUsd.tc / 1.16)}` : ` · con IVA: $${mx(+estrUsd.usd * +estrUsd.tc * 1.16)}`}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+              <div><Lbl>Importe del concepto, sin IVA</Lbl><input type="number" step="0.01" className={inp + " font-mono"} placeholder="198042.24" value={estr.importe} onChange={(e) => { setEstr({ ...estr, importe: e.target.value }); setEstrPrevio(null); }} /></div>
+              <div><Lbl>Nombre del concepto</Lbl><input className={inp} placeholder="SUMINISTRO E INSTALACION DE GENERADOR" value={estr.nombre} onChange={(e) => { setEstr({ ...estr, nombre: e.target.value }); setEstrPrevio(null); }} /></div>
+              <div><Lbl>Motivo — queda escrito en Zoho</Lbl><input className={inp} placeholder="Orden heredada: el precio estaba en el material" value={estr.motivo} onChange={(e) => { setEstr({ ...estr, motivo: e.target.value }); setEstrPrevio(null); }} /></div>
+            </div>
+
+            {estrPrevio?.orden ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                <p className="text-xs text-amber-900">Así quedaría <b className="font-mono">{estrPrevio.orden.numero}</b>:</p>
+                <p className="text-sm font-mono font-semibold text-amber-900">${mx(estrPrevio.orden.totalAntes)} → ${mx(estrPrevio.orden.totalEsperado)} {so.currency_code}</p>
+                <p className="text-[11px] text-amber-800">
+                  {estrPrevio.orden.materialConPrecio} renglón(es) de material pasan a $0 (hoy suman ${mx(estrPrevio.orden.sumaMaterial)}) ·
+                  el concepto queda en ${mx(estrPrevio.importeInst)} · impuesto {estrPrevio.orden.impuesto}.
+                </p>
+                {(estrPrevio.orden.ajustesQueSeVan || []).length ? (
+                  <p className="text-[11px] text-red-700">
+                    Se borran {estrPrevio.orden.ajustesQueSeVan.length} renglón(es) de AJUSTE: {estrPrevio.orden.ajustesQueSeVan.map((a) => "$" + mx(a.importe)).join(", ")}.
+                  </p>
+                ) : null}
+                {(estrPrevio.facturas || []).length ? (
+                  <p className="text-[11px] text-amber-800">
+                    La factura {estrPrevio.facturas[0].num} ({estrPrevio.facturas[0].estado}, ${mx(estrPrevio.facturas[0].total)}) <b>NO se toca</b>: se corrige aparte.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex-1" />
+              <button onClick={() => pedirEstructura(false)} disabled={!!estrBusy} className="px-3 py-2 text-xs rounded border border-stone-300 hover:border-emerald-400 disabled:opacity-40">{estrBusy === "calcular" ? "Calculando…" : "Calcular"}</button>
+              <button onClick={() => pedirEstructura(true)} disabled={!!estrBusy || !estrPrevio} className="px-4 py-2 bg-red-700 text-white text-xs font-semibold rounded hover:bg-red-800 disabled:opacity-40">{estrBusy === "aplicar" ? "Aplicando…" : "Aplicar en Zoho"}</button>
+            </div>
+          </div>
+        </Section>
+      )}
+
       {puedeAjustar && (
         <Section n="1b" t="Ajuste por cierre de proyecto" r={ajustesPrevios.length ? `${ajustesPrevios.length} ajuste${ajustesPrevios.length > 1 ? "s" : ""} · $${mx0(ajustesPrevios.reduce((a, l) => a + (+l.item_total || 0), 0))}` : null}>
           <div className="p-4 space-y-3">
