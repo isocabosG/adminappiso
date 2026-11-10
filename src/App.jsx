@@ -3116,7 +3116,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   useEffect(() => {
     // Los anios se derivan de `sos` y NO de `anios`, que se declara despues del
     // return condicional de abajo y aqui todavia esta en zona muerta.
-    const years = anio === "todos"
+    // En Cobranza se cargan TODOS los años aunque la lista esté en uno solo.
+    // Esa pantalla enseña deuda de cualquier año, y sin su blob el contratado
+    // de un proyecto de 2024 caería al cálculo viejo: el saldo saldría bien
+    // —ese viene de la factura— y la columna de junto, mal.  [10-nov-2026]
+    const years = (anio === "todos" || modo === "cobranza")
       ? [...new Set((sos || []).map((x) => (x.date || "").slice(0, 4)).filter(Boolean))]
       : [anio];
     if (!years.length) return;
@@ -3138,7 +3142,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
       }
       setContratados((m) => ({ ...m, ...add }));
     })();
-  }, [anio, sos]);
+  }, [anio, sos, modo]);
 
   if (modo.startsWith("so:")) {
     const soSel = (sos || []).find((x) => String(x.salesorder_id) === String(modo.slice(3))) || null;
@@ -3158,6 +3162,36 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     if (pagoSel.length) { const pagado = s.paid_status === "paid"; if (!((pagoSel.includes("pagado") && pagado) || (pagoSel.includes("porcobrar") && !pagado))) return false; }
     return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q) || (s.company_name || "").toLowerCase().includes(q);
   });
+  /*  LA COBRANZA NO SE FILTRA POR AÑO.  [10-nov-2026]
+
+      Fran, buscando Cabo del Sol: «claramente deben pero no salen». Tenía
+      razón y el problema era más grande que la búsqueda.
+
+      `rows` viene recortado por año, estado y pago, y la pantalla de Cobranza
+      se armaba de ahí. Como el año arranca en el actual, Constanza abría
+      Cobranza cada mañana viendo SOLO las órdenes levantadas este año — y la
+      deuda que hay que cobrar es justamente la vieja.
+
+      Medido ese día: INV-SO-00388, CABO DEL SOL 14, Gran Vision Design,
+      47,049.46 USD de saldo, VENCIDA HACE 582 DÍAS. La orden es de abril-2025,
+      así que con el año en 2026 no aparecía nunca. Y no era la única:
+      SO-00057, SO-00117, SO-00206 y SO-00271 están igual. En toda la base, las
+      25 facturas con más saldo suman ~48.5 M MXN y la más vieja es de
+      abril-2024.
+
+      Una deuda no tiene año de orden de venta: tiene saldo hoy y días de
+      vencida. Por eso Cobranza se arma de su propia base —todas las órdenes
+      que no están canceladas— y los chips de la lista no la tocan.
+
+      LA BÚSQUEDA SÍ APLICA, PERO CON SU CAJA A LA VISTA. Heredarla en silencio
+      sería el mismo error en chico: alguien busca un cliente en Proyectos,
+      entra a Cobranza y ve una lista recortada sin saber por qué. Dentro de
+      Cobranza la caja se pinta con lo que trae, así que el recorte se ve. */
+  const baseCobranza = (sos || []).filter((s) => {
+    if (CANCELADAS.has(String(s.status || "").toLowerCase()) || CANCELADAS.has(String(s.order_status || "").toLowerCase())) return false;
+    return !q || (s.salesorder_number || "").toLowerCase().includes(q) || (s.reference_number || "").toLowerCase().includes(q) || (s.customer_name || "").toLowerCase().includes(q) || (s.company_name || "").toLowerCase().includes(q);
+  });
+
   const filtrando = filtros.length > 0 || !!q || anio !== "todos";
   // BUSCAS ALGO QUE SI EXISTE Y EL FILTRO LO ESCONDE.
   //
@@ -3345,7 +3379,10 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     // descarga. Es lo mismo que hace el export del MRP, que ya funciona.
     a.click();
   };
-  const nDeben = rows.reduce((a, s) => a + (balNeto(s) > 0.5 ? 1 : 0), 0);  // proyectos con saldo
+  // Sobre `baseCobranza`, no sobre `rows`: el número del botón tiene que ser
+  // el mismo que se va a encontrar adentro. Contar sobre la lista filtrada
+  // decía «Cobranza (3)» con treinta deudores atrás.
+  const nDeben = baseCobranza.reduce((a, s) => a + (balNeto(s) > 0.5 ? 1 : 0), 0);
 
 
 
@@ -3358,7 +3395,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     const hoyISO = hoy();
     const dias = (d) => (d ? Math.floor((new Date(hoyISO) - new Date(d)) / 86400000) : null);
 
-    const deudores = rows
+    const deudores = baseCobranza
       .map((s) => {
         const f = facOf(s), saldo = balNeto(s);
         return {
@@ -3394,9 +3431,13 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         <div className="panel-iso rounded-lg p-4">
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
-              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Cobranza · {anio === "todos" ? "todos los años" : anio}</p>
+              <p className="text-[10px] uppercase tracking-widest text-emerald-100">Cobranza · todos los años</p>
               <p className="text-2xl font-bold font-mono leading-tight">${mx0(sumaUSD(deudores))} <span className="text-sm font-normal text-emerald-100">USD por cobrar</span></p>
               <p className="text-[11px] text-emerald-100/90">{deudores.length} proyecto{deudores.length === 1 ? "" : "s"} con saldo · ordenados por antigüedad, el más viejo arriba</p>
+              {/* Se dice en voz alta: esta pantalla NO hereda los chips ni el
+                  año de Proyectos. Antes sí, y por eso escondía la deuda
+                  vieja, que es justo la que hay que cobrar. */}
+              <p className="text-[11px] text-emerald-100/80">Sin filtros de año ni de estado: aquí sale todo lo que tiene saldo, venga de donde venga.</p>
             </div>
             <button onClick={() => setModo("lista")} className="px-2.5 py-1 text-[11px] rounded bg-white/15 hover:bg-white/25 border border-white/25">← Volver a proyectos</button>
           </div>
@@ -3415,6 +3456,16 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           <p className="text-[10px] text-emerald-100/80 mt-2">
             La antigüedad se cuenta desde la <b>factura más vieja que sigue con saldo</b>, no desde la orden de venta. El saldo es el de Zoho, neto de los pagos ya registrados allá.
           </p>
+        </div>
+
+        {/* La búsqueda vive aquí con su contenido a la vista: si alguien dejó
+            algo escrito en Proyectos, se ve que la lista está recortada en vez
+            de preguntarse dónde quedó un deudor. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <input value={busca} onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar cliente, OV o proyecto…"
+            className="px-3 py-1.5 text-xs border border-stone-300 rounded-full w-64 focus:outline-none focus:border-emerald-500" />
+          {busca && <button onClick={() => setBusca("")} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">quitar la búsqueda</button>}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
