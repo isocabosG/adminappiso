@@ -110,9 +110,20 @@ window.soAjuste = async (payload) => {
 // `libro-cotejo` entra por el mismo criterio que las otras: lee Zoho, no le
 // escribe nada, y deja su blob en adm_kv. Son ~50 llamadas, no 2,300.
 const SYNCS = ['catalogo-sync', 'comprometido-sync', 'oc-sync', 'gastos-sync', 'contratado-anio', 'libro-cotejo']
-window.sincronizar = async (nombre) => {
+// EL CUERPO ES OPCIONAL, Y HACIA FALTA.  [10-nov-2026]
+//
+// Mandaba `{}` siempre, y eso dejaba fuera a las sincronias que piden algo:
+// `contratado-anio` EXIGE `anio` de 4 digitos, asi que desde el navegador no
+// se podia correr nunca --contestaba error y nadie sabia por que--, y
+// `libro-cotejo` no podia correrse en modo `muestra` para verificar que campos
+// manda Zoho antes de confiar en el mapeo.
+//
+// La lista blanca sigue siendo la que protege: desde aqui solo se puede pedir
+// una de esas funciones, y ninguna escribe en Zoho. Pasarle un cuerpo no
+// agrega a lo que se puede llamar, solo deja decirle como.
+window.sincronizar = async (nombre, cuerpo = {}) => {
   if (!SYNCS.includes(nombre)) throw new Error(`Sincronía no permitida: ${nombre}`)
-  const { data, error } = await supabase.functions.invoke(nombre, { body: {} })
+  const { data, error } = await supabase.functions.invoke(nombre, { body: cuerpo || {} })
   if (error) throw new Error(await detalleError(error))
   if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
   return data
