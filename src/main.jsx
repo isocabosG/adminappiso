@@ -99,6 +99,18 @@ window.soAjuste = async (payload) => {
   return data
 }
 
+// REESTRUCTURAR UNA ORDEN: material a $0 y el precio en el concepto de
+// SUMINISTRO E INSTALACION. Va a la Edge Function `so-estructura`, que lee la
+// orden de Zoho, arma el PUT completo y verifica releyendo. Pesa mas que un
+// ajuste --reescribe todos los renglones-- asi que trae `dryRun` y no se traga
+// el error.
+window.soEstructura = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('so-estructura', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (data && data.ok === false && data.error) throw new Error(textoError(data.error))
+  return data
+}
+
 // Botón "Actualizar de Zoho" del MRP. Las sincronías de madrugada siguen
 // siendo las que mandan; esto es para cuando compras necesita ver AHORA un SKU
 // recién creado o una orden de venta levantada hace un rato.
