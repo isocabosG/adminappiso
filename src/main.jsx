@@ -107,7 +107,9 @@ window.soAjuste = async (payload) => {
 // solo se puede pedir una de estas tres, y ninguna escribe en Zoho — las tres
 // leen y dejan su blob en adm_kv. `inventario-sync` NO está: son ~2,300
 // llamadas a Zoho y el tope diario lo comparten esta app, IS-PMT y los crons.
-const SYNCS = ['catalogo-sync', 'comprometido-sync', 'oc-sync', 'gastos-sync', 'contratado-anio']
+// `libro-cotejo` entra por el mismo criterio que las otras: lee Zoho, no le
+// escribe nada, y deja su blob en adm_kv. Son ~50 llamadas, no 2,300.
+const SYNCS = ['catalogo-sync', 'comprometido-sync', 'oc-sync', 'gastos-sync', 'contratado-anio', 'libro-cotejo']
 window.sincronizar = async (nombre) => {
   if (!SYNCS.includes(nombre)) throw new Error(`Sincronía no permitida: ${nombre}`)
   const { data, error } = await supabase.functions.invoke(nombre, { body: {} })

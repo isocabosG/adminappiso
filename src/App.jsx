@@ -9519,6 +9519,132 @@ function TablasCaptura({ libro, grabar, retenciones }) {
 }
 
 
+const COTEJO_KEY = "iso3-libro-cotejo";
+
+/*  SE SUBIERON MOVIMIENTOS A ZOHO Y NO EN LA APP.  [10-nov-2026]
+
+    Fran: «no quiero agregar nada; si hay diferencias significa que no han
+    trabajado en la app y están subiendo movimientos a Zoho y no a la app. Si
+    eso pasa, que salga un cuadro que diga: SE SUBIERON MOVIMIENTOS A ZOHO Y NO
+    EN LA APP, LA INFORMACIÓN NO ESTÁ ACTUALIZADA».
+
+    Le dije que podíamos hacer un cron que copiara los movimientos de Zoho al
+    libro y dijo que no, y tiene razón. Ese cron habría tapado el problema de
+    verdad --que el equipo no está capturando aquí-- y lo habría tapado bien:
+    la pantalla se vería al día para siempre y nadie volvería a usar la app.
+    Lo que hace falta no es rellenar el hueco, es que el hueco se vea.
+
+    QUÉ SE MIDIÓ ESE DÍA. Zoho traía gastos capturados hasta el 9-nov, y se
+    capturan al día (los del 2-nov se crearon el 3-nov; los del 9-nov, el
+    9-nov). `iso3-operaciones` terminaba el 6-nov y no se había vuelto a
+    escribir desde la importación del Excel de Jesús. O sea: sí están
+    capturando, pero en Zoho, y la app llevaba tres días atrás.
+
+    EL NÚMERO LO CALCULA `libro-cotejo`, NO ESTA PANTALLA. Dos corridas al día
+    (6:20 am y 3:20 pm) comparan las ~28 cuentas de Zoho contra el libro y
+    dejan el resultado en `iso3-libro-cotejo`. Aquí solo se pinta: contar
+    movimientos desde el navegador serían 50 llamadas a Zoho cada vez que
+    alguien abre Tesorería, y ese tope lo comparten esta app, IS-PMT y los
+    crons.
+
+    CUANDO ESTÁ AL DÍA TAMBIÉN SE DICE, en una línea delgada. Un vigilante que
+    no se ve cuando todo está bien no se distingue de uno que está apagado, y
+    el día que de verdad haga falta nadie va a saber si creerle. */
+function AvisoCotejo() {
+  const [c, setC] = useState(undefined);        // undefined = cargando, null = nunca ha corrido
+  const [rev, setRev] = useState(false);
+  const [err, setErr] = useState("");
+
+  const leer = async () => {
+    try {
+      const r = await window.storage?.get(COTEJO_KEY);
+      setC(r?.value ? JSON.parse(r.value) : null);
+    } catch (e) { setC(null); }
+  };
+  useEffect(() => { leer(); }, []);
+
+  const revisar = async () => {
+    setRev(true); setErr("");
+    try { await window.sincronizar("libro-cotejo"); await leer(); }
+    catch (e) { setErr(String(e?.message || e)); }
+    finally { setRev(false); }
+  };
+
+  if (c === undefined) return null;
+
+  const btn = (
+    <button onClick={revisar} disabled={rev}
+      className="px-2 py-1 text-xs rounded border border-current underline-offset-2 hover:underline disabled:opacity-50">
+      {rev ? "revisando Zoho…" : "Volver a revisar"}
+    </button>
+  );
+
+  if (c === null) return (
+    <div className="px-3 py-2 rounded text-xs border border-stone-300 bg-stone-50 text-stone-600 flex items-center gap-3">
+      <span>Todavía no se ha cotejado el libro contra Zoho.</span>{btn}
+      {err && <span className="text-red-700">{err}</span>}
+    </div>
+  );
+
+  const r = c.resumen || {};
+  const atrasadas = (c.cuentas || []).filter((x) => x.atrasada);
+
+  if (!c.desactualizado) return (
+    <div className="px-3 py-2 rounded text-xs border border-teal-300 bg-teal-50 text-teal-900 flex flex-wrap items-center gap-3">
+      <span>✓ El libro cuadra con Zoho en {c.ym}: {r.cuentas} cuenta(s) revisadas, ningún movimiento de más en Zoho.</span>
+      <span className="text-teal-700">revisado {String(c.generado || "").slice(0, 16).replace("T", " ")}</span>
+      {btn}
+      {err && <span className="text-red-700">{err}</span>}
+    </div>
+  );
+
+  return (
+    <div className="rounded border-2 border-red-500 bg-red-50 text-red-900 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="font-bold text-sm leading-snug">
+          SE SUBIERON MOVIMIENTOS A ZOHO Y NO EN LA APP<br />
+          LA INFORMACIÓN NO ESTÁ ACTUALIZADA
+        </div>
+        {btn}
+      </div>
+      <div className="text-xs mt-2">
+        Zoho tiene <b>{r.movimientosFaltantes}</b> movimiento(s) de {c.ym} que el libro no registra,
+        en <b>{r.cuentasAtrasadas}</b> cuenta(s).
+        {r.ultimaZoho && <> Último movimiento en Zoho: <b>{r.ultimaZoho}</b>.</>}
+        {r.ultimaApp ? <> Último en la app: <b>{r.ultimaApp}</b>.</> : <> La app no tiene ninguno este mes.</>}
+        {r.diasDeAtraso > 0 && <> Son <b>{r.diasDeAtraso} día(s)</b> de atraso.</>}
+      </div>
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-red-700 border-b border-red-300">
+            <th className="py-1 pr-2">Cuenta</th>
+            <th className="py-1 pr-2 text-right">En Zoho</th>
+            <th className="py-1 pr-2 text-right">En la app</th>
+            <th className="py-1 pr-2 text-right">Faltan</th>
+            <th className="py-1">Días sin capturar</th>
+          </tr></thead>
+          <tbody>
+            {atrasadas.map((x) => (
+              <tr key={x.id} className="border-b border-red-200">
+                <td className="py-1 pr-2">{x.cuenta} <span className="text-red-600">· {x.moneda}</span></td>
+                <td className="py-1 pr-2 text-right tabular-nums">{x.zoho.n}</td>
+                <td className="py-1 pr-2 text-right tabular-nums">{x.app.n}</td>
+                <td className="py-1 pr-2 text-right tabular-nums font-bold">{x.faltanEnApp}</td>
+                <td className="py-1">{(x.diasSinCapturar || []).join(" · ") || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-xs mt-2 text-red-700">
+        Esto no se corrige solo a propósito: los movimientos se capturan aquí, en «+ Nueva operación»,
+        o se suben con el Excel del mes. Cotejado {String(c.generado || "").slice(0, 16).replace("T", " ")}.
+      </div>
+      {err && <div className="text-xs mt-1 text-red-700">{err}</div>}
+    </div>
+  );
+}
+
 function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }) {
   const [modo, setModo] = useState("resumen"); // resumen | nueva | movimientos
   const [editando, setEditando] = useState(null);
@@ -9660,6 +9786,11 @@ function Tesoreria({ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, 
           <button onClick={() => setModo("nueva")} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">+ Nueva operación</button>
         </div>
       </div>
+
+      {/* Va ARRIBA de las cuatro pestañas, no dentro de una: el aviso dice que
+          TODO lo que se ve debajo está incompleto, y eso vale igual para el
+          resumen, el flujo, los movimientos y el libro. */}
+      <AvisoCotejo />
 
       {modo === "resumen" && <ResumenTesoreria {...{ cuentas, saveCuentas, saldos, consolidadoUSD, tcFix, saveTcFix, refrescarBancos, porRegistrar }} />}
       {modo === "flujo" && <FlujoSemanal {...{ operaciones, cuentas, saldos, consolidadoUSD, tcFix, cta }} />}

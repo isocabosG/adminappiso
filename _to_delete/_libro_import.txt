@@ -1,0 +1,94 @@
+/* ---------------------------------------------------------------------------
+   CARGAR EL CONCENTRADO DE JESÚS  [9-nov-2026]
+
+   Fran: «que de ahora en adelante ya se den en la app». Pero el mes ya corrió:
+   al 9 de noviembre Jesús lleva 170 movimientos en su Excel y Tesorería tiene
+   uno. Sin el histórico, el libro de bancos de la app no sirve para declarar ni
+   se puede comparar contra el suyo.
+
+   Esto lee su pestaña Concentrado y crea un movimiento por renglón, con el
+   mismo TIPO que él capturó. El TIPO importa más que el importe: es lo que
+   agrupa todo el Estimado, y es justo lo que Zoho no sabe —allá un pago es un
+   pago, que sea GASOLINA o DTA vive en su catálogo, no en la contabilidad—.
+
+   SE MARCAN COMO IMPORTADOS Y NO SE REENVÍAN A ZOHO. Compras ya los capturó
+   allá; volver a mandarlos duplicaría la contabilidad. Por eso el movimiento
+   entra con `origen: "excel"` y las pantallas que escriben en Zoho lo saltan.
+
+   La cuenta se reconoce por la CLAVE del libro —«BM MXN 01600699136»— que es
+   para lo que existe esa columna en el Resumen. Un renglón cuya clave no esté
+   dada de alta no se inventa: se reporta y se queda fuera.
+--------------------------------------------------------------------------- */
+const COL_CONC = { fecha: 1, tipo: 2, moneda: 3, formaPago: 4, banco: 5, cuenta: 6, monto: 7, nombre: 8, ocOv: 9, factura: 10, complemento: 11, referencia: 12 };
+
+const txtCelda = (v) => {
+  if (v == null) return "";
+  if (typeof v === "object" && v.richText) return v.richText.map((t) => t.text).join("");
+  if (typeof v === "object" && v.text) return String(v.text);
+  return String(v).trim();
+};
+const fechaCelda = (v) => {
+  if (v instanceof Date) return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  const t = txtCelda(v);
+  return /^\d{4}-\d{2}-\d{2}/.test(t) ? t.slice(0, 10) : "";
+};
+const limpia = (x) => { const t = txtCelda(x); return t === "-" ? "" : t; };
+const claveIgual = (a, b) => String(a || "").replace(/\s+/g, "").toUpperCase() === String(b || "").replace(/\s+/g, "").toUpperCase();
+
+async function leerConcentrado(file, cuentas, operaciones) {
+  const ExcelJS = await traerExcelJS();
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await file.arrayBuffer());
+  const ws = wb.getWorksheet("Concentrado") || wb.worksheets[0];
+  if (!ws) throw new Error("El archivo no trae una pestaña Concentrado.");
+
+  // Por (fecha, monto, referencia) se reconoce un renglón ya cargado: volver a
+  // subir el mismo archivo no debe duplicar nada.
+  const huella = (f, m, r) => `${f}|${Math.round(Math.abs(m) * 100)}|${String(r || "").trim().toUpperCase()}`;
+  const yaEstan = new Set((operaciones || []).map((o) => huella(o.fecha, o.monto, o.referencia)));
+
+  const nuevos = [], sinCuenta = new Map(), repetidos = [];
+  let vacios = 0;
+
+  ws.eachRow((row, n) => {
+    if (n === 1) return;                                   // encabezados
+    const g = (k) => row.getCell(COL_CONC[k]).value;
+    const fecha = fechaCelda(g("fecha"));
+    const monto = Number(txtCelda(g("monto")).replace(/[^0-9.\-]/g, ""));
+    if (!fecha || !isFinite(monto) || monto === 0) { vacios++; return; }
+
+    const clave = limpia(g("cuenta")), banco = limpia(g("banco")), moneda = limpia(g("moneda")) || "MXN";
+    // Primero por clave del libro, que es única. Si el renglón no la trae, se
+    // cae a banco + moneda, que alcanza mientras no haya dos cuentas iguales.
+    let c = (cuentas || []).find((x) => clave && claveIgual(x.clave, clave));
+    if (!c) {
+      const cand = (cuentas || []).filter((x) => bancoCorto(x.nombre) === banco.toUpperCase() && x.moneda === moneda);
+      if (cand.length === 1) c = cand[0];
+    }
+    if (!c) { sinCuenta.set(clave || `${banco} ${moneda}`, (sinCuenta.get(clave || `${banco} ${moneda}`) || 0) + 1); return; }
+
+    const h = huella(fecha, monto, limpia(g("referencia")));
+    if (yaEstan.has(h)) { repetidos.push(fecha); return; }
+    yaEstan.add(h);
+
+    const comp = limpia(g("complemento"));
+    nuevos.push({
+      id: uid(),
+      // El signo del Concentrado manda: negativo sale, positivo entra.
+      tipo: monto < 0 ? "egreso" : "ingreso",
+      fecha, cuentaId: c.id, monto: Math.abs(monto), moneda: c.moneda || moneda,
+      estatus: "confirmado",
+      categoria: limpia(g("tipo")),                        // el TIPO de su catálogo
+      formaPago: limpia(g("formaPago")),
+      contraparte: limpia(g("nombre")),
+      ocOv: limpia(g("ocOv")),
+      referencia: limpia(g("referencia")),
+      facturaTexto: limpia(g("factura")),
+      complemento: comp ? { numero: comp, fecha, importado: true } : null,
+      origen: "excel",                                     // no se reenvía a Zoho
+      nota: "",
+    });
+  });
+
+  return { nuevos, sinCuenta: [...sinCuenta.entries()], repetidos: repetidos.length, vacios };
+}
