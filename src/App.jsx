@@ -7263,6 +7263,9 @@ function MrpCompras({ setAviso }) {
   const [verFuera, setVerFuera] = useState(false);       // ver JUSTO esos, para revisarlos
   const [sincro, setSincro] = useState(null);            // qué se está trayendo de Zoho
   const [detalle, setDetalle] = useState(null);   // sku cuyo desglose de obra está abierto
+  // El MRP al revés: por obra en vez de por material.  [10-nov-2026]
+  const [porObraOn, setPorObraOn] = useState(false);
+  const [obraAbierta, setObraAbierta] = useState(null);
   const [scroll, setScroll] = useState(0);
   const cajaRef = useRef(null);
   const yaInicie = useRef(false);
@@ -7480,6 +7483,111 @@ function MrpCompras({ setAviso }) {
     const meses = [...setMeses].filter((k) => k !== "SIN").sort();
     if (setMeses.has("SIN")) meses.push("SIN");
     return { filas, meses, totPorMes };
+  }, [cat, inv, oc, comp, fechaOv, pmt]);
+
+  /*  EL MRP AL REVÉS: POR OBRA.  [10-nov-2026]
+
+      Fran: «sería bueno tener un segundo MRP que enseñe las obras y los
+      materiales, por fechas los materiales de cada una de las obras, o sea
+      al revés».
+
+      POR QUÉ HACE FALTA. El MRP de arriba contesta «¿cuánto cable 4/0 hay que
+      comprar?» sumando todas las obras. Es la pregunta de compras y está bien
+      hecha. Pero esconde la de operación: «¿esta obra se puede surtir?». Una
+      obra a la que le faltan tres piezas de tres materiales distintos está
+      repartida en tres renglones perdidos entre cientos, y no para la obra
+      hasta que alguien lo nota.
+
+      Eso fue justo lo que pasó con CHILENO GE 13: 167 renglones pidiendo
+      material con fecha de instalación vencida hace 51 días, invisible en la
+      vista por material, obvia en cuanto se voltea.
+
+      LAS CANTIDADES SON LAS MISMAS, Y A PROPÓSITO. Sale todo de `comp.porSku`
+      —lo apartado en la orden de venta de Zoho— igual que la tabla de arriba.
+      Si esta pantalla calculara por su cuenta, en una semana habría dos MRP
+      que no coinciden y nadie sabría a cuál creerle. De IS-PMT se toma solo la
+      fecha de instalación, que es lo único que Zoho no tiene.
+
+      EL INVENTARIO SE REPARTE POR FECHA, NO SE CUENTA DOS VECES. El almacén es
+      uno solo y las obras compiten por él: si hay 100 m de cable y tres obras
+      piden 60 cada una, no es cierto que las tres estén cubiertas. Se recorren
+      las obras de la más próxima a la más lejana y cada una va consumiendo lo
+      que queda —primero el físico, luego lo que viene en orden de compra— y lo
+      que ya no alcanza es compra de verdad. Es el mismo criterio con el que
+      almacén surte: el que instala primero se lleva el material. */
+  const obras = useMemo(() => {
+    if (!cat || !comp) return [];
+    const items = inv?.items || {};
+    const transito = oc?.transito || {};
+    const porSku = comp?.porSku || {};
+    const catIt = cat.items || {};
+
+    // 1. Voltear: de SKU -> obras, a obra -> materiales.
+    const map = new Map();
+    for (const [skuRaw, c] of Object.entries(porSku)) {
+      const sku = String(skuRaw).toUpperCase();
+      for (const o of (c?.ovs || [])) {
+        const ov = String(o.ov || "").trim().toUpperCase();
+        const llave = ov || `P:${o.proyecto || "?"}`;
+        let e = map.get(llave);
+        if (!e) { e = { ov: o.ov || "", proyecto: o.proyecto || "", fecha: null, mats: [] }; map.set(llave, e); }
+        if (!e.proyecto && o.proyecto) e.proyecto = o.proyecto;
+        const cant = +o.cant || 0;
+        if (cant > 0) e.mats.push({ sku, desc: (catIt[sku]?.desc) || sku, falta: cant });
+      }
+    }
+    // La fecha de instalación la pone IS-PMT; si no la conoce, la obra va al final.
+    for (const e of map.values()) {
+      const k = String(e.ov || "").trim().toUpperCase();
+      e.fecha = fechaOv[k] || null;
+      if (!e.proyecto) {
+        const hit = Object.values(pmt).flat().find((o) => String(o.ov || "").trim().toUpperCase() === k);
+        if (hit) e.proyecto = hit.proyecto || "";
+      }
+    }
+
+    // 2. De la más próxima a la más lejana, repartiendo el almacén.
+    const lista = [...map.values()].sort((a, b) =>
+      String(a.fecha || "9999-99-99").localeCompare(String(b.fecha || "9999-99-99"))
+      || String(a.ov).localeCompare(String(b.ov)));
+
+    const libreStock = {}, libreOc = {};
+    const hoyISO = hoy();
+    for (const e of lista) {
+      let nFalta = 0, nCubierto = 0, totFalta = 0, totComprar = 0, costoComprar = 0;
+      let valFaltaT = 0, valAlmacenT = 0, valOcT = 0;
+      for (const m of e.mats) {
+        if (libreStock[m.sku] === undefined) libreStock[m.sku] = Math.max(0, +(items[m.sku]?.aMano ?? 0) || 0);
+        if (libreOc[m.sku]    === undefined) libreOc[m.sku]    = Math.max(0, +transito[m.sku] || 0);
+        m.enAlmacen = Math.min(m.falta, libreStock[m.sku]);
+        libreStock[m.sku] -= m.enAlmacen;
+        const resto = m.falta - m.enAlmacen;
+        m.enOc = Math.min(resto, libreOc[m.sku]);
+        libreOc[m.sku] -= m.enOc;
+        m.porComprar = Math.max(0, resto - m.enOc);
+        m.costo = +(items[m.sku]?.cost || 0);
+        /* [10-nov-2026] Fran: «en cada una de las columnas se despliega también
+           el costo del SKU usando el precio que está en Zoho Books». El costo
+           sale de `inv.items[sku].cost`, que es el de Books: el mismo con el
+           que la tabla de arriba valúa la compra sugerida. */
+        m.valFalta = m.falta * m.costo;
+        m.valAlmacen = m.enAlmacen * m.costo;
+        m.valOc = m.enOc * m.costo;
+        m.valComprar = m.porComprar * m.costo;
+        totFalta += m.falta; totComprar += m.porComprar;
+        costoComprar += m.valComprar;
+        valFaltaT += m.valFalta; valAlmacenT += m.valAlmacen; valOcT += m.valOc;
+        if (m.porComprar > 0) nFalta++; else nCubierto++;
+      }
+      e.mats.sort((a, b) => (b.porComprar - a.porComprar) || String(a.sku).localeCompare(String(b.sku)));
+      e.nMat = e.mats.length; e.nFalta = nFalta; e.nCubierto = nCubierto;
+      e.totFalta = totFalta; e.totComprar = totComprar; e.costoComprar = costoComprar;
+      e.valFalta = valFaltaT; e.valAlmacen = valAlmacenT; e.valOc = valOcT;
+      e.completa = nFalta === 0;
+      e.vencida = !!e.fecha && e.fecha < hoyISO;
+      e.dias = e.fecha ? Math.round((new Date(e.fecha + "T12:00:00Z") - new Date(hoyISO + "T12:00:00Z")) / 86400000) : null;
+    }
+    return lista;
   }, [cat, inv, oc, comp, fechaOv, pmt]);
 
   useEffect(() => {
@@ -7798,9 +7906,21 @@ function MrpCompras({ setAviso }) {
             <p className="text-[10px] uppercase tracking-[0.2em] text-teal-200">Planeación de requerimientos de material</p>
             <h2 className="text-lg font-semibold leading-tight">MRP · Compras y abastecimiento</h2>
           </div>
-          <p className="text-[11px] text-teal-100 font-mono">
-            {mx0(filas.length)} SKU · corte {inv?.fecha || cat?.fecha || "—"}
-          </p>
+          <div className="flex items-center gap-2">
+            {/* [10-nov-2026] Las dos caras del mismo dato. La de material
+                contesta «¿cuánto compro?»; la de obra, «¿esta obra se puede
+                surtir?». Son interruptor y no dos pantallas porque es la misma
+                medición: separarlas invita a que se desincronicen. */}
+            <div className="flex rounded-lg overflow-hidden border border-teal-500/60 text-[11px]">
+              <button onClick={() => setPorObraOn(false)}
+                className={`px-2.5 py-1 font-medium ${!porObraOn ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>Por material</button>
+              <button onClick={() => setPorObraOn(true)}
+                className={`px-2.5 py-1 font-medium ${porObraOn ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>Por obra</button>
+            </div>
+            <p className="text-[11px] text-teal-100 font-mono">
+              {porObraOn ? `${mx0(obras.length)} obra(s)` : `${mx0(filas.length)} SKU`} · corte {inv?.fecha || cat?.fecha || "—"}
+            </p>
+          </div>
         </div>
         <p className="text-[11px] text-teal-50 mt-1.5 max-w-3xl">
           El catálogo completo de Zoho contra lo que ya está apartado en órdenes de venta, lo que viene en camino
@@ -7823,6 +7943,89 @@ function MrpCompras({ setAviso }) {
           </div>
         </details>
       </div>
+
+      {/* ───────────── EL MRP AL REVÉS: POR OBRA ───────────── */}
+      {porObraOn && (
+        <div className="space-y-2">
+          <p className="text-[11px] text-stone-600 bg-stone-50 border border-stone-200 rounded px-3 py-2">
+            Las mismas cantidades de arriba, volteadas: cada obra con lo que le falta.
+            El almacén se reparte <b>por fecha de instalación</b> —la obra que instala primero se lleva el material—
+            así que una pieza no se cuenta como disponible para dos obras a la vez.
+            Los importes usan el costo de Zoho Books.
+          </p>
+
+          {obras.length === 0 && (
+            <p className="text-xs text-stone-500 p-3">No hay obras con material apartado en órdenes de venta.</p>
+          )}
+
+          {obras.map((o) => {
+            const llave = o.ov || o.proyecto;
+            const abierta = obraAbierta === llave;
+            return (
+              <div key={llave} className={`border rounded-lg overflow-hidden ${o.vencida && !o.completa ? "border-red-400" : o.completa ? "border-emerald-300" : "border-stone-200"}`}>
+                <button onClick={() => setObraAbierta(abierta ? null : llave)}
+                  className={`w-full text-left px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 ${o.vencida && !o.completa ? "bg-red-50" : o.completa ? "bg-emerald-50" : "bg-white hover:bg-stone-50"}`}>
+                  <span className="text-stone-400 text-xs w-3">{abierta ? "▼" : "▶"}</span>
+                  <span className="font-mono text-xs text-stone-500 w-20 shrink-0">{o.ov || "—"}</span>
+                  <span className="text-sm font-medium flex-1 min-w-[180px]">{o.proyecto || "(sin nombre)"}</span>
+                  <span className="text-[11px] font-mono text-stone-500 w-24 text-right">{o.fecha || "sin fecha"}</span>
+                  <span className={`text-[11px] w-24 text-right ${o.vencida ? "text-red-700 font-bold" : "text-stone-500"}`}>
+                    {o.dias == null ? "—" : o.dias < 0 ? `vencida ${-o.dias} d` : `en ${o.dias} d`}
+                  </span>
+                  {o.completa
+                    ? <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-semibold">se puede surtir</span>
+                    : <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-white font-semibold">faltan {o.nFalta} de {o.nMat}</span>}
+                  <span className="text-xs font-mono font-semibold w-28 text-right">
+                    {o.costoComprar > 0 ? "$" + mx0(o.costoComprar) : "—"}
+                  </span>
+                </button>
+
+                {abierta && (
+                  <div className="overflow-x-auto border-t border-stone-200">
+                    <table className="w-full text-xs">
+                      <thead className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-500">
+                        <tr>
+                          <th className="text-left px-3 py-1.5">SKU</th>
+                          <th className="text-left px-2 py-1.5">Material</th>
+                          <th className="text-right px-2 py-1.5">Falta</th>
+                          <th className="text-right px-2 py-1.5">En almacén</th>
+                          <th className="text-right px-2 py-1.5">En OC</th>
+                          <th className="text-right px-2 py-1.5">Por comprar</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {o.mats.map((m) => (
+                          <tr key={m.sku} className={`border-t border-stone-100 ${m.porComprar > 0 ? "" : "text-stone-400"}`}>
+                            <td className="px-3 py-1 font-mono text-[11px]">{m.sku}</td>
+                            <td className="px-2 py-1">{m.desc}</td>
+                            <td className="px-2 py-1 text-right tabular-nums">{mx0(m.falta)}
+                              <span className="block text-[10px] text-stone-400">${mx0(m.valFalta)}</span></td>
+                            <td className="px-2 py-1 text-right tabular-nums text-emerald-700">{mx0(m.enAlmacen)}
+                              <span className="block text-[10px] text-stone-400">${mx0(m.valAlmacen)}</span></td>
+                            <td className="px-2 py-1 text-right tabular-nums text-sky-700">{mx0(m.enOc)}
+                              <span className="block text-[10px] text-stone-400">${mx0(m.valOc)}</span></td>
+                            <td className={`px-2 py-1 text-right tabular-nums font-semibold ${m.porComprar > 0 ? "text-red-700" : ""}`}>{m.porComprar ? mx0(m.porComprar) : "—"}
+                              <span className="block text-[10px] text-stone-400">{m.porComprar ? "$" + mx0(m.valComprar) : ""}</span></td>
+                          </tr>
+                        ))}
+                        <tr className="border-t-2 border-stone-300 bg-stone-50 font-semibold">
+                          <td className="px-3 py-1.5" colSpan={2}>Total · {o.nMat} material(es)</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums">${mx0(o.valFalta)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">${mx0(o.valAlmacen)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-sky-700">${mx0(o.valOc)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-red-700">${mx0(o.costoComprar)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className={porObraOn ? "hidden" : "space-y-3"}>
 
       {faltaAlgo && (
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded p-2">
@@ -8052,6 +8255,7 @@ function MrpCompras({ setAviso }) {
         STOCK FINAL = BACK ORDER + STOCK AL DIA − POR SURTIR. La columna QTY es tuya: se guarda sola y nadie la pisa.
         El <span className="text-purple-600">●</span> marca lo que IS-PMT pide para obra; haz clic para ver en qué proyecto.
       </p>
+      </div>
     </div>
   );
 }
