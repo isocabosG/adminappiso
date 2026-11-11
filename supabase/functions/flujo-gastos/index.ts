@@ -46,39 +46,80 @@ const sinAcentos = (s: unknown) =>
   String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
 
 // ── CÓMO SE CLASIFICA ──────────────────────────────────────────────────────
-// Gana el primero que empata, y el orden es la regla. Aduana va ANTES que
-// proveedores: el IVA de importación se le paga a un tercero y Zoho lo puede
-// registrar como pago a proveedor, pero no es material — es el costo de
-// meterlo al país, y tiene su propia fecha, la del pedimento.
-const ADUANA = /\bIGI\b|IVA IMPORTACION|IVA DE IMPORTACION|\bDTA\b|INCREMENTABLE|PREVALIDACION|HONORARIOS IMPO|AGENTE ADUANAL|PEDIMENTO|ADUANA/;
-const NOMINA = /NOMINA|FINIQUITO|AGUINALDO|SUELDO|RAYA|\bIMSS\b|INFONAVIT|SAR\b|PTU\b/;
-const IMPUESTO = /\bSAT\b|\bISR\b|\bIVA\b(?! IMPORTACION)|IMPUESTO|DECLARACION|CONTRIBUCION/;
-const TRASPASO = /TRASPASO|TRANSFER(ENCIA)? ENTRE|FONDEO|MOVIMIENTO ENTRE CUENTAS/;
-const PRESTAMO = /PRESTAMO|CREDITO|INTERES|AMORTIZACION|LEASING|ARRENDAMIENTO FINANCIERO/;
+// Por el NOMBRE DE LA CUENTA CONTABLE, no por palabras sueltas en la
+// descripción. La primera versión usaba expresiones regulares sobre el texto
+// libre del movimiento y dio nómina, impuestos y aduana en CERO sobre 5,063
+// movimientos — imposible, cuando el libro de noviembre trae NOMINA e IGI con
+// nombre y apellido. El texto libre casi siempre viene vacío; lo que sí viene
+// es la cuenta a la que se cargó el gasto.
+//
+// Las listas son las 61 cuentas de gasto que existen hoy en Zoho, leídas del
+// catálogo. Una cuenta que NO esté aquí cae en `sinClasificar` a propósito: si
+// alguien crea una cuenta nueva, queremos enterarnos en la pantalla y no que
+// se diluya dentro del operativo.
+const CUENTAS: Record<string, string[]> = {
+  nomina: [
+    "NOMINA QUINCENAL", "NOMINA SEMANAL", "IMSS SIPARE", "AGUINALDO", "FONACOT",
+    "BONO DE PRODUCTIVIDAD", "IMPUESTOS ISN", "EQUIPAMIENTO PARA EL PERSONAL",
+  ],
+  // El flete entra aquí porque en esta empresa el grueso es traída de material
+  // importado, y va pegado al pedimento igual que el IGI.
+  aduana: ["GASTOS DE IMPORTACION", "FLETES"],
+  prestamo: [
+    "PRESTAMO EMPRESA", "PRESTAMOS BANCOS",
+    "INTERES BANCARIO PESOS (515-001-611)", "INTERES BANCARIO PESOS (515-001-462)",
+  ],
+  // Costo de lo vendido es MATERIAL, no operativo. Metido en el operativo
+  // inflaba el gasto fijo con el costo de las obras, que ya se cuenta en las
+  // órdenes de compra.
+  proveedores: ["COSTES DE PRODUCTOS VENDIDOS"],
+  operativo: [
+    "ALOJAMIENTO", "GASTOS DE COMBUSTIBLE", "COMISIONES SOBRE VENTAS",
+    "COMISIONES BANCARIAS", "COMISION BANCARIA PESOS", "SUMINISTROS DE OFICINA",
+    "HERRAMIENTAS", "PUBLICIDAD Y MARKETING", "CARGOS Y TASAS BANCARIAS",
+    "CARGOS DE TARJETA DE CREDITO", "GASTOS DE VIAJES", "GASTOS TELEFONICOS",
+    "RENTA BODEGA Y OFICINA", "GASTOS DE VEHICULOS", "GASTOS DE TI Y DE INTERNET",
+    "GASTOS DE ALQUILER", "GASTOS DE MANTENIMIENTO", "GPS VEHICULOS",
+    "MATERIAL DE OFICINA E IMPRESION", "CFE ENERGIA", "COMIDAS Y ENTRETENIMIENTO",
+    "GASTOS DE CONSULTORES", "SOFTWARE", "HONORARIOS CONTABLES", "HONORARIOS LEGALES",
+    "STARLINK", "MEDICINAS", "SERVICIOS", "CONSUMO", "CONSUMIBLES", "CAPACITACION",
+    "POLIZAS SEGUROS", "ARTICULOS DE LIMPIEZA", "UTILIDADES", "DEUDA INCOBRABLE",
+  ],
+  // Ni salida de caja ni gasto: movimientos contables. No suman en ningún lado.
+  contable: [
+    "GANANCIAS O PERDIDAS DE CAMBIO", "CAMBIO DIVISA DOLARES", "AJUSTE AL NETO",
+    "DESCUENTOS DE COMPRA", "GASTO DE DEPRECIACION", "REEMBOLSO CLIENTES",
+  ],
+};
 
-// Los tipos que Zoho pone en `transaction_type`. Se listan los que decidimos
-// tratar como traspaso o como entrada; cualquier otro tipo cae a la
-// clasificación por texto y, si tampoco empata, a `sinClasificar`.
+// Se arma una sola vez: cuenta -> clase.
+const CLASE_DE_CUENTA = new Map<string, string>();
+for (const [clase, lista] of Object.entries(CUENTAS)) {
+  for (const c of lista) CLASE_DE_CUENTA.set(c, clase);
+}
+
+// Los tipos que Zoho pone en `transaction_type`.
 const TIPO_TRASPASO = new Set(["transfer_fund", "inter_bank_transfer", "owner_contribution", "owner_drawings"]);
 const TIPO_ENTRADA = new Set(["customer_payment", "deposit", "sales_without_invoices", "interest_income", "other_income", "refund_from_vendor"]);
 const TIPO_PROVEEDOR = new Set(["vendor_payment", "bill_payment"]);
-const TIPO_GASTO = new Set(["expense", "card_payment", "expense_refund"]);
 
 function clasificar(t: Record<string, unknown>) {
   const tipo = String(t.transaction_type ?? "").toLowerCase();
-  const texto = sinAcentos(
-    [t.description, t.reference_number, t.payee_name, t.vendor_name, t.account_name, t.customer_name]
-      .filter(Boolean).join(" · "),
-  );
 
-  if (TIPO_TRASPASO.has(tipo) || TRASPASO.test(texto)) return "traspaso";
+  if (TIPO_TRASPASO.has(tipo)) return "traspaso";
   if (TIPO_ENTRADA.has(tipo)) return "entrada";
-  if (ADUANA.test(texto)) return "aduana";
-  if (NOMINA.test(texto)) return "nomina";
-  if (PRESTAMO.test(texto)) return "prestamo";
+  // Un pago a proveedor no pasa por cuenta de gasto: se aplica contra la
+  // factura del proveedor. Su clase la da el tipo y nada más.
   if (TIPO_PROVEEDOR.has(tipo)) return "proveedores";
-  if (IMPUESTO.test(texto)) return "impuestos";
-  if (TIPO_GASTO.has(tipo)) return "operativo";
+
+  // De aquí en adelante es un gasto, y manda la cuenta contable. En
+  // `/banktransactions` esa cuenta viene en `account_name`; el banco por el que
+  // salió es `paid_through_account_name`, que aquí no se mira.
+  const cuenta = sinAcentos(t.account_name ?? t.expense_account_name);
+  const clase = CLASE_DE_CUENTA.get(cuenta);
+  if (clase) return clase;
+
+  // Cuenta que no está en el catálogo, o un movimiento sin cuenta. Visible.
   return "sinClasificar";
 }
 
@@ -131,6 +172,11 @@ Deno.serve(async (req) => {
     // confundido con otra cosa.
     const tipos = new Map<string, number>();
     const dudosos: Record<string, unknown>[] = [];
+    // Un movimiento completo de cada tipo, tal como lo manda Zoho. Sin esto la
+    // clasificacion se afina a ciegas: la primera corrida dio nomina, aduana e
+    // impuestos en CERO --imposible, el libro de noviembre los trae con nombre
+    // y apellido-- y no habia forma de ver que campo hay que mirar.
+    const crudoPorTipo = new Map<string, Record<string, unknown>>();
     let leidos = 0;
 
     const anota = (mes: string, clase: string, mxn: number) => {
@@ -169,6 +215,7 @@ Deno.serve(async (req) => {
           const tipo = String(t.transaction_type ?? "(sin tipo)").toLowerCase();
           tipos.set(tipo, (tipos.get(tipo) || 0) + 1);
 
+          if (!crudoPorTipo.has(tipo)) crudoPorTipo.set(tipo, t);
           const clase = clasificar(t);
           const mxn = Math.abs(montoMxn(t, monedaCuenta));
           anota(mesDe(f), clase, mxn);
@@ -176,6 +223,7 @@ Deno.serve(async (req) => {
           if (clase === "sinClasificar" && dudosos.length < 25) {
             dudosos.push({
               fecha: f, tipo, mxn: r2(mxn), cuenta: String(c.account_name || ""),
+              cuenta: String(t.account_name || "(sin cuenta)"),
               texto: String(t.description || t.reference_number || t.payee_name || "").slice(0, 120),
             });
           }
@@ -208,6 +256,7 @@ Deno.serve(async (req) => {
       promedioMensual: {
         operativo: prom("operativo"),
         nomina: prom("nomina"),
+        contable: prom("contable"),
         impuestos: prom("impuestos"),
         aduana: prom("aduana"),
         prestamo: prom("prestamo"),
@@ -215,6 +264,8 @@ Deno.serve(async (req) => {
         sinClasificar: prom("sinClasificar"),
       },
       tiposCrudos: Object.fromEntries([...tipos.entries()].sort((a, b) => b[1] - a[1])),
+      // Solo en `muestra`: no tiene por que vivir en el blob que lee la app.
+      ...(muestra ? { crudoPorTipo: Object.fromEntries(crudoPorTipo) } : {}),
       dudosos,
       ms: Date.now() - t0,
       llamadas: z.llamadas,

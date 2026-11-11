@@ -8845,7 +8845,8 @@ function Flujo({ operaciones, cuentas, tcFix }) {
     (async () => {
       try {
         const r = await window.storage?.get("iso3-flujo-gastos");
-        if (r) setGastos(typeof r === "string" ? JSON.parse(r) : r);
+        const crudo = typeof r === "string" ? r : r?.value;
+        if (crudo) setGastos(typeof crudo === "string" ? JSON.parse(crudo) : crudo);
       } catch { /* sin medición previa: el bloque lo dice y ofrece correrla */ }
     })();
   }, []);
