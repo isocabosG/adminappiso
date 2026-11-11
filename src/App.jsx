@@ -2490,7 +2490,7 @@ function App({ perfil, correo }) {
         {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} correo={correo} />}
         {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} tcFix={tcFix} />}
-        {vistaSegura === "flujo" && <Flujo {...{ operaciones, cuentas, tcFix }} />}
+        {vistaSegura === "flujo" && <Flujo {...{ operaciones, cuentas, tcFix, proyData }} />}
         {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vistaSegura === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
         {vistaSegura === "usuarios" && perfil?.admin_accesos && <Usuarios setAviso={setAviso} />}
@@ -3251,6 +3251,128 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   };
   const balDoc = (s) => { const f = facOf(s); return f ? f.balance : (+s.balance || 0) * ivaF(s); };  // saldo Zoho (moneda de la OV)
   const manualOf = (s) => (proyData[s.salesorder_id]?.pagos || []).reduce((a, b) => a + (+b.monto || 0), 0);
+
+  /* ── PROPONER LOS COBROS DE TODAS LAS OBRAS DE UNA VEZ ──────────────────
+     [11-nov-2026] Fran: «el calendario de IS-PMT para ver cuándo termina lo
+     calendarizado y ahí proponer el pago del finiquito. Y los proyectos que
+     tienen un porcentaje de anticipo menor al 60%, proponer un 30% de pago en
+     una fecha próxima y que diga estimado».
+
+     Con 99 obras, ir ficha por ficha no se hace nunca. Esto recorre todas y
+     deja la propuesta escrita; el equipo corrige y confirma.
+
+     TRES REGLAS QUE NO SE NEGOCIAN
+     1. No pisa lo que ya existe. Una obra con cobros capturados se salta
+        entera: el trabajo del equipo le gana a mi propuesta siempre.
+     2. Nada de lo que propongo suma. Nace `sugerido`, y suma cuando una
+        persona lo confirma.
+     3. Lo que no tiene de dónde colgar una fecha nace SIN fecha y se queda en
+        FALTA INFORMACIÓN, con su monto a la vista. Nunca se inventa un mes
+        para que el renglón se vea completo. */
+  const [proponiendo, setProponiendo] = useState(false);
+
+  const proponerCobros = async () => {
+    if (proponiendo) return;
+    setProponiendo(true);
+    try {
+      // Las ETAs se leen una sola vez para las 99 obras, no una por obra.
+      let lotes = null, porSku = null;
+      try {
+        const [rOc, rComp] = await Promise.all([
+          window.storage?.get("iso3-mrp-oc-cache-v2"),
+          window.storage?.get("iso3-comprometido-ov"),
+        ]);
+        const oc = JSON.parse(typeof rOc === "string" ? rOc : rOc?.value || "null");
+        const comp = JSON.parse(typeof rComp === "string" ? rComp : rComp?.value || "null");
+        lotes = oc?.lotes || null;
+        porSku = comp?.porSku || null;
+      } catch { /* sin OC: el ship notification nace sin fecha, y se ve */ }
+
+      // OV -> última llegada de equipo. Se arma de una pasada sobre el
+      // comprometido, en vez de recorrerlo entero por cada obra.
+      const etaPorOv = new Map();
+      if (lotes && porSku) {
+        for (const [sku, v] of Object.entries(porSku)) {
+          let ult = null;
+          for (const l of (lotes[sku] || [])) {
+            const e = String(l?.eta || "").slice(0, 10);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(e) && (!ult || e > ult)) ult = e;
+          }
+          if (!ult) continue;
+          for (const o of (v?.ovs || [])) {
+            const ov = String(o.ov || "").trim().toUpperCase();
+            if (!ov) continue;
+            if (!etaPorOv.has(ov) || etaPorOv.get(ov) < ult) etaPorOv.set(ov, ult);
+          }
+        }
+      }
+
+      const d = { ...proyData };
+      let tocadas = 0, saltadas = 0, renglones = 0, sinFecha = 0;
+
+      for (const s of baseCobranza) {
+        const id = s.salesorder_id;
+        const falta = balNeto(s);
+        if (!(falta > 0.5)) continue;
+        if ((d[id]?.cobros || []).length) { saltadas++; continue; }
+
+        const ov = String(s.salesorder_number || "").trim().toUpperCase();
+        const feed = feedDe(s);
+        const pct = pctPagado(s);
+        const base = { ov, proyecto: s.reference_number || s.customer_name || ov, moneda: curOf(s) };
+        const nuevos = [];
+
+        // El 30% solo para quien lleva menos del 60% cobrado. Arriba de eso el
+        // escalón del embarque ya se cobró y proponerlo de nuevo manda a
+        // cobranza a pedir dinero que ya entró.
+        if (pct !== null && pct < 60) {
+          const eta = etaPorOv.get(ov) || "";
+          const ship = Math.min(falta, Math.round(totDoc(s) * 0.3));
+          if (ship > 0) {
+            nuevos.push({
+              id: uid(), ...base, etiqueta: "Ship notification (estimado)", monto: ship,
+              fecha: eta, estado: "sugerido",
+              porque: eta ? `llega equipo de esta obra el ${eta}` : "no se encontró equipo en camino de esta obra",
+            });
+            if (!eta) sinFecha++;
+          }
+        }
+
+        const yaPuesto = nuevos.reduce((a, c) => a + c.monto, 0);
+        const fin = Math.max(0, falta - yaPuesto);
+        if (fin > 0) {
+          // La fecha de ENTREGA, no la de instalación: el finiquito se cobra
+          // cuando la obra se entrega, y la instalación es el principio del
+          // último tramo. `fecha_fin_calendario` lo manda IS-PMT desde hoy.
+          const entrega = feed?.fecha_fin_calendario || "";
+          nuevos.push({
+            id: uid(), ...base, etiqueta: "Finiquito (estimado)", monto: fin,
+            fecha: entrega, estado: "sugerido",
+            porque: entrega ? `la obra termina el ${entrega} según IS-PMT` : "esta obra no está calendarizada en IS-PMT",
+          });
+          if (!entrega) sinFecha++;
+        }
+
+        if (nuevos.length) {
+          d[id] = { ...(d[id] || {}), cobros: nuevos };
+          tocadas++; renglones += nuevos.length;
+        }
+      }
+
+      if (!tocadas) {
+        setAviso({ t: "ok", m: saltadas ? `Nada que proponer: las ${saltadas} obras con saldo ya tienen cobros capturados.` : "Nada que proponer: no hay obras con saldo." });
+        return;
+      }
+      saveProyData(d);
+      setAviso({
+        t: "ok",
+        m: `${renglones} cobro(s) propuestos en ${tocadas} obra(s)` +
+           (saltadas ? ` · ${saltadas} ya tenían captura y no se tocaron` : "") +
+           (sinFecha ? ` · ${sinFecha} sin fecha: quedan en FALTA INFORMACIÓN y no suman` : "") +
+           ". Todos nacen como estimados: no suman hasta que alguien los confirme.",
+      });
+    } finally { setProponiendo(false); }
+  };
   // Por cobrar real.
   //
   // El saldo de una FACTURA en Zoho ya viene neto de los pagos registrados allá
@@ -3680,6 +3802,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         <div className="flex items-center gap-1.5">
           <button onClick={() => setModo("cobranza")} className="px-3 py-1.5 border border-emerald-700 text-emerald-800 text-xs font-medium rounded hover:bg-emerald-50">
             Cobranza{nDeben > 0 ? ` (${nDeben})` : ""}
+          </button>
+          <button onClick={proponerCobros} disabled={proponiendo}
+            title="Recorre todas las obras con saldo: finiquito contra el fin de obra de IS-PMT, y 30% de embarque para las que llevan menos del 60% cobrado. No toca las que ya tienen captura."
+            className={`px-3 py-1.5 text-xs font-medium rounded border ${proponiendo ? "border-stone-200 text-stone-400 cursor-wait" : "border-violet-600 text-violet-700 hover:bg-violet-50"}`}>
+            {proponiendo ? "Proponiendo…" : "⟡ Proponer cobros"}
           </button>
           <button onClick={refrescar} disabled={cargando} className="px-3 py-1.5 bg-emerald-700 text-white text-xs font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{cargando ? "Actualizando…" : "↻ Actualizar de Zoho"}</button>
         </div>
@@ -8876,7 +9003,7 @@ const diaCorto = (iso) => {
    entran como movimientos normales —una sale, otra entra— con TIPO TRASPASO o
    CAMBIO DE DIVISAS. Contarlas como entrada y salida inflaría noviembre en
    2.1 millones de ingresos que nunca existieron. Van a su propio renglón. */
-function Flujo({ operaciones, cuentas, tcFix }) {
+function Flujo({ operaciones, cuentas, tcFix, proyData }) {
   const [moneda, setMoneda] = useState("MXN");       // MXN · USD · CONS
   const [dark, setDark] = useState(false);
   /* [11-nov-2026] El gasto operativo se mide desde la app, no desde la consola.
@@ -8935,6 +9062,51 @@ function Flujo({ operaciones, cuentas, tcFix }) {
   }, [anio]);
 
   const semanaHoy = lunesDeISO(new Date().toISOString());
+
+  /* ── LO QUE SE ESPERA COBRAR ────────────────────────────────────────────
+     [11-nov-2026] Esta pantalla se armaba solo con el libro de bancos, que es
+     historia: dinero que ya se movió. Por eso Fran capturó cobros y el flujo
+     seguía sin verlos — no es que no sumaran, es que nadie los traía aquí.
+
+     Vienen de la ficha de cada proyecto. Confirmados y estimados van en
+     renglones SEPARADOS y no se suman en uno solo: mezclarlos daría un número
+     más grande y menos cierto, y el día que no entre un estimado nadie sabría
+     cuánto de la caída era real. Lo que no tiene fecha no cae en ningún mes y
+     se dice aparte, con su monto. */
+  const cobrosEsperados = useMemo(() => {
+    const meses = [];
+    const hoy = new Date();
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + i, 1));
+      meses.push(d.toISOString().slice(0, 7));
+    }
+    const conf = {}, est = {};
+    let sinFecha = 0, nSinFecha = 0, nObras = 0, viejos = 0;
+    const obras = new Set();
+
+    for (const d of Object.values(proyData || {})) {
+      for (const c of (d?.cobros || [])) {
+        // Un cobro en USD vale 18 veces más de lo que dice. Sin el TC fix no
+        // se convierte a ojo: se cuenta como sin fecha y se avisa.
+        const usd = String(c.moneda || "MXN").toUpperCase() === "USD";
+        const mxn = (+c.monto || 0) * (usd ? (+tcFix || 0) : 1);
+        if (!(mxn > 0)) continue;
+        const confirmado = c.estado === "confirmado";
+        const m = String(c.fecha || "").slice(0, 7);
+        if (!/^\d{4}-\d{2}$/.test(m)) { sinFecha += mxn; nSinFecha++; continue; }
+        if (c.ov) obras.add(c.ov);
+        // Un cobro con fecha ya pasada no se empuja al mes que viene: se dice
+        // que está vencido, que es información distinta.
+        if (m < meses[0]) { viejos += mxn; continue; }
+        if (!meses.includes(m)) continue;
+        const destino = confirmado ? conf : est;
+        destino[m] = (destino[m] || 0) + mxn;
+      }
+    }
+    nObras = obras.size;
+    const hay = Object.keys(conf).length || Object.keys(est).length || sinFecha > 0 || viejos > 0;
+    return { meses, conf, est, sinFecha, nSinFecha, nObras, viejos, hay };
+  }, [proyData, tcFix]);
 
   // Saldo de hoy por moneda. Solo cuentas activas: una cuenta dada de baja con
   // saldo residual no es dinero con el que se pueda pagar nómina.
@@ -9130,6 +9302,65 @@ function Flujo({ operaciones, cuentas, tcFix }) {
           <b>Faltan {mesesSinLibro.length} mes(es) por cargar:</b> {mesesSinLibro.map((m) => nombreMes(m.ym).split(" ")[0]).join(", ")}.
           Van en «—», no en cero: todavía no sabemos qué pasó ahí. Súbelos con <b>⤒ Subir Libro de Bancos Antiguo</b> en
           Tesorería → Movimientos y esta pantalla se puebla sola.
+        </div>
+      )}
+
+      {cobrosEsperados.hay && (
+        <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 overflow-x-auto">
+          <div className="px-3 pt-2.5 pb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600 dark:text-stone-300">Cobros esperados de las obras</p>
+            <p className="text-[10px] text-stone-400">
+              De la ficha de cada proyecto · {cobrosEsperados.nObras} obra(s){+tcFix > 0 ? ` · USD al TC ${tcFix}` : " · sin TC fix: los cobros en dólares no se convierten"}
+            </p>
+          </div>
+          <table className="text-[11px] font-mono border-collapse w-full">
+            <thead>
+              <tr className="border-y border-stone-200 dark:border-stone-700">
+                <th className="sticky left-0 z-10 bg-stone-100 dark:bg-stone-800 px-3 py-2 text-left font-sans font-semibold">Cobros</th>
+                {cobrosEsperados.meses.map((m) => (
+                  <th key={m} className="px-3 py-2 text-right font-sans font-semibold whitespace-nowrap">{nombreMes(m)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-stone-100 dark:border-stone-800">
+                <td className="sticky left-0 z-10 bg-white dark:bg-stone-900 px-3 py-1.5 font-sans whitespace-nowrap">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-emerald-600 mr-1.5" />Confirmados
+                </td>
+                {cobrosEsperados.meses.map((m) => (
+                  <td key={m} className="px-3 py-1.5 text-right tabular-nums">{cobrosEsperados.conf[m] ? mx0(cobrosEsperados.conf[m]) : <span className="text-stone-300">—</span>}</td>
+                ))}
+              </tr>
+              <tr className="border-b border-stone-100 dark:border-stone-800">
+                <td className="sticky left-0 z-10 bg-white dark:bg-stone-900 px-3 py-1.5 font-sans whitespace-nowrap">
+                  <span className="inline-block w-2 h-2 rounded-sm bg-stone-400 mr-1.5" />Estimados <span className="text-[9px] text-stone-400">· sin confirmar</span>
+                </td>
+                {cobrosEsperados.meses.map((m) => (
+                  <td key={m} className="px-3 py-1.5 text-right tabular-nums text-stone-500 italic">{cobrosEsperados.est[m] ? mx0(cobrosEsperados.est[m]) : <span className="text-stone-300 not-italic">—</span>}</td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+
+          <div className="px-3 py-2 space-y-1.5">
+            {cobrosEsperados.sinFecha > 0 && (
+              <p className="text-[11px] text-amber-900 bg-amber-50 border border-amber-300 rounded px-2.5 py-1.5">
+                <b>⚠ FALTA INFORMACIÓN: ${mx0(cobrosEsperados.sinFecha)}</b> en {cobrosEsperados.nSinFecha} cobro(s) sin fecha.
+                No caen en ningún mes y no suman. Son obras sin fecha de entrega en IS-PMT o sin equipo en camino
+                del que colgar el embarque: ponles fecha en su proyecto y aparecen aquí solas.
+              </p>
+            )}
+            {cobrosEsperados.viejos > 0 && (
+              <p className="text-[11px] text-red-800 bg-red-50 border border-red-200 rounded px-2.5 py-1.5">
+                <b>${mx0(cobrosEsperados.viejos)} con fecha ya pasada.</b> No se empujan al mes que viene: o ya entraron
+                y falta registrarlos, o hay que volver a fecharlos.
+              </p>
+            )}
+            <p className="text-[10px] text-stone-400">
+              Los estimados los propuso la app y van en su propio renglón: nunca se suman con los confirmados, porque
+              un total más grande y menos cierto no sirve para decidir. Se confirman en la ficha de cada proyecto.
+            </p>
+          </div>
         </div>
       )}
 
