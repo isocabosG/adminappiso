@@ -10,11 +10,91 @@
 // saltárselos.
 import React, { useState, useRef, useEffect } from "react";
 
-const EJEMPLOS = [
-  "¿Cuándo llega el generador de Casa Esmeralda?",
-  "¿Qué falta comprar de las obras calendarizadas?",
-  "¿Cuánto nos deben y quién es el más atrasado?",
-  "¿Qué trae la OC que llega más pronto?",
+// [11-nov-2026] Fran: «agrégale todas las preguntas que podríamos hacer».
+//
+// Cada pregunta de esta lista se probó contra las herramientas que la Edge
+// Function `preguntar` realmente tiene: buscar, articulo, orden_de_venta,
+// obra, ordenes_de_compra, que_falta_comprar, dinero (saldos / cobranza /
+// pagos), importacion y estado_de_los_datos. Ninguna pregunta de aquí pide
+// algo que no se pueda contestar, y por eso NO hay ejemplos de Limpieza,
+// Usuarios ni Flujo: esas pantallas no tienen herramienta todavía. Un ejemplo
+// que no se puede contestar enseña a desconfiar de la barra entera.
+//
+// Los nombres son obras y claves que existen hoy. Una pregunta con un nombre
+// inventado falla en `buscar` y parece que la barra está rota.
+const TEMAS = [
+  {
+    id: "material",
+    titulo: "Material y MRP",
+    preguntas: [
+      "¿Qué falta comprar de las obras calendarizadas?",
+      "Dame la lista de compra completa del MRP y cuánto vale",
+      "¿Dónde está el SKU 16203: en almacén, apartado o en camino?",
+      "¿Hay inversores Sol-Ark disponibles o están todos comprometidos?",
+      "¿Qué obras piden baterías RENON y cuántas faltan?",
+      "¿Qué material tiene stock final negativo?",
+    ],
+  },
+  {
+    id: "obras",
+    titulo: "Obras",
+    preguntas: [
+      "¿Qué le falta a CHILENO GV 2A para poder instalar?",
+      "¿Cuándo instala LARENA FASE 1 y ya tiene todo su material?",
+      "¿Qué material de REMANSO 7 viene en camino y cuándo llega?",
+      "¿Cuándo llega el generador de Casa Esmeralda?",
+      "¿Qué trae pendiente la SO-01067?",
+      "¿Qué le falta a PLAZA PEDREGAL y qué se le ha cobrado?",
+    ],
+  },
+  {
+    id: "compras",
+    titulo: "Órdenes de compra",
+    preguntas: [
+      "¿Qué orden de compra llega más pronto y qué trae?",
+      "¿Qué viene en camino de paneles?",
+      "¿En qué orden de compra vienen las baterías y cuándo llegan?",
+      "¿Qué órdenes de compra están abiertas?",
+    ],
+  },
+  {
+    id: "cobranza",
+    titulo: "Cobranza",
+    preguntas: [
+      "¿Cuánto nos deben y quién es el más atrasado?",
+      "¿Cuál es la factura más vieja sin cobrar?",
+      "¿Qué pagos entraron últimamente?",
+      "¿Cuánto se facturó y cuánto se ha cobrado de CHILENO 101 EXPANSION 2026?",
+    ],
+  },
+  {
+    id: "tesoreria",
+    titulo: "Tesorería",
+    preguntas: [
+      "¿Cuánto hay en cada cuenta?",
+      "¿Cuánto tenemos en dólares?",
+      "¿Cuál es el saldo de BBVA?",
+    ],
+  },
+  {
+    id: "importaciones",
+    titulo: "Importaciones",
+    preguntas: [
+      "¿Cuáles son los últimos pedimentos?",
+      "¿A qué tipo de cambio entró el pedimento más reciente?",
+      "¿Cuál fue el costo landed de los paneles importados?",
+      "¿Qué trajo el pedimento 6004655?",
+    ],
+  },
+  {
+    id: "datos",
+    titulo: "¿Está al día?",
+    preguntas: [
+      "¿Están actualizados los datos?",
+      "¿Con qué fecha está el inventario físico?",
+      "¿Cuándo fue la última sincronía de Zoho?",
+    ],
+  },
 ];
 
 // Render mínimo: negritas, viñetas y saltos de línea. No se mete un motor de
@@ -47,6 +127,7 @@ export default function Preguntar() {
   const [q, setQ] = useState("");
   const [cargando, setCargando] = useState(false);
   const [hilo, setHilo] = useState([]);      // [{rol, texto, pasos, error}]
+  const [tema, setTema] = useState(TEMAS[0].id);
   const cajaRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -122,9 +203,22 @@ export default function Preguntar() {
             <div ref={cajaRef} className="max-h-[65vh] overflow-y-auto">
               {hilo.length === 0 && (
                 <div className="p-4">
-                  <p className="text-[11px] uppercase tracking-widest text-stone-400 mb-2">Por ejemplo</p>
-                  <div className="space-y-1">
-                    {EJEMPLOS.map((e) => (
+                  {/* Los temas van en una fila que se desliza, no en una lista
+                      larga: con siete temas abiertos a la vez la primera
+                      pregunta queda a dos pantallas de scroll. */}
+                  <div className="flex gap-1 overflow-x-auto pb-2 -mx-1 px-1">
+                    {TEMAS.map((t) => (
+                      <button key={t.id} onClick={() => setTema(t.id)}
+                        className={`px-2.5 py-1 text-[11px] font-medium rounded-full border whitespace-nowrap ${
+                          tema === t.id
+                            ? "bg-teal-700 text-white border-teal-700"
+                            : "border-stone-200 text-stone-500 hover:bg-stone-50"}`}>
+                        {t.titulo}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="space-y-1 mt-1">
+                    {(TEMAS.find((t) => t.id === tema) || TEMAS[0]).preguntas.map((e) => (
                       <button key={e} onClick={() => preguntar(e)}
                         className="block w-full text-left text-[13px] text-stone-600 hover:text-teal-800 hover:bg-teal-50 rounded px-2 py-1.5">
                         {e}
@@ -133,7 +227,8 @@ export default function Preguntar() {
                   </div>
                   <p className="text-[11px] text-stone-400 mt-3 border-t border-stone-100 pt-2">
                     Lee el catálogo, el inventario, las órdenes de compra y de venta, las obras de IS-PMT,
-                    la cobranza y las importaciones — con el corte de la última sincronía. Si el dato no está, lo dice; no lo inventa.
+                    la cobranza, la tesorería y las importaciones — con el corte de la última sincronía.
+                    Solo lee: no cambia nada en Zoho ni en la app. Si el dato no está, lo dice; no lo inventa.
                   </p>
                 </div>
               )}
