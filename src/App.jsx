@@ -7952,6 +7952,14 @@ function MrpCompras({ setAviso }) {
             El almacén se reparte <b>por fecha de instalación</b> —la obra que instala primero se lleva el material—
             así que una pieza no se cuenta como disponible para dos obras a la vez.
             Los importes usan el costo de Zoho Books.
+            {/* [11-nov-2026] Fran: «¿por qué hay cosas en gris clarito?». Habia un
+                codigo de color sin explicar, que es lo mismo que no tenerlo: quien
+                lo ve tiene que adivinar, y adivinar sobre una lista de compras
+                sale caro. */}
+            <br />
+            <span className="text-stone-400">Los renglones en gris</span> ya están cubiertos —hay existencia o viene
+            en camino— y no hay nada que comprar de ellos. Los que están en negro con el número
+            en <b className="text-red-700">rojo</b> son los que de verdad faltan.
           </p>
 
           {obras.length === 0 && (
@@ -7995,7 +8003,10 @@ function MrpCompras({ setAviso }) {
                       </thead>
                       <tbody>
                         {o.mats.map((m) => (
-                          <tr key={m.sku} className={`border-t border-stone-100 ${m.porComprar > 0 ? "" : "text-stone-400"}`}>
+                          <tr key={m.sku} className={`border-t border-stone-100 ${m.porComprar > 0 ? "" : "text-stone-400"}`}
+                            title={m.porComprar > 0
+                              ? `Faltan ${mx0(m.porComprar)} por comprar: la obra necesita ${mx0(m.falta)}, hay ${mx0(m.enAlmacen)} en almacén y ${mx0(m.enOc)} en camino.`
+                              : `Cubierto: la obra necesita ${mx0(m.falta)} y ya hay ${mx0(m.enAlmacen)} en almacén${m.enOc ? ` más ${mx0(m.enOc)} en camino` : ""}. No hay que comprar nada.`}>
                             <td className="px-3 py-1 font-mono text-[11px]">{m.sku}</td>
                             <td className="px-2 py-1">{m.desc}</td>
                             <td className="px-2 py-1 text-right tabular-nums">{mx0(m.falta)}
