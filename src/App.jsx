@@ -4027,6 +4027,10 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
   const [estrBusy, setEstrBusy] = useState("");
   const [recarga, setRecarga] = useState(0);
   const [docCargando, setDocCargando] = useState("");
+  // Arriba de los dos `return` de carga a propósito: un hook declarado después
+  // de un return condicional se monta unas veces sí y otras no, y React tira la
+  // pantalla con «Rendered more hooks than during the previous render».
+  const [sugiriendo, setSugiriendo] = useState(false);
   // Abre (o descarga) un archivo de Zoho (contrato/adjunto o PDF de factura/OV) vía la Edge Function.
   const abrirDoc = async (payload, nombre, descargar) => {
     if (typeof window.zohoBooks !== "function") { setAviso({ t: "err", m: "La conexión a Zoho no está disponible en esta versión." }); return; }
@@ -4227,6 +4231,92 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
     setNuevoPago({ fecha: hoy(), monto: "", forma: "Transferencia", ref: "" });
   };
   const quitarPago = (id) => setDatos({ pagos: (datos.pagos || []).filter((p) => p.id !== id) });
+
+  /* ── COBROS PROGRAMADOS ─────────────────────────────────────────────────
+     [11-nov-2026] Fran: «confío más en los importes que están dados de alta en
+     cada proyecto de la app… pedirle al equipo que ingrese cuándo van a pagar…
+     lo que no tengamos ponerle FALTA INFORMACIÓN y que no sume».
+
+     Por qué no sale de las facturas de Zoho: porque no se les cree. La base es
+     el contratado de ESTA ficha, que es el número que el equipo mantiene.
+
+     Por qué hay un estado «sugerido»: con 99 obras, pedir captura en blanco es
+     garantizar que no se haga. Así que el renglón llega propuesto y alguien lo
+     confirma con un clic. Un sugerido se ve distinto y NO SUMA: una fecha que
+     yo inventé y nadie miró no puede mover el flujo de la empresa.
+
+     El finiquito cuelga de la fecha de instalación de IS-PMT. El ship
+     notification cuelga de la última llegada del equipo de esta obra, que se
+     saca cruzando las órdenes de compra con lo apartado. Si falta cualquiera
+     de las dos, el renglón nace sin fecha y se queda en FALTA INFORMACIÓN —
+     visible, con su monto, y fuera de todos los totales. */
+  const cobros = datos.cobros || [];
+  const setCobros = (lista) => setDatos({ cobros: lista });
+
+  // Solo lo CONFIRMADO suma. Es la regla entera, en una línea.
+  const programado = cobros.filter((c) => c.estado === "confirmado" && c.fecha)
+    .reduce((a, c) => a + (+c.monto || 0), 0);
+  const sinProgramar = Math.max(0, conIva - cobradoVsContrato - programado);
+
+  const tocaCobro = (id, campo, valor) =>
+    setCobros(cobros.map((c) => (c.id === id ? { ...c, [campo]: valor } : c)));
+
+  // Confirmar exige fecha: un cobro confirmado sin fecha entraría al flujo sin
+  // saber en qué mes, que es justo lo que no queremos.
+  const confirmarCobro = (id) => {
+    const c = cobros.find((x) => x.id === id);
+    if (!c?.fecha) { setAviso({ t: "err", m: "Ponle fecha antes de confirmarlo: sin fecha no puede entrar al flujo." }); return; }
+    tocaCobro(id, "estado", "confirmado");
+  };
+
+  // La última llegada del equipo de esta obra. Se leen los dos blobs aquí y no
+  // al abrir la ficha porque juntos pesan 365 KB: nadie debe pagar esa carga
+  // por abrir un proyecto a ver otra cosa.
+  const ultimaEtaDeLaObra = async () => {
+    try {
+      const [rOc, rComp] = await Promise.all([
+        window.storage?.get("iso3-mrp-oc-cache-v2"),
+        window.storage?.get("iso3-comprometido-ov"),
+      ]);
+      const oc = typeof rOc === "string" ? JSON.parse(rOc) : rOc;
+      const comp = typeof rComp === "string" ? JSON.parse(rComp) : rComp;
+      const ov = String(so.salesorder_number || "").trim().toUpperCase();
+      if (!ov || !oc?.lotes || !comp?.porSku) return null;
+      const mios = new Set(
+        Object.entries(comp.porSku)
+          .filter(([, v]) => (v?.ovs || []).some((o) => String(o.ov || "").trim().toUpperCase() === ov))
+          .map(([sku]) => sku),
+      );
+      let ult = null;
+      for (const sku of mios) {
+        for (const l of (oc.lotes[sku] || [])) {
+          const e = String(l?.eta || "").slice(0, 10);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(e) && (!ult || e > ult)) ult = e;
+        }
+      }
+      return ult;
+    } catch { return null; }
+  };
+
+  const sugerirCobros = async () => {
+    if (sugiriendo) return;
+    setSugiriendo(true);
+    try {
+      const falta = Math.max(0, conIva - cobradoVsContrato);
+      if (falta <= 0) { setAviso({ t: "ok", m: "Esta obra ya está cobrada al 100%: no hay nada que programar." }); return; }
+      const eta = await ultimaEtaDeLaObra();
+      const inst = feedProy?.fecha_instalacion || "";
+      // 30% del CONTRATO para el ship notification, como lo describió Fran, y
+      // nunca más de lo que falta. El resto es finiquito.
+      const ship = Math.min(falta, Math.round(conIva * 0.3));
+      const fin = Math.max(0, falta - ship);
+      const nuevos = [];
+      if (ship > 0) nuevos.push({ id: uid(), etiqueta: "Ship notification", monto: ship, fecha: eta || "", estado: "sugerido", porque: eta ? `última llegada de equipo de esta obra (${eta})` : "no se encontró equipo en camino de esta obra" });
+      if (fin > 0) nuevos.push({ id: uid(), etiqueta: "Finiquito", monto: fin, fecha: inst || "", estado: "sugerido", porque: inst ? `instalación en IS-PMT (${inst})` : "esta obra no tiene fecha de instalación en IS-PMT" });
+      setCobros([...cobros, ...nuevos]);
+      setAviso({ t: "ok", m: `${nuevos.length} cobro(s) sugerido(s). Revísalos y confírmalos: mientras estén sugeridos no suman.` });
+    } finally { setSugiriendo(false); }
+  };
 
   // ---- Control presupuestal: equipo/materiales (Zoho) + costos manuales + mano de obra → utilidad ----
   // Equipo y materiales que se entregan desde almacén al proyecto (renglones de la OV, a costo).
@@ -4610,6 +4700,91 @@ ${porPagar >= 0
           <button onClick={agregarPago} className="px-3 py-2 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">+ Agregar pago</button>
         </div>
         <p className="px-3 pb-3 text-[10px] text-stone-400">Los pagos "Zoho" se leen de la orden de venta; los "Manual" los agregas tú y se guardan en la app.</p>
+      </Section>
+
+      <Section n="2b" t="Cobros programados" r={programado ? `$${mx0(programado)} programado` : (sinProgramar ? "sin programar" : "")}>
+        <div className="p-3 space-y-2">
+          <p className="text-[11px] text-stone-500">
+            Sobre el contratado de esta ficha (<b>${mx0(conIva)}</b> con IVA), no sobre las facturas.
+            Ya cobrado: <b>${mx0(cobradoVsContrato)}</b>.
+          </p>
+
+          {cobros.length === 0 && (
+            <p className="text-[11px] text-stone-400">Todavía no hay cobros programados para esta obra.</p>
+          )}
+
+          {cobros.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[560px]">
+                <thead className="bg-stone-50 border-y border-stone-200">
+                  <tr className="text-[10px] uppercase tracking-widest text-stone-500">
+                    <th className="text-left px-2 py-1.5">Concepto</th>
+                    <th className="text-right px-2 py-1.5">Monto</th>
+                    <th className="text-left px-2 py-1.5">Fecha esperada</th>
+                    <th className="text-left px-2 py-1.5">Estado</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cobros.map((c) => {
+                    const sug = c.estado !== "confirmado";
+                    return (
+                      <tr key={c.id} className={`border-b border-stone-100 ${sug ? "bg-stone-50/60" : ""}`}>
+                        <td className="px-2 py-1.5">
+                          <input className={inp} value={c.etiqueta || ""} onChange={(e) => tocaCobro(c.id, "etiqueta", e.target.value)} />
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          <input type="number" step="0.01" className={inp + " font-mono text-right"} value={c.monto ?? ""} onChange={(e) => tocaCobro(c.id, "monto", e.target.value)} />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input type="date" className={inp} value={c.fecha || ""} onChange={(e) => tocaCobro(c.id, "fecha", e.target.value)} />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          {!c.fecha ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-medium">⚠ FALTA INFORMACIÓN</span>
+                          ) : sug ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-200 text-stone-600" title={c.porque || ""}>⟡ sugerido · no suma</span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">✓ confirmado</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-right">
+                          {sug && c.fecha && (
+                            <button onClick={() => confirmarCobro(c.id)} className="text-[11px] px-2 py-0.5 border border-emerald-600 text-emerald-700 rounded hover:bg-emerald-50 mr-1">Confirmar</button>
+                          )}
+                          <button onClick={() => setCobros(cobros.filter((x) => x.id !== c.id))} className="text-stone-400 hover:text-red-600">×</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* El dinero que nadie fechó. Se dice su monto y se dice que no suma:
+              un pendiente escondido en un promedio se vuelve una sorpresa. */}
+          {sinProgramar > 0 && (
+            <div className="px-2.5 py-2 rounded text-[11px] border bg-amber-50 border-amber-300 text-amber-900">
+              <b>${mx0(sinProgramar)} sin programar.</b> No entra al flujo hasta que alguien le ponga fecha y lo confirme.
+              {!feedProy?.fecha_instalacion && " Esta obra tampoco tiene fecha de instalación en IS-PMT."}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button onClick={sugerirCobros} disabled={sugiriendo}
+              title="Propone el ship notification contra la última llegada de equipo de esta obra, y el finiquito contra su fecha de instalación"
+              className={`px-3 py-1.5 text-xs font-medium rounded border ${sugiriendo ? "border-stone-200 text-stone-400 cursor-wait" : "border-teal-600 text-teal-700 hover:bg-teal-50"}`}>
+              {sugiriendo ? "Buscando fechas…" : "Sugerir fechas"}
+            </button>
+            <button onClick={() => setCobros([...cobros, { id: uid(), etiqueta: "", monto: "", fecha: "", estado: "confirmado" }])}
+              className="px-3 py-1.5 bg-teal-700 text-white text-xs font-medium rounded hover:bg-teal-800">+ Agregar cobro</button>
+          </div>
+
+          <p className="text-[10px] text-stone-400">
+            Lo sugerido lo propuse yo y no suma hasta que alguien lo confirma. Lo cobrado no se captura aquí: sale de los pagos.
+          </p>
+        </div>
       </Section>
 
       <Section n="3" t="Resumen y reporte">
