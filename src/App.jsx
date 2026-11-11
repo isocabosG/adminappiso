@@ -3856,7 +3856,12 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
                   <p className="text-stone-500">
                     Pagado <span className={`font-semibold ${pct === null ? "text-stone-400" : pct >= 100 ? "text-teal-700" : pct <= 50 ? "text-amber-700" : "text-stone-800"}`}>{pct === null ? "—" : pct + "%"}</span>
                   </p>
-                  <p className="text-stone-400">Por cobrar <span className="text-stone-600 font-semibold">${mx0(balNeto(s))}</span>{conFactura ? <span className="text-[9px] text-emerald-600"> · factura</span> : null}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}</p>
+                  {/* En rojo solo cuando debe: un cero en rojo entrena a no
+                      ver el rojo.  [11-nov-2026] */}
+                  <p className={balNeto(s) > 0.5 ? "text-red-700" : "text-stone-400"}>
+                    Por cobrar <span className={`font-semibold ${balNeto(s) > 0.5 ? "text-red-700" : "text-emerald-700"}`}>${mx0(balNeto(s))}</span>
+                    {conFactura ? <span className="text-[9px] text-emerald-600"> · factura</span> : null}{pagadoManual ? ` · +$${mx0(pagadoManual)} manual` : ""}
+                  </p>
                 </div>
               </button>
             );
@@ -4144,6 +4149,11 @@ function ProyectoDetalle({ soId, proyData, saveProyData, setAviso, onBack, catal
     ? Math.max(0, conIva - cobradoVsContrato)
     : (hayFactura ? saldoFact : (conIva - totalPagado));
   const difFacturaContrato = hayFactura ? facturado - conIva : 0;   // diferencia factura vs OV (informativa)
+  // Mismo umbral de 0.50 y mismo techo de 99 que `pctPagado` en la lista: dos
+  // formulas distintas para el mismo porcentaje acaban diciendo numeros
+  // distintos en dos pantallas y nadie sabe a cual creerle.
+  const debe = porPagar > 0.5;
+  const pctFicha = conIva > 0 ? (debe ? Math.max(0, Math.min(99, Math.floor((cobradoVsContrato / conIva) * 100))) : 100) : null;
 
   // Ajuste por cierre de proyecto ────────────────────────────────────────
   // El importe va NETO. Zoho le suma el impuesto del renglon igual que a los
@@ -4451,6 +4461,49 @@ ${porPagar >= 0
       <div className="flex items-center justify-between">
         <div><h2 className="text-sm font-semibold font-mono">{so.salesorder_number}</h2><p className="text-xs text-stone-500">{so.reference_number} · {so.customer_name}</p></div>
         <button onClick={onBack} className="text-xs text-stone-500 hover:text-stone-800">← Volver</button>
+      </div>
+
+      {/* [11-nov-2026] Fran: «agrega dentro de cada proyecto y en el dashboard
+          de proyectos % cobrado y $ por cobrar en rojo».
+
+          El porcentaje usa la MISMA formula que la lista: cobrado sobre
+          contratado, y el 100% atado al saldo y no al redondeo, para que un
+          proyecto con 500 pesos de saldo no diga «liquidado» en una pantalla y
+          «debe» en la otra.
+
+          El rojo se prende solo cuando de verdad debe. Un cero en rojo entrena
+          a no ver el rojo. */}
+      <div className="bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap items-end gap-x-8 gap-y-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-stone-400">Contratado</p>
+          <p className="text-lg font-semibold font-mono tabular-nums">${mx0(conIva)} <span className="text-[10px] font-normal text-stone-400">{cur}</span></p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-stone-400">Cobrado</p>
+          <p className={`text-lg font-semibold font-mono tabular-nums ${pctFicha === null ? "text-stone-400" : pctFicha >= 100 ? "text-emerald-700" : pctFicha <= 50 ? "text-amber-700" : "text-stone-800"}`}>
+            {pctFicha === null ? "—" : pctFicha + "%"}
+          </p>
+          <p className="text-[10px] text-stone-400 font-mono">${mx0(cobradoVsContrato)}</p>
+        </div>
+        <div>
+          <p className={`text-[10px] uppercase tracking-widest ${debe ? "text-red-700 font-semibold" : "text-stone-400"}`}>Por cobrar</p>
+          <p className={`text-lg font-semibold font-mono tabular-nums ${debe ? "text-red-700" : "text-emerald-700"}`}>
+            ${mx0(porPagar)}
+          </p>
+          {!debe && <p className="text-[10px] text-emerald-700">liquidado</p>}
+        </div>
+        {/* La barra repite el dato en forma, no en numero: de reojo se ve si la
+            obra va cobrada o no sin leer el porcentaje. */}
+        <div className="flex-1 min-w-[160px]">
+          <div className="h-2 rounded-full bg-stone-200 overflow-hidden">
+            <div className={`h-full ${pctFicha >= 100 ? "bg-emerald-600" : pctFicha <= 50 ? "bg-amber-500" : "bg-stone-700"}`}
+                 style={{ width: `${Math.max(0, Math.min(100, pctFicha || 0))}%` }} />
+          </div>
+          <p className="mt-1 text-[10px] text-stone-400">
+            {vsContrato ? "Medido contra el contrato" : "Medido contra las facturas"}
+            {sinProgramar > 0 ? ` · $${mx0(sinProgramar)} sin fecha de cobro` : ""}
+          </p>
+        </div>
       </div>
 
       <div className="bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap gap-x-8 gap-y-2">
