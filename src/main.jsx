@@ -121,7 +121,7 @@ window.soEstructura = async (payload) => {
 // llamadas a Zoho y el tope diario lo comparten esta app, IS-PMT y los crons.
 // `libro-cotejo` entra por el mismo criterio que las otras: lee Zoho, no le
 // escribe nada, y deja su blob en adm_kv. Son ~50 llamadas, no 2,300.
-const SYNCS = ['catalogo-sync', 'comprometido-sync', 'oc-sync', 'gastos-sync', 'contratado-anio', 'libro-cotejo']
+const SYNCS = ['catalogo-sync', 'comprometido-sync', 'oc-sync', 'gastos-sync', 'contratado-anio', 'libro-cotejo', 'flujo-gastos']
 // EL CUERPO ES OPCIONAL, Y HACIA FALTA.  [10-nov-2026]
 //
 // Mandaba `{}` siempre, y eso dejaba fuera a las sincronias que piden algo:
