@@ -3041,6 +3041,15 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   // Resuelve una OV de Zoho al proyecto de IS-PMT. Por id, y si no, por número
   // de OV. Una sola función para que la lista y la ficha nunca discrepen.
   const feedDe = (s) => (s ? (calById[String(s.salesorder_id)] || calById["ov:" + String(s.salesorder_number || "").trim().toUpperCase()] || null) : null);
+  /* LISTO PARA INSTALAR. [11-nov-2026] Igual que el morado de CALENDARIZADO
+     pero en verde, y con otra fuente: el morado lo pone el calendario de obra
+     y éste lo pone ingeniería al firmar «Entrega a instalación» en ISO
+     Engineering. Viaja por el feed de IS-PMT, que ya es la tubería a esta app.
+
+     Se mira `listo_para_instalar` y no `bom_listo`: entre cerrar el BOM y
+     entregar faltan la revisión interna y la aprobación del cliente. Hoy la
+     diferencia es una obra. */
+  const listoDe = (s) => { const p = feedDe(s); return p?.listo_para_instalar ? p : null; };
   const calDe = (s) => {
     const p = feedDe(s);
     return p && esCalendarizado(p) && p.fecha_instalacion && p.fecha_instalacion >= hoy() ? p : null;
@@ -3951,14 +3960,26 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
             const conFactura = !!facOf(s);
             const cal = calDe(s);   // calendarizado en IS-PMT
             const pct = pctPagado(s);
+            const listo = listoDe(s);
             const ship = tocaShip(s);
             const porQue = ship ? senales(s) : [];
             return (
               <button key={s.salesorder_id} onClick={() => setModo("so:" + s.salesorder_id)}
-                className={`relative w-full bg-white rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left border ${cal ? "border-violet-500 ring-1 ring-violet-300 hover:border-violet-700" : "border-stone-200 hover:border-stone-400"}`}>
+                style={listo ? { borderColor: "#84cc16", boxShadow: "0 0 0 2px #ccff0066" } : undefined}
+                className={`relative w-full bg-white rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-left border-2 ${
+                  listo ? "hover:brightness-95"
+                  : cal ? "border-violet-500 ring-1 ring-violet-300 hover:border-violet-700"
+                  : "border-stone-200 hover:border-stone-400"}`}>
                 {cal && (
                   <span className="absolute -top-2 right-3 px-1.5 py-0.5 rounded bg-violet-600 text-white text-[9px] font-bold tracking-widest leading-none">
                     CALENDARIZADO
+                  </span>
+                )}
+                {listo && (
+                  <span title={`Ingeniería la entregó a instalación${listo.listo_at ? " el " + String(listo.listo_at).slice(0, 10) : ""}`}
+                    className="absolute -top-2 left-3 px-1.5 py-0.5 rounded bg-white text-[9px] font-extrabold tracking-widest leading-none border-2"
+                    style={{ color: "#4d7c0f", borderColor: "#84cc16" }}>
+                    LISTO PARA INSTALAR
                   </span>
                 )}
                 <div className="min-w-0">
@@ -5009,7 +5030,16 @@ ${porPagar >= 0
         </Section>
       ) : (
         <Section n="4" t="Materiales por hito"
-          r={<span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-800">obra {feedProy.fecha_instalacion || "—"}</span>}>
+          r={<span className="flex items-center gap-1.5">
+            {feedProy.listo_para_instalar && (
+              <span title={`Ingeniería la entregó a instalación${feedProy.listo_at ? " el " + String(feedProy.listo_at).slice(0, 10) : ""}`}
+                className="text-[10px] px-2 py-0.5 rounded-full font-extrabold tracking-wider border-2 bg-white"
+                style={{ color: "#4d7c0f", borderColor: "#84cc16" }}>
+                LISTO PARA INSTALAR
+              </span>
+            )}
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-800">obra {feedProy.fecha_instalacion || "—"}</span>
+          </span>}>
           {(() => {
             // LO QUE LA ORDEN DE VENTA TODAVIA DEBE, leido de la OV misma.
             // cantidad − entregado, solo articulos de inventario (un renglon de
