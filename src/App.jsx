@@ -7769,6 +7769,24 @@ function MrpCompras({ setAviso, tcFix }) {
     return grupos.filter((e) => e.mes === periodo);
   }, [grupos, periodo]);
 
+  /* [11-nov-2026] Fran: «faltó ajustar bien las columnas en por obra».
+     La tabla repartía el ancho según lo que cada columna traía adentro, y en el
+     modo por obra casi todas vienen vacías: una obra no tiene back order ni
+     stock, y su total cae en UN mes y deja los demás en blanco. Una columna sin
+     nada se encoge a nada, el encabezado y el cuerpo dejan de coincidir y se
+     ven corridos.
+
+     Con `table-layout: fixed` y un `<colgroup>` el ancho lo fija la columna y
+     no su contenido, así que encabezado, totales y renglones caen siempre en la
+     misma vertical, tenga o no datos. `minWidth` es la suma: cuando no cabe, el
+     contenedor hace scroll en vez de apretar las columnas hasta encimarlas. */
+  const anchos = useMemo(() => {
+    const a = [28, 34, 84, 230, 72, 72, 74, 74, 56, 86];
+    for (let i = 0; i < mesesVisibles.length; i++) { a.push(70); if (verPrecios) a.push(96); }
+    return a;
+  }, [mesesVisibles.length, verPrecios]);
+  const anchoTabla = anchos.reduce((s, n) => s + n, 0);
+
   const totMes = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0), 0);
   /* [11-nov-2026] Fran: «sería bueno en el MRP por material también poder ver
      los valores en $ MXP de lo que representa… agregar una columna después de
@@ -8073,15 +8091,6 @@ function MrpCompras({ setAviso, tcFix }) {
         {chip(soloFalta, setSoloFalta, "Solo faltantes")}
         {chip(soloConFecha, setSoloConFecha, "Solo obras con fecha")}
         {chip(ocultaBaja, setOcultaBaja, "Ocultar dados de baja")}
-        {(nFuera > 0 || verFuera) && (
-          <button onClick={() => { setVerFuera(!verFuera); setSel(new Set()); }}
-            title="Artículos que no son material de obra: servicios, viáticos, consumibles, dados de baja"
-            className={`px-2 py-1 text-[11px] font-medium rounded border whitespace-nowrap ${
-              verFuera ? "bg-amber-600 text-white border-amber-600" : "border-amber-400 text-amber-700 hover:bg-amber-50"}`}>
-            {verFuera ? "← Volver al MRP" : `Fuera del MRP ${mx0(nFuera)}`}
-          </button>
-        )}
-        {nDiscrepan > 0 && chip(soloDiscrepa, setSoloDiscrepa, "Solo los que no cuadran", nDiscrepan)}
         <span className="text-xs text-stone-500">
           {mx0(vistas.length)} de {mx0(universo)} SKU
           {escondidos > 0 && <span className="text-amber-700"> · {mx0(escondidos)} escondidos por filtros</span>}
@@ -8093,6 +8102,18 @@ function MrpCompras({ setAviso, tcFix }) {
           {sincro ? `Trayendo ${sincro}…` : "Actualizar de Zoho"}
         </button>
         <button onClick={exportar} className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50">Exportar tabla</button>
+        {/* No es un filtro: cambia la tabla por la lista de lo que alguien marco
+            como «no es material de obra». Hoy son 242 y ninguno trae material
+            apartado, asi que es mantenimiento, no operacion diaria. Entre los
+            filtros parecia uno mas.  [11-nov-2026] */}
+        {(nFuera > 0 || verFuera) && (
+          <button onClick={() => { setVerFuera(!verFuera); setSel(new Set()); }}
+            title="Artículos que no son material de obra: servicios, viáticos, consumibles, dados de baja. Esta lista se mantiene a mano."
+            className={`px-2.5 py-1.5 text-[11px] font-medium rounded border whitespace-nowrap ${
+              verFuera ? "bg-amber-600 text-white border-amber-600" : "border-amber-400 text-amber-700 hover:bg-amber-50"}`}>
+            {verFuera ? "← Volver al MRP" : `Fuera del MRP ${mx0(nFuera)}`}
+          </button>
+        )}
       </div>
 
       <p className="text-[10px] text-stone-400">
@@ -8147,7 +8168,8 @@ function MrpCompras({ setAviso, tcFix }) {
 
       <div ref={cajaRef} onScroll={(e) => setScroll(e.currentTarget.scrollTop)}
         className="bg-white border border-stone-200 rounded-lg overflow-auto" style={{ maxHeight: "65vh" }}>
-        <table className="w-full text-[11px]" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+        <table className="text-[11px]" style={{ borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed", width: "100%", minWidth: anchoTabla }}>
+          <colgroup>{anchos.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
           <thead className="bg-stone-100 text-[9px] uppercase tracking-wider text-stone-500 sticky top-0 z-10">
             <tr>
               <th className="px-1 py-2 w-8"><input type="checkbox" checked={sel.size > 0 && sel.size >= vistas.length} onChange={(e) => (e.target.checked ? marcarVistos() : setSel(new Set()))} /></th>
