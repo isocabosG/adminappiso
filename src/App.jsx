@@ -8100,6 +8100,34 @@ function MrpCompras({ setAviso, tcFix }) {
       cada una tiene apartada. Las columnas globales del SKU --back order,
       stock, stock final-- se repiten porque son del material, no de la obra:
       el almacén es uno solo. */
+  /* [11-nov-2026] Fran: «veo que está considerando cosas que ya se compraron,
+     por ejemplo los paneles de LARENA ya están en almacén o pagados, y los
+     MPACK, y de MARAVILLA 12 y 13 también».
+
+     Tenía razón en lo que veía y la pantalla tenía la culpa. POR SURTIR es lo
+     APARTADO en la orden de venta, que incluye lo que ya está en el almacén y
+     lo que ya viene en una orden de compra pagada. LARENA salía con 4.4 M
+     cuando lo que de verdad falta comprar son 123 mil: sus MPACK (2.4 M) ya
+     están en OC y sus Fronius ya están en el almacén.
+
+     El reparto ya estaba calculado en `obras` --quien instala primero se lleva
+     el material-- y no se estaba usando. Aquí se cruza con los renglones para
+     que cada obra diga qué parte ya está cubierta y qué parte falta de verdad.
+
+     Las columnas NO cambian de significado: siguen siendo lo apartado, igual
+     que en la vista por material. Lo que se agrega es el desglose, porque
+     cambiar lo que mide una columna según la vista es peor que no tenerlo. */
+  const cobertura = useMemo(() => {
+    const m = new Map();
+    for (const e of obras) {
+      const llave = String(e.ov || "").trim().toUpperCase() || `P:${e.proyecto || "?"}`;
+      const porSku = new Map();
+      for (const x of e.mats) porSku.set(String(x.sku).toUpperCase(), x);
+      m.set(llave, { porSku, valAlmacen: e.valAlmacen, valOc: e.valOc, costoComprar: e.costoComprar, nFalta: e.nFalta, completa: e.completa });
+    }
+    return m;
+  }, [obras]);
+
   const grupos = useMemo(() => {
     if (!porObraOn) return [];
     const g = new Map();
@@ -8119,11 +8147,12 @@ function MrpCompras({ setAviso, tcFix }) {
       e.mats.sort((a, b) => b.cant - a.cant || String(a.f.sku).localeCompare(String(b.f.sku)));
       e.mes = e.fecha ? mesClave(e.fecha) : "SIN";
       e.valor = e.mats.reduce((a, m) => a + m.cant * (+m.f.costo || 0), 0);
+      e.cob = cobertura.get(e.ov ? String(e.ov).trim().toUpperCase() : `P:${e.proyecto || "?"}`) || null;
     }
     return lista.sort((a, b) =>
       String(a.fecha || "9999-99-99").localeCompare(String(b.fecha || "9999-99-99"))
       || String(a.ov).localeCompare(String(b.ov)));
-  }, [porObraOn, vistas]);
+  }, [porObraOn, vistas, cobertura]);
 
   /* [11-nov-2026] Fran: «en el MRP por obra agrega enfrente la fecha de
      instalación, el periodo calendarizado, para también poder filtrar».
@@ -8612,6 +8641,17 @@ function MrpCompras({ setAviso, tcFix }) {
                     <td className="px-2 font-semibold">{e.proyecto || "(sin nombre)"}
                       {vencida && <span className="ml-2 font-normal text-[10px] text-red-700 font-bold">VENCIDA</span>}
                       {e.fecha && <span className="ml-2 font-normal text-[10px] text-stone-400">{mesTitulo(e.mes)}</span>}
+                      {/* Lo apartado NO es lo que hay que comprar. Aquí se parte
+                          en tres para que no se lea como una compra pendiente. */}
+                      {e.cob && (
+                        <span className="ml-2 font-normal text-[10px] whitespace-nowrap">
+                          {e.cob.valAlmacen > 0 && <span className="text-emerald-700" title="Ya está en el almacén, repartido por fecha de instalación">● {dinero(e.cob.valAlmacen)} en almacén</span>}
+                          {e.cob.valOc > 0 && <span className="text-sky-700 ml-1.5" title="Ya está comprado: viene en una orden de compra">● {dinero(e.cob.valOc)} en OC</span>}
+                          {e.cob.costoComprar > 0
+                            ? <span className="text-red-700 font-bold ml-1.5" title={`${e.cob.nFalta} material(es) sin cubrir`}>● {dinero(e.cob.costoComprar)} por comprar</span>
+                            : <span className="text-emerald-700 font-bold ml-1.5">✓ nada por comprar</span>}
+                        </span>
+                      )}
                     </td>
                     <td /><td className="px-2 text-right font-mono font-semibold">{mx0(e.total)}</td>
                     <td /><td className="bg-stone-200" /><td />
@@ -8631,7 +8671,18 @@ function MrpCompras({ setAviso, tcFix }) {
                       <td />
                       <td />
                       <td className="px-2 font-mono text-[10px]">{f.sku}</td>
-                      <td className="px-2 pl-6 text-stone-600">{f.desc}</td>
+                      <td className="px-2 pl-6 text-stone-600">
+                        {(() => {
+                          const c = e.cob?.porSku.get(String(f.sku).toUpperCase());
+                          if (!c) return null;
+                          const t = c.porComprar > 0
+                            ? `Faltan ${mx0(c.porComprar)} por comprar · ${mx0(c.enAlmacen)} en almacén · ${mx0(c.enOc)} en OC`
+                            : (c.enOc > 0 ? `Cubierto: ${mx0(c.enAlmacen)} en almacén y ${mx0(c.enOc)} ya comprados` : "Cubierto con lo que hay en almacén");
+                          const color = c.porComprar > 0 ? "text-red-600" : c.enOc > 0 ? "text-sky-600" : "text-emerald-600";
+                          return <span className={`mr-1.5 ${color}`} title={t}>●</span>;
+                        })()}
+                        {f.desc}
+                      </td>
                       <td className="px-2 text-right font-mono text-sky-700">{f.backOrder || ""}</td>
                       <td className="px-2 text-right font-mono">{mx0(cant)}</td>
                       <td className="px-2 text-right font-mono">{f.stock || ""}</td>
