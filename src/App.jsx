@@ -8651,8 +8651,41 @@ const diaCorto = (iso) => {
 function Flujo({ operaciones, cuentas, tcFix }) {
   const [moneda, setMoneda] = useState("MXN");       // MXN · USD · CONS
   const [dark, setDark] = useState(false);
+  /* [11-nov-2026] El gasto operativo se mide desde la app, no desde la consola.
+     Fran: «la corrida de la consola no la podemos omitir o meter de otra
+     manera». Lo mismo que pasó el 10-nov con `libro-cotejo`: si para usar algo
+     hay que abrir las herramientas del navegador, nadie lo usa, y acaba
+     corriendo solo cuando yo estoy aquí.
+
+     Esto NO reemplaza al libro de bancos ni lo escribe. Mide aparte, contra
+     Zoho, para poder restar un operativo real mientras los meses viejos del
+     libro siguen sin cargarse. */
+  const [gastos, setGastos] = useState(null);
+  const [midiendo, setMidiendo] = useState(false);
+  const [errMedir, setErrMedir] = useState("");
 
   useEffect(() => { setDark(document.documentElement.classList.contains("dark")); }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage?.get("iso3-flujo-gastos");
+        if (r) setGastos(typeof r === "string" ? JSON.parse(r) : r);
+      } catch { /* sin medición previa: el bloque lo dice y ofrece correrla */ }
+    })();
+  }, []);
+
+  const medirBanco = async () => {
+    if (midiendo) return;
+    setMidiendo(true); setErrMedir("");
+    try {
+      const r = await window.sincronizar("flujo-gastos", { meses: 12 });
+      if (r?.ok === false) throw new Error(r.error || "No se pudo medir.");
+      setGastos(r);
+    } catch (e) {
+      setErrMedir(String(e?.message || e));
+    } finally { setMidiendo(false); }
+  };
 
   const C = dark ? FLUJO_COLOR.oscuro : FLUJO_COLOR.claro;
   const anio = new Date().getFullYear();
@@ -8870,6 +8903,85 @@ function Flujo({ operaciones, cuentas, tcFix }) {
           Tesorería → Movimientos y esta pantalla se puebla sola.
         </div>
       )}
+
+      {/* LO QUE SE VA CADA MES, MEDIDO CONTRA EL BANCO.
+          Separado del libro a propósito: el libro es lo que capturó el equipo
+          y este bloque es lo que dice Zoho. Cuando no coinciden, la diferencia
+          es el dato, no el error. */}
+      <div className="rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest font-semibold text-stone-600 dark:text-stone-300">Gasto mensual medido del banco</p>
+            <p className="text-[10px] text-stone-400">
+              {gastos?.mesesCompletos?.length
+                ? `Promedio de ${gastos.mesesCompletos.length} mes(es) completo(s) · ${mx0(gastos.movimientos || 0)} movimientos · corte ${gastos.fecha}`
+                : "Todavía no se ha medido. Son doce meses de todas las cuentas; tarda un poco."}
+            </p>
+          </div>
+          <button onClick={medirBanco} disabled={midiendo}
+            title="Lee doce meses de movimientos bancarios de Zoho y los separa en operativo, nómina, impuestos, aduana, préstamos y pagos a proveedor"
+            className={`px-3 py-1.5 text-xs font-medium rounded border ${midiendo
+              ? "border-stone-200 text-stone-400 cursor-wait"
+              : "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800"}`}>
+            {midiendo ? "Midiendo…" : gastos ? "Volver a medir" : "Medir del banco"}
+          </button>
+        </div>
+
+        {errMedir && <p className="mt-2 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded p-2">{errMedir}</p>}
+
+        {gastos?.promedioMensual && (
+          <>
+            <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
+              {[
+                ["operativo", "Operativo", "El gasto de todos los días"],
+                ["nomina", "Nómina", "Sueldos, finiquitos, IMSS"],
+                ["impuestos", "Impuestos", "SAT, ISR, IVA"],
+                ["aduana", "Aduana", "IGI, IVA de importación, DTA, honorarios"],
+                ["prestamo", "Préstamos", "Amortizaciones e intereses"],
+              ].map(([k, t, ayuda]) => (
+                <div key={k} className="rounded border border-stone-200 dark:border-stone-700 p-2" title={ayuda}>
+                  <p className="text-[10px] uppercase tracking-wider text-stone-500">{t}</p>
+                  <p className="text-sm font-mono tabular-nums">${mx0(gastos.promedioMensual[k] || 0)}</p>
+                  <p className="text-[9px] text-stone-400">al mes</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Lo que NO se suma, dicho aquí para que nadie lo sume después. */}
+            <p className="mt-2 text-[10px] text-stone-500">
+              Fuera del total: <b>pagos a proveedor</b> ${mx0(gastos.promedioMensual.proveedores || 0)} al mes — ese dinero ya
+              está contado en las órdenes de compra del MRP, y sumarlo aquí contaría dos veces el mismo material.
+              Los traspasos entre cuentas propias tampoco cuentan: el dinero no sale de casa.
+            </p>
+
+            {gastos.promedioMensual.sinClasificar > 0 && (
+              <p className="mt-1.5 text-[11px] text-amber-900 bg-amber-50 border border-amber-300 rounded p-2">
+                <b>${mx0(gastos.promedioMensual.sinClasificar)} al mes sin clasificar.</b> No se reparten a ojo ni se meten
+                al operativo: un operativo inflado hace creer que falta dinero que no falta. Abajo están los movimientos
+                para decidir a dónde van.
+              </p>
+            )}
+
+            {gastos.dudosos?.length > 0 && (
+              <details className="mt-2">
+                <summary className="text-[11px] text-stone-500 cursor-pointer">Ver {gastos.dudosos.length} movimiento(s) sin clasificar</summary>
+                <table className="mt-1.5 text-[10px] font-mono w-full">
+                  <tbody>
+                    {gastos.dudosos.map((d, i) => (
+                      <tr key={i} className="border-b border-stone-100 dark:border-stone-800">
+                        <td className="py-0.5 pr-2 text-stone-500">{d.fecha}</td>
+                        <td className="py-0.5 pr-2 text-right tabular-nums">${mx0(d.mxn)}</td>
+                        <td className="py-0.5 pr-2 text-stone-400">{d.tipo}</td>
+                        <td className="py-0.5 text-stone-600 dark:text-stone-300">{d.texto}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
+            )}
+          </>
+        )}
+      </div>
 
       {/* EL AÑO POR MESES. Es como se lee el negocio y como se declara; las
           semanas de abajo son el detalle de cuándo pegó. */}
