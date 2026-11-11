@@ -7251,7 +7251,6 @@ function MrpCompras({ setAviso, tcFix }) {
   const [busca, setBusca] = useState("");
   const [mesesOff, setMesesOff] = useState(() => new Set());
   const [soloFalta, setSoloFalta] = useState(false);
-  const [soloQty, setSoloQty] = useState(false);
   // Un solo control con tres estados, en vez de dos casillas que puestas una
   // al lado de la otra se leían como el mismo filtro repetido.
   const [soloConFecha, setSoloConFecha] = useState(false);  // solo lo que alguna obra calendarizada tiene apartado
@@ -7266,6 +7265,14 @@ function MrpCompras({ setAviso, tcFix }) {
   // El MRP al revés: por obra en vez de por material.  [10-nov-2026]
   const [porObraOn, setPorObraOn] = useState(false);
   const [obraAbierta, setObraAbierta] = useState(null);
+  const [periodo, setPeriodo] = useState("");
+  /* [11-nov-2026] Fran: «ahí cosas se encimaron, pon un BOTÓN prender y apagar
+     ver precios». Duplicar cada mes metió el doble de columnas y la tabla se
+     encimó sola. El dinero sigue siendo útil, pero no todo el tiempo: la
+     pregunta «¿cuántas piezas?» y la pregunta «¿cuánto cuesta?» no se hacen
+     juntas. Apagado por default para que la pantalla abra como siempre
+     abrió. */
+  const [verPrecios, setVerPrecios] = useState(false);
   /*  MXN O USD, PORQUE HAY DOS VALUACIONES CIRCULANDO.  [11-nov-2026]
 
       El costo de Zoho Books es `purchase_rate` y la organizacion opera en
@@ -7654,12 +7661,11 @@ function MrpCompras({ setAviso, tcFix }) {
     if (esFuera(f) !== verFuera) return false;
     if (q && !(f.sku.includes(q) || f.desc.toUpperCase().includes(q) || f.prov.toUpperCase().includes(q))) return false;
     if (soloFalta && f.stockFinal >= 0) return false;
-    if (soloQty && !(qty[f.sku] > 0)) return false;
     if (soloConFecha && !f.calendarizado) return false;
     if (soloDiscrepa && !f.discrepa) return false;
     if (ocultaBaja && !f.activo) return false;
     return true;
-  }), [filas, q, soloFalta, soloQty, soloConFecha, soloDiscrepa, ocultaBaja, qty, fuera, verFuera]);
+  }), [filas, q, soloFalta, soloConFecha, soloDiscrepa, ocultaBaja, qty, fuera, verFuera]);
 
   // La lista de excluidos puede traer SKU que ya no están en el catálogo; lo
   // que cuenta aquí es cuántos de los de HOY está escondiendo.
@@ -7733,6 +7739,35 @@ function MrpCompras({ setAviso, tcFix }) {
       String(a.fecha || "9999-99-99").localeCompare(String(b.fecha || "9999-99-99"))
       || String(a.ov).localeCompare(String(b.ov)));
   }, [porObraOn, vistas]);
+
+  /* [11-nov-2026] Fran: «en el MRP por obra agrega enfrente la fecha de
+     instalación, el periodo calendarizado, para también poder filtrar».
+     La fecha deja de ser una nota chica junto al nombre y se va a la columna
+     ámbar: en el renglón de la OBRA dice cuándo instala, en sus MATERIALES
+     dice cuándo hay que pedirlos. Es la misma pregunta vista de los dos lados
+     y por eso comparten columna.
+
+     El filtro mira el mes de INSTALACIÓN de la obra, no el mes en que cae su
+     material. Una obra que instala en diciembre y pide material en noviembre
+     sigue siendo una obra de diciembre: si se filtrara por el material, esa
+     obra desaparecería de diciembre, que es justo cuando hay que verla. */
+  const periodos = useMemo(() => {
+    const ms = new Map();
+    let venc = 0, sinf = 0;
+    for (const e of grupos) {
+      if (!e.fecha) { sinf++; continue; }
+      if (e.fecha < hoy()) venc++;
+      ms.set(e.mes, (ms.get(e.mes) || 0) + 1);
+    }
+    return { meses: [...ms.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]))), venc, sinf };
+  }, [grupos]);
+
+  const gruposVista = useMemo(() => {
+    if (!periodo) return grupos;
+    if (periodo === "VENCIDAS") return grupos.filter((e) => e.fecha && e.fecha < hoy());
+    if (periodo === "SIN") return grupos.filter((e) => !e.fecha);
+    return grupos.filter((e) => e.mes === periodo);
+  }, [grupos, periodo]);
 
   const totMes = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0), 0);
   /* [11-nov-2026] Fran: «sería bueno en el MRP por material también poder ver
@@ -7922,45 +7957,6 @@ function MrpCompras({ setAviso, tcFix }) {
     setAviso({ t: "ok", m: `${filasCsv.length} partida(s) en ${n} orden(es) de compra, listas para importar en Zoho Books.` });
   };
 
-  // A quién se le ha comprado cada SKU, según el historial de órdenes de compra
-  // que junta el cron. El campo de proveedor del artículo viene vacío en Zoho,
-  // así que esto es la semilla para llenarlo: compras lo revisa y lo sube de un
-  // jalón, y de ahí en adelante la columna PROVEEDOR deja de ser inferencia.
-  const exportarSemillaProv = () => {
-    const hist = oc?.hist || {};
-    const skus = Object.keys(hist);
-    if (!skus.length) { setAviso({ t: "err", m: "Todavía no hay historial de órdenes de compra. Corre la sincronía de OC." }); return; }
-    const nombres = new Set((oc?.provZoho || []).map((p) => String(p.nombre).trim().toUpperCase()));
-    const items = inv?.items || {};
-    const filasCsv = skus.map((sku) => {
-      const h = hist[sku];
-      const orden = Object.entries(h.porProv || {}).sort((a, b) => b[1].n - a[1].n || String(b[1].ult).localeCompare(String(a[1].ult)));
-      if (!orden.length) return null;
-      const [p1, d1] = orden[0];
-      const total = orden.reduce((a, [, d]) => a + d.n, 0);
-      // Un SKU comprado siempre al mismo proveedor es dato fuerte; uno repartido
-      // entre varios necesita que alguien decida.
-      const conf = orden.length === 1 ? (d1.n >= 3 ? "alta" : "media") : (d1.n / total >= 0.7 ? "media" : "revisar");
-      return [sku, h.desc || "", p1, nombres.has(String(p1).trim().toUpperCase()) ? "sí" : "NO",
-        d1.n, d1.ult || "", d1.pzas || "", orden.slice(1).map(([p, d]) => `${p} (${d.n})`).join(" · "),
-        conf, items[sku] ? (items[sku].activo === false ? "NO" : "sí") : "?"];
-    }).filter(Boolean).sort((a, b) => String(a[8]).localeCompare(String(b[8])) || b[4] - a[4]);
-    bajar(`proveedores-por-sku-${hoy()}.csv`,
-      ["SKU", "Descripcion", "Proveedor sugerido", "Existe en Zoho", "Veces comprado", "Ultima compra", "Piezas", "Otros proveedores", "Confianza", "Activo en Zoho"],
-      filasCsv);
-    setAviso({ t: "ok", m: `${filasCsv.length} SKU con proveedor sugerido. Revísalo antes de subirlo a Zoho.` });
-  };
-
-  // Los proveedores tal como están en Zoho, para elegir de aquí en vez de
-  // escribir: así ningún renglón se pierde por un nombre mal puesto.
-  const exportarProveedores = () => {
-    const lista = oc?.provZoho || [];
-    if (!lista.length) { setAviso({ t: "err", m: "La sincronía de OC todavía no ha traído el catálogo de proveedores." }); return; }
-    bajar(`proveedores-zoho-${hoy()}.csv`, ["Proveedor (copiar tal cual)", "Tipo", "Moneda"],
-      [...lista].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es")).map((p) => [p.nombre, p.tipo, p.moneda]));
-    setAviso({ t: "ok", m: `${lista.length} proveedores activos de Zoho.` });
-  };
-
   if (cargando) return <p className="text-xs text-stone-500">Cargando el MRP…</p>;
   if (err) return <p className="text-xs text-red-600">No se pudo cargar: {err}</p>;
 
@@ -7991,8 +7987,27 @@ function MrpCompras({ setAviso, tcFix }) {
               <button onClick={() => setPorObraOn(true)}
                 className={`px-2.5 py-1 font-medium ${porObraOn ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>Por obra</button>
             </div>
+            {porObraOn && (
+              <select value={periodo} onChange={(e) => setPeriodo(e.target.value)}
+                title="Filtra las obras por el periodo en que están calendarizadas"
+                className="rounded-lg border border-teal-500/60 bg-teal-800/40 px-2 py-1 text-[11px] text-white">
+                <option value="">Todos los periodos ({grupos.length})</option>
+                {periodos.venc > 0 && <option value="VENCIDAS">Vencidas ({periodos.venc})</option>}
+                {periodos.meses.map(([m, n]) => (
+                  <option key={m} value={m}>{mesTitulo(m)} ({n})</option>
+                ))}
+                {periodos.sinf > 0 && <option value="SIN">Sin fecha ({periodos.sinf})</option>}
+              </select>
+            )}
+            <button onClick={() => setVerPrecios(!verPrecios)}
+              title="Muestra u oculta la columna de dinero que va después de cada mes"
+              className={`px-2.5 py-1 rounded-lg border border-teal-500/60 text-[11px] font-medium ${
+                verPrecios ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>
+              {verPrecios ? "Precios ●" : "Precios ○"}
+            </button>
             {/* El correo del MRP va en USD y la app calcula en pesos. Sin esto,
                 comparar las dos cifras obliga a dividir a mano.  [11-nov-2026] */}
+            {verPrecios && (
             <div className="flex rounded-lg overflow-hidden border border-teal-500/60 text-[11px]">
               <button onClick={() => setUsd(false)}
                 className={`px-2.5 py-1 font-medium ${!usd ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>MXN</button>
@@ -8000,8 +8015,11 @@ function MrpCompras({ setAviso, tcFix }) {
                 title={+tcFix > 0 ? `Al TC fix ${tcFix}` : "Captura el TC fix en Tesorería para ver en dólares"}
                 className={`px-2.5 py-1 font-medium ${usd ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"} ${!(+tcFix > 0) ? "opacity-40 cursor-not-allowed" : ""}`}>USD</button>
             </div>
+            )}
             <p className="text-[11px] text-teal-100 font-mono">
-              {porObraOn ? `${mx0(obras.length)} obra(s)` : `${mx0(filas.length)} SKU`} · corte {inv?.fecha || cat?.fecha || "—"}
+              {porObraOn
+                ? `${mx0(gruposVista.length)} obra(s)${periodo ? ` de ${mx0(grupos.length)}` : ""}`
+                : `${mx0(filas.length)} SKU`} · corte {inv?.fecha || cat?.fecha || "—"}
               {usd && +tcFix > 0 ? ` · TC ${tcFix}` : ""}
             </p>
           </div>
@@ -8053,7 +8071,6 @@ function MrpCompras({ setAviso, tcFix }) {
         <input value={busca} onChange={(e) => setBusca(e.target.value)}
           placeholder="Buscar SKU, descripción o proveedor…" className="px-2 py-1.5 border border-stone-300 rounded text-xs w-64" />
         {chip(soloFalta, setSoloFalta, "Solo faltantes")}
-        {chip(soloQty, setSoloQty, "Solo con QTY")}
         {chip(soloConFecha, setSoloConFecha, "Solo obras con fecha")}
         {chip(ocultaBaja, setOcultaBaja, "Ocultar dados de baja")}
         {(nFuera > 0 || verFuera) && (
@@ -8076,10 +8093,6 @@ function MrpCompras({ setAviso, tcFix }) {
           {sincro ? `Trayendo ${sincro}…` : "Actualizar de Zoho"}
         </button>
         <button onClick={exportar} className="px-3 py-1.5 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50">Exportar tabla</button>
-        <button onClick={exportarSemillaProv} title="A quién se le ha comprado cada SKU, para llenar el proveedor en Zoho de un jalón"
-          className="px-2.5 py-1.5 border border-stone-300 text-stone-500 text-[11px] rounded hover:bg-stone-50">Semilla de proveedores</button>
-        <button onClick={exportarProveedores} title="El catálogo de proveedores tal como está en Zoho"
-          className="px-2.5 py-1.5 border border-stone-300 text-stone-500 text-[11px] rounded hover:bg-stone-50">Proveedores de Zoho</button>
       </div>
 
       <p className="text-[10px] text-stone-400">
@@ -8146,11 +8159,16 @@ function MrpCompras({ setAviso, tcFix }) {
               <th className="text-right px-2 py-2">STOCK AL DIA</th>
               <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
               <th className="text-right px-2 py-2">QTY</th>
-              <th className="text-right px-2 py-2 bg-amber-50 text-amber-800 whitespace-nowrap" title="Fecha de instalación de la obra más próxima que lo necesita, menos el tiempo de entrega del material">PEDIR ANTES DE</th>
+              <th className="text-right px-2 py-2 bg-amber-50 text-amber-800 whitespace-nowrap"
+                  title={porObraOn
+                    ? "En el renglón de la obra: la fecha en que instala. En sus materiales: la fecha límite para pedirlos (instalación menos tiempo de entrega)."
+                    : "Fecha de instalación de la obra más próxima que lo necesita, menos el tiempo de entrega del material"}>
+                {porObraOn ? "INSTALA / PEDIR" : "PEDIR ANTES DE"}
+              </th>
               {mesesVisibles.map((m) => (
                 <Fragment key={m}>
                   <th className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>
-                  <th className="text-right px-2 py-2 bg-teal-100/70 text-teal-900" title="Lo que vale lo apartado de ese mes, al costo de Zoho Books">{usd ? "$ USD" : "$ MXN"}</th>
+                  {verPrecios && <th className="text-right px-2 py-2 bg-teal-100/70 text-teal-900" title="Lo que vale lo apartado de ese mes, al costo de Zoho Books">{usd ? "$ USD" : "$ MXN"}</th>}
                 </Fragment>
               ))}
             </tr>
@@ -8165,7 +8183,7 @@ function MrpCompras({ setAviso, tcFix }) {
               {mesesVisibles.map((m) => (
                 <Fragment key={m}>
                   <td className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>
-                  <td className="px-2 py-1.5 text-right font-mono bg-teal-100/70 text-teal-900">{dinero(totMesMxn(m))}</td>
+                  {verPrecios && <td className="px-2 py-1.5 text-right font-mono bg-teal-100/70 text-teal-900">{dinero(totMesMxn(m))}</td>}
                 </Fragment>
               ))}
             </tr>
@@ -8173,7 +8191,7 @@ function MrpCompras({ setAviso, tcFix }) {
           <tbody>
 
             {/* ─── AGRUPADO POR OBRA. Mismas columnas, otros renglones. ─── */}
-            {porObraOn && grupos.map((e) => {
+            {porObraOn && gruposVista.map((e) => {
               const llave = e.ov || e.proyecto;
               const abierta = obraAbierta === llave;
               const vencida = e.fecha && e.fecha < hoy();
@@ -8185,17 +8203,19 @@ function MrpCompras({ setAviso, tcFix }) {
                     <td className="px-1 text-right font-mono text-stone-400">{e.mats.length}</td>
                     <td className="px-2 font-mono text-[10px] text-stone-500">{e.ov || "—"}</td>
                     <td className="px-2 font-semibold">{e.proyecto || "(sin nombre)"}
-                      <span className={`ml-2 font-normal text-[10px] ${vencida ? "text-red-700 font-bold" : "text-stone-400"}`}>
-                        instala {e.fecha || "sin fecha"}{vencida ? " · VENCIDA" : ""}
-                      </span>
+                      {vencida && <span className="ml-2 font-normal text-[10px] text-red-700 font-bold">VENCIDA</span>}
+                      {e.fecha && <span className="ml-2 font-normal text-[10px] text-stone-400">{mesTitulo(e.mes)}</span>}
                     </td>
                     <td /><td className="px-2 text-right font-mono font-semibold">{mx0(e.total)}</td>
                     <td /><td className="bg-stone-200" /><td />
-                    <td className="bg-amber-50" />
+                    <td className={`px-2 text-right font-mono bg-amber-50 whitespace-nowrap text-[10px] font-semibold ${vencida ? "text-red-700" : "text-amber-900"}`}
+                        title={e.fecha ? `Instala el ${e.fecha}` : "Esta obra no tiene fecha de instalación en IS-PMT"}>
+                      {e.fecha ? e.fecha.slice(5) : "sin fecha"}
+                    </td>
                     {mesesVisibles.map((m) => (
                       <Fragment key={m}>
                         <td className="px-2 text-right font-mono bg-teal-50 font-semibold">{m === e.mes ? mx0(e.total) : ""}</td>
-                        <td className="px-2 text-right font-mono bg-teal-100/70 text-teal-900 font-semibold">{m === e.mes ? dinero(e.valor) : ""}</td>
+                        {verPrecios && <td className="px-2 text-right font-mono bg-teal-100/70 text-teal-900 font-semibold">{m === e.mes ? dinero(e.valor) : ""}</td>}
                       </Fragment>
                     ))}
                   </tr>
@@ -8216,7 +8236,7 @@ function MrpCompras({ setAviso, tcFix }) {
                       {mesesVisibles.map((m) => (
                         <Fragment key={m}>
                           <td className="px-2 text-right font-mono bg-teal-50/40">{m === e.mes ? mx0(cant) : ""}</td>
-                          <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{m === e.mes ? dinero(cant * (+f.costo || 0)) : ""}</td>
+                          {verPrecios && <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{m === e.mes ? dinero(cant * (+f.costo || 0)) : ""}</td>}
                         </Fragment>
                       ))}
                     </tr>
@@ -8224,7 +8244,7 @@ function MrpCompras({ setAviso, tcFix }) {
                 </Fragment>
               );
             })}
-            {!porObraOn && primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
+            {!porObraOn && primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * (verPrecios ? 2 : 1)} /></tr>}
             {!porObraOn && enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
@@ -8282,14 +8302,14 @@ function MrpCompras({ setAviso, tcFix }) {
                   return (
                     <Fragment key={m}>
                       <td className="px-2 text-right font-mono bg-teal-50/40">{q || ""}</td>
-                      <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{dinero(v)}</td>
+                      {verPrecios && <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{dinero(v)}</td>}
                     </Fragment>
                   );
                 })}
               </tr>
               {detalle === f.sku && (
                 <tr style={{ outline: "2px solid #7e22ce", outlineOffset: "-2px" }} className="bg-purple-50">
-                  <td colSpan={10 + mesesVisibles.length * 2} className="px-3 py-2">
+                  <td colSpan={10 + mesesVisibles.length * (verPrecios ? 2 : 1)} className="px-3 py-2">
                     {f.lineas.length === 0 ? (
                       <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta.</p>
                     ) : (
@@ -8319,7 +8339,7 @@ function MrpCompras({ setAviso, tcFix }) {
               )}
               </Fragment>
             ))}
-            {!porObraOn && ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
+            {!porObraOn && ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * (verPrecios ? 2 : 1)} /></tr>}
           </tbody>
         </table>
       </div>
