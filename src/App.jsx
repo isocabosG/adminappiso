@@ -2489,7 +2489,7 @@ function App({ perfil, correo }) {
         {vistaSegura === "proyectos" && <Proyectos {...{ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, setIrOV, rol: perfil?.role || null, puedeAjustar: !!perfil?.puede_ajustar }} />}
         {vistaSegura === "importaciones" && <Importaciones {...{ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }} />}
         {vistaSegura === "inventario" && <Inventario catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} correo={correo} />}
-        {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} />}
+        {vistaSegura === "mrp" && <MrpCompras setAviso={setAviso} tcFix={tcFix} />}
         {vistaSegura === "flujo" && <Flujo {...{ operaciones, cuentas, tcFix }} />}
         {vistaSegura === "tesoreria" && <Tesoreria {...{ cuentas, saveCuentas, operaciones, saveOperaciones, tcFix, saveTcFix, pedimentos, setAviso }} />}
         {vistaSegura === "limpieza" && <LimpiezaSO setAviso={setAviso} />}
@@ -7238,7 +7238,7 @@ const MESES_KEY = "iso3-mrp-meses";
 const ALTO = 30;          // alto fijo de renglón, para el scroll virtual
 const COLCHON = 12;       // renglones de más arriba y abajo del área visible
 
-function MrpCompras({ setAviso }) {
+function MrpCompras({ setAviso, tcFix }) {
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState(null);
   const [cat, setCat] = useState(null);
@@ -7266,6 +7266,19 @@ function MrpCompras({ setAviso }) {
   // El MRP al revés: por obra en vez de por material.  [10-nov-2026]
   const [porObraOn, setPorObraOn] = useState(false);
   const [obraAbierta, setObraAbierta] = useState(null);
+  /*  MXN O USD, PORQUE HAY DOS VALUACIONES CIRCULANDO.  [11-nov-2026]
+
+      El costo de Zoho Books es `purchase_rate` y la organizacion opera en
+      pesos, asi que todo lo que calcula esta pantalla YA es MXN. Pero el
+      reporte de MRP que circula por correo esta en USD --246,865 USD el
+      8-nov-- y comparar las dos cifras obliga a dividir a mano entre 18 y
+      pico. Dos numeros para la misma cosa, cada quien con su conversion, es
+      como empiezan las juntas donde nadie sabe a cual creerle.
+
+      El interruptor usa el TC fix de Banxico que ya vive en Tesoreria: una
+      sola fuente para el tipo de cambio en toda la app. Si no hay TC
+      capturado, USD se apaga en vez de inventar uno. */
+  const [usd, setUsd] = useState(false);
   const [scroll, setScroll] = useState(0);
   const cajaRef = useRef(null);
   const yaInicie = useRef(false);
@@ -7515,6 +7528,15 @@ function MrpCompras({ setAviso }) {
       que queda —primero el físico, luego lo que viene en orden de compra— y lo
       que ya no alcanza es compra de verdad. Es el mismo criterio con el que
       almacén surte: el que instala primero se lleva el material. */
+  const tc = +tcFix || 0;
+  /* Un solo lugar convierte y formatea: si cada columna lo hiciera por su
+     cuenta, la primera que se olvide del TC miente sin que se note. */
+  const dinero = (mxn) => {
+    const n = +mxn || 0;
+    if (!n) return "";
+    return usd && tc > 0 ? "$" + mx0(n / tc) : "$" + mx0(n);
+  };
+
   const obras = useMemo(() => {
     if (!cat || !comp) return [];
     const items = inv?.items || {};
@@ -7668,6 +7690,50 @@ function MrpCompras({ setAviso }) {
   const altoDet = idxAbierto >= 0 ? 30 + Math.max(1, vistas[idxAbierto]?.lineas.length || 0) * 20 : 0;
 
   const tot = (campo) => vistas.reduce((a, f) => a + (f[campo] || 0), 0);
+  /*  LA MISMA TABLA, AGRUPADA POR OBRA.  [11-nov-2026]
+
+      Fran, corrigiendo mi primer intento: «tiene que tener el mismo formato
+      que el otro MRP, igual como está, nada más que viene la lista del
+      proyecto, se despliegan los materiales y se ve igual por meses… no es
+      dentro, las columnas de los meses se quedan igual, solo viene nombre de
+      la obra con viñeta y sus materiales, y enfrente se ve las fechas que los
+      solicitan».
+
+      Mi primera versión le inventó columnas propias --falta, en almacén, en
+      OC, por comprar-- y eso la convirtió en otra pantalla. No es otra
+      pantalla: es ESTA, agrupada distinto. Las columnas no se tocan, los
+      totales tampoco, y el reparto por mes es el mismo. Lo único que cambia es
+      que los renglones se juntan bajo su obra.
+
+      Un SKU que piden tres obras aparece bajo las tres, con la cantidad que
+      cada una tiene apartada. Las columnas globales del SKU --back order,
+      stock, stock final-- se repiten porque son del material, no de la obra:
+      el almacén es uno solo. */
+  const grupos = useMemo(() => {
+    if (!porObraOn) return [];
+    const g = new Map();
+    for (const f of vistas) {
+      for (const l of (f.lineas || [])) {
+        const llave = String(l.ov || "").trim().toUpperCase() || `P:${l.proyecto || "?"}`;
+        let e = g.get(llave);
+        if (!e) { e = { ov: l.ov || "", proyecto: l.proyecto || "", fecha: l.fecha || null, mats: [], total: 0 }; g.set(llave, e); }
+        if (!e.fecha && l.fecha) e.fecha = l.fecha;
+        if (!e.proyecto && l.proyecto) e.proyecto = l.proyecto;
+        e.mats.push({ f, cant: l.apartado });
+        e.total += l.apartado;
+      }
+    }
+    const lista = [...g.values()];
+    for (const e of lista) {
+      e.mats.sort((a, b) => b.cant - a.cant || String(a.f.sku).localeCompare(String(b.f.sku)));
+      e.mes = e.fecha ? mesClave(e.fecha) : "SIN";
+      e.valor = e.mats.reduce((a, m) => a + m.cant * (+m.f.costo || 0), 0);
+    }
+    return lista.sort((a, b) =>
+      String(a.fecha || "9999-99-99").localeCompare(String(b.fecha || "9999-99-99"))
+      || String(a.ov).localeCompare(String(b.ov)));
+  }, [porObraOn, vistas]);
+
   const totMes = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0), 0);
   /* [11-nov-2026] Fran: «sería bueno en el MRP por material también poder ver
      los valores en $ MXP de lo que representa… agregar una columna después de
@@ -7925,8 +7991,18 @@ function MrpCompras({ setAviso }) {
               <button onClick={() => setPorObraOn(true)}
                 className={`px-2.5 py-1 font-medium ${porObraOn ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>Por obra</button>
             </div>
+            {/* El correo del MRP va en USD y la app calcula en pesos. Sin esto,
+                comparar las dos cifras obliga a dividir a mano.  [11-nov-2026] */}
+            <div className="flex rounded-lg overflow-hidden border border-teal-500/60 text-[11px]">
+              <button onClick={() => setUsd(false)}
+                className={`px-2.5 py-1 font-medium ${!usd ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"}`}>MXN</button>
+              <button onClick={() => setUsd(true)} disabled={!(+tcFix > 0)}
+                title={+tcFix > 0 ? `Al TC fix ${tcFix}` : "Captura el TC fix en Tesorería para ver en dólares"}
+                className={`px-2.5 py-1 font-medium ${usd ? "bg-white text-teal-800" : "text-teal-100 hover:bg-teal-700/50"} ${!(+tcFix > 0) ? "opacity-40 cursor-not-allowed" : ""}`}>USD</button>
+            </div>
             <p className="text-[11px] text-teal-100 font-mono">
               {porObraOn ? `${mx0(obras.length)} obra(s)` : `${mx0(filas.length)} SKU`} · corte {inv?.fecha || cat?.fecha || "—"}
+              {usd && +tcFix > 0 ? ` · TC ${tcFix}` : ""}
             </p>
           </div>
         </div>
@@ -7952,99 +8028,6 @@ function MrpCompras({ setAviso }) {
         </details>
       </div>
 
-      {/* ───────────── EL MRP AL REVÉS: POR OBRA ───────────── */}
-      {porObraOn && (
-        <div className="space-y-2">
-          <p className="text-[11px] text-stone-600 bg-stone-50 border border-stone-200 rounded px-3 py-2">
-            Las mismas cantidades de arriba, volteadas: cada obra con lo que le falta.
-            El almacén se reparte <b>por fecha de instalación</b> —la obra que instala primero se lleva el material—
-            así que una pieza no se cuenta como disponible para dos obras a la vez.
-            Los importes usan el costo de Zoho Books.
-            {/* [11-nov-2026] Fran: «¿por qué hay cosas en gris clarito?». Habia un
-                codigo de color sin explicar, que es lo mismo que no tenerlo: quien
-                lo ve tiene que adivinar, y adivinar sobre una lista de compras
-                sale caro. */}
-            <br />
-            <span className="text-stone-400">Los renglones en gris</span> ya están cubiertos —hay existencia o viene
-            en camino— y no hay nada que comprar de ellos. Los que están en negro con el número
-            en <b className="text-red-700">rojo</b> son los que de verdad faltan.
-          </p>
-
-          {obras.length === 0 && (
-            <p className="text-xs text-stone-500 p-3">No hay obras con material apartado en órdenes de venta.</p>
-          )}
-
-          {obras.map((o) => {
-            const llave = o.ov || o.proyecto;
-            const abierta = obraAbierta === llave;
-            return (
-              <div key={llave} className={`border rounded-lg overflow-hidden ${o.vencida && !o.completa ? "border-red-400" : o.completa ? "border-emerald-300" : "border-stone-200"}`}>
-                <button onClick={() => setObraAbierta(abierta ? null : llave)}
-                  className={`w-full text-left px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 ${o.vencida && !o.completa ? "bg-red-50" : o.completa ? "bg-emerald-50" : "bg-white hover:bg-stone-50"}`}>
-                  <span className="text-stone-400 text-xs w-3">{abierta ? "▼" : "▶"}</span>
-                  <span className="font-mono text-xs text-stone-500 w-20 shrink-0">{o.ov || "—"}</span>
-                  <span className="text-sm font-medium flex-1 min-w-[180px]">{o.proyecto || "(sin nombre)"}</span>
-                  <span className="text-[11px] font-mono text-stone-500 w-24 text-right">{o.fecha || "sin fecha"}</span>
-                  <span className={`text-[11px] w-24 text-right ${o.vencida ? "text-red-700 font-bold" : "text-stone-500"}`}>
-                    {o.dias == null ? "—" : o.dias < 0 ? `vencida ${-o.dias} d` : `en ${o.dias} d`}
-                  </span>
-                  {o.completa
-                    ? <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-semibold">se puede surtir</span>
-                    : <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-white font-semibold">faltan {o.nFalta} de {o.nMat}</span>}
-                  <span className="text-xs font-mono font-semibold w-28 text-right">
-                    {o.costoComprar > 0 ? "$" + mx0(o.costoComprar) : "—"}
-                  </span>
-                </button>
-
-                {abierta && (
-                  <div className="overflow-x-auto border-t border-stone-200">
-                    <table className="w-full text-xs">
-                      <thead className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-500">
-                        <tr>
-                          <th className="text-left px-3 py-1.5">SKU</th>
-                          <th className="text-left px-2 py-1.5">Material</th>
-                          <th className="text-right px-2 py-1.5">Falta</th>
-                          <th className="text-right px-2 py-1.5">En almacén</th>
-                          <th className="text-right px-2 py-1.5">En OC</th>
-                          <th className="text-right px-2 py-1.5">Por comprar</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {o.mats.map((m) => (
-                          <tr key={m.sku} className={`border-t border-stone-100 ${m.porComprar > 0 ? "" : "text-stone-400"}`}
-                            title={m.porComprar > 0
-                              ? `Faltan ${mx0(m.porComprar)} por comprar: la obra necesita ${mx0(m.falta)}, hay ${mx0(m.enAlmacen)} en almacén y ${mx0(m.enOc)} en camino.`
-                              : `Cubierto: la obra necesita ${mx0(m.falta)} y ya hay ${mx0(m.enAlmacen)} en almacén${m.enOc ? ` más ${mx0(m.enOc)} en camino` : ""}. No hay que comprar nada.`}>
-                            <td className="px-3 py-1 font-mono text-[11px]">{m.sku}</td>
-                            <td className="px-2 py-1">{m.desc}</td>
-                            <td className="px-2 py-1 text-right tabular-nums">{mx0(m.falta)}
-                              <span className="block text-[10px] text-stone-400">${mx0(m.valFalta)}</span></td>
-                            <td className="px-2 py-1 text-right tabular-nums text-emerald-700">{mx0(m.enAlmacen)}
-                              <span className="block text-[10px] text-stone-400">${mx0(m.valAlmacen)}</span></td>
-                            <td className="px-2 py-1 text-right tabular-nums text-sky-700">{mx0(m.enOc)}
-                              <span className="block text-[10px] text-stone-400">${mx0(m.valOc)}</span></td>
-                            <td className={`px-2 py-1 text-right tabular-nums font-semibold ${m.porComprar > 0 ? "text-red-700" : ""}`}>{m.porComprar ? mx0(m.porComprar) : "—"}
-                              <span className="block text-[10px] text-stone-400">{m.porComprar ? "$" + mx0(m.valComprar) : ""}</span></td>
-                          </tr>
-                        ))}
-                        <tr className="border-t-2 border-stone-300 bg-stone-50 font-semibold">
-                          <td className="px-3 py-1.5" colSpan={2}>Total · {o.nMat} material(es)</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">${mx0(o.valFalta)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">${mx0(o.valAlmacen)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-sky-700">${mx0(o.valOc)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums text-red-700">${mx0(o.costoComprar)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div className={porObraOn ? "hidden" : "space-y-3"}>
 
       {faltaAlgo && (
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded p-2">
@@ -8167,7 +8150,7 @@ function MrpCompras({ setAviso }) {
               {mesesVisibles.map((m) => (
                 <Fragment key={m}>
                   <th className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>
-                  <th className="text-right px-2 py-2 bg-teal-100/70 text-teal-900" title="Lo que vale en pesos lo apartado de ese mes, al costo de Zoho Books">$ MXN</th>
+                  <th className="text-right px-2 py-2 bg-teal-100/70 text-teal-900" title="Lo que vale lo apartado de ese mes, al costo de Zoho Books">{usd ? "$ USD" : "$ MXN"}</th>
                 </Fragment>
               ))}
             </tr>
@@ -8182,14 +8165,67 @@ function MrpCompras({ setAviso }) {
               {mesesVisibles.map((m) => (
                 <Fragment key={m}>
                   <td className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>
-                  <td className="px-2 py-1.5 text-right font-mono bg-teal-100/70 text-teal-900">{totMesMxn(m) ? "$" + mx0(totMesMxn(m)) : ""}</td>
+                  <td className="px-2 py-1.5 text-right font-mono bg-teal-100/70 text-teal-900">{dinero(totMesMxn(m))}</td>
                 </Fragment>
               ))}
             </tr>
           </thead>
           <tbody>
-            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
-            {enPantalla.map((f, i) => (
+
+            {/* ─── AGRUPADO POR OBRA. Mismas columnas, otros renglones. ─── */}
+            {porObraOn && grupos.map((e) => {
+              const llave = e.ov || e.proyecto;
+              const abierta = obraAbierta === llave;
+              const vencida = e.fecha && e.fecha < hoy();
+              return (
+                <Fragment key={llave}>
+                  <tr onClick={() => setObraAbierta(abierta ? null : llave)}
+                      className={`cursor-pointer border-t border-stone-200 ${vencida ? "bg-red-50 hover:bg-red-100" : "bg-stone-50 hover:bg-stone-100"}`}>
+                    <td className="px-1 text-center text-stone-400">{abierta ? "▼" : "▶"}</td>
+                    <td className="px-1 text-right font-mono text-stone-400">{e.mats.length}</td>
+                    <td className="px-2 font-mono text-[10px] text-stone-500">{e.ov || "—"}</td>
+                    <td className="px-2 font-semibold">{e.proyecto || "(sin nombre)"}
+                      <span className={`ml-2 font-normal text-[10px] ${vencida ? "text-red-700 font-bold" : "text-stone-400"}`}>
+                        instala {e.fecha || "sin fecha"}{vencida ? " · VENCIDA" : ""}
+                      </span>
+                    </td>
+                    <td /><td className="px-2 text-right font-mono font-semibold">{mx0(e.total)}</td>
+                    <td /><td className="bg-stone-200" /><td />
+                    <td className="bg-amber-50" />
+                    {mesesVisibles.map((m) => (
+                      <Fragment key={m}>
+                        <td className="px-2 text-right font-mono bg-teal-50 font-semibold">{m === e.mes ? mx0(e.total) : ""}</td>
+                        <td className="px-2 text-right font-mono bg-teal-100/70 text-teal-900 font-semibold">{m === e.mes ? dinero(e.valor) : ""}</td>
+                      </Fragment>
+                    ))}
+                  </tr>
+                  {abierta && e.mats.map(({ f, cant }) => (
+                    <tr key={llave + "|" + f.sku} className="border-t border-stone-100 bg-white">
+                      <td />
+                      <td />
+                      <td className="px-2 font-mono text-[10px]">{f.sku}</td>
+                      <td className="px-2 pl-6 text-stone-600">{f.desc}</td>
+                      <td className="px-2 text-right font-mono text-sky-700">{f.backOrder || ""}</td>
+                      <td className="px-2 text-right font-mono">{mx0(cant)}</td>
+                      <td className="px-2 text-right font-mono">{f.stock || ""}</td>
+                      <td className={`px-2 text-right font-mono bg-stone-100 ${f.stockFinal < 0 ? "text-red-700 font-semibold" : ""}`}>{mx0(f.stockFinal)}</td>
+                      <td className="px-2 text-right font-mono text-teal-800">{qty[f.sku] || ""}</td>
+                      <td className={`px-2 text-right font-mono bg-amber-50 text-[10px] ${f.pedirAntes && f.pedirAntes < hoy() ? "text-red-700 font-semibold" : "text-amber-800"}`}>
+                        {f.pedirAntes ? f.pedirAntes.slice(5) : ""}
+                      </td>
+                      {mesesVisibles.map((m) => (
+                        <Fragment key={m}>
+                          <td className="px-2 text-right font-mono bg-teal-50/40">{m === e.mes ? mx0(cant) : ""}</td>
+                          <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{m === e.mes ? dinero(cant * (+f.costo || 0)) : ""}</td>
+                        </Fragment>
+                      ))}
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
+            {!porObraOn && primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
+            {!porObraOn && enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
                   obra está calendarizada, punteado si no tiene fecha. Va como
@@ -8246,7 +8282,7 @@ function MrpCompras({ setAviso }) {
                   return (
                     <Fragment key={m}>
                       <td className="px-2 text-right font-mono bg-teal-50/40">{q || ""}</td>
-                      <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{v ? "$" + mx0(v) : ""}</td>
+                      <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{dinero(v)}</td>
                     </Fragment>
                   );
                 })}
@@ -8283,7 +8319,7 @@ function MrpCompras({ setAviso }) {
               )}
               </Fragment>
             ))}
-            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
+            {!porObraOn && ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
           </tbody>
         </table>
       </div>
@@ -8292,7 +8328,6 @@ function MrpCompras({ setAviso }) {
         STOCK FINAL = BACK ORDER + STOCK AL DIA − POR SURTIR. La columna QTY es tuya: se guarda sola y nadie la pisa.
         El <span className="text-purple-600">●</span> marca lo que IS-PMT pide para obra; haz clic para ver en qué proyecto.
       </p>
-      </div>
     </div>
   );
 }
