@@ -7669,6 +7669,14 @@ function MrpCompras({ setAviso }) {
 
   const tot = (campo) => vistas.reduce((a, f) => a + (f[campo] || 0), 0);
   const totMes = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0), 0);
+  /* [11-nov-2026] Fran: «sería bueno en el MRP por material también poder ver
+     los valores en $ MXP de lo que representa… agregar una columna después de
+     cada mes con el valor en $».
+     El costo es el de Zoho Books (`purchase_rate`, o el costo vigente del
+     catálogo) y la organización factura en pesos, así que esto ya es MXN: no
+     se convierte nada. La columna contesta lo que la de piezas no puede —
+     3,372 piezas en diciembre no dicen si son tornillos o baterías. */
+  const totMesMxn = (m) => vistas.reduce((a, f) => a + (f.porMes[m] || 0) * (+f.costo || 0), 0);
 
   const alterna = (sku) => setSel((s) => { const n = new Set(s); n.has(sku) ? n.delete(sku) : n.add(sku); return n; });
   const marcarVistos = () => setSel(new Set(vistas.map((f) => f.sku)));
@@ -8156,7 +8164,12 @@ function MrpCompras({ setAviso }) {
               <th className="text-right px-2 py-2 bg-stone-200">STOCK FINAL</th>
               <th className="text-right px-2 py-2">QTY</th>
               <th className="text-right px-2 py-2 bg-amber-50 text-amber-800 whitespace-nowrap" title="Fecha de instalación de la obra más próxima que lo necesita, menos el tiempo de entrega del material">PEDIR ANTES DE</th>
-              {mesesVisibles.map((m) => <th key={m} className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>)}
+              {mesesVisibles.map((m) => (
+                <Fragment key={m}>
+                  <th className="text-right px-2 py-2 bg-teal-50 text-teal-800">{mesTitulo(m)}</th>
+                  <th className="text-right px-2 py-2 bg-teal-100/70 text-teal-900" title="Lo que vale en pesos lo apartado de ese mes, al costo de Zoho Books">$ MXN</th>
+                </Fragment>
+              ))}
             </tr>
             <tr className="bg-stone-50 text-stone-700">
               <td className="px-1 py-1.5" colSpan={4}><span className="text-[10px] font-semibold">TOTALES</span></td>
@@ -8166,11 +8179,16 @@ function MrpCompras({ setAviso }) {
               <td className="px-2 py-1.5 text-right font-mono bg-stone-200">{mx0(tot("stockFinal"))}</td>
               <td className="px-2 py-1.5 text-right font-mono text-teal-800">{totQty ? mx0(totQty) : ""}</td>
               <td className="px-2 py-1.5 text-right font-mono bg-amber-50 text-[10px] text-red-700">{nVencidos ? `${mx0(nVencidos)} vencid${nVencidos === 1 ? "o" : "os"}` : ""}</td>
-              {mesesVisibles.map((m) => <td key={m} className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>)}
+              {mesesVisibles.map((m) => (
+                <Fragment key={m}>
+                  <td className="px-2 py-1.5 text-right font-mono bg-teal-50">{mx0(totMes(m))}</td>
+                  <td className="px-2 py-1.5 text-right font-mono bg-teal-100/70 text-teal-900">{totMesMxn(m) ? "$" + mx0(totMesMxn(m)) : ""}</td>
+                </Fragment>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length} /></tr>}
+            {primero > 0 && <tr style={{ height: primero * ALTO + (idxAbierto >= 0 && idxAbierto < primero ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
             {enPantalla.map((f, i) => (
               <Fragment key={f.sku}>
               {/* Recuadro morado: lo que IS-PMT pide para obra. Continuo si la
@@ -8223,11 +8241,19 @@ function MrpCompras({ setAviso }) {
                     ? <>{f.pedirAntes.slice(5)}{f.pedirAntes < hoy() && <span className="block text-[9px] font-normal">vencido</span>}</>
                     : <span className="text-stone-300">{f.lead}d</span>}
                 </td>
-                {mesesVisibles.map((m) => <td key={m} className="px-2 text-right font-mono bg-teal-50/40">{f.porMes[m] || ""}</td>)}
+                {mesesVisibles.map((m) => {
+                  const q = f.porMes[m] || 0, v = q * (+f.costo || 0);
+                  return (
+                    <Fragment key={m}>
+                      <td className="px-2 text-right font-mono bg-teal-50/40">{q || ""}</td>
+                      <td className="px-2 text-right font-mono bg-teal-100/40 text-teal-900">{v ? "$" + mx0(v) : ""}</td>
+                    </Fragment>
+                  );
+                })}
               </tr>
               {detalle === f.sku && (
                 <tr style={{ outline: "2px solid #7e22ce", outlineOffset: "-2px" }} className="bg-purple-50">
-                  <td colSpan={10 + mesesVisibles.length} className="px-3 py-2">
+                  <td colSpan={10 + mesesVisibles.length * 2} className="px-3 py-2">
                     {f.lineas.length === 0 ? (
                       <p className="text-[11px] text-stone-500">{f.sku} no está apartado en ninguna orden de venta abierta.</p>
                     ) : (
@@ -8257,7 +8283,7 @@ function MrpCompras({ setAviso }) {
               )}
               </Fragment>
             ))}
-            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length} /></tr>}
+            {ultimo < vistas.length && <tr style={{ height: (vistas.length - ultimo) * ALTO + (idxAbierto >= ultimo ? altoDet : 0) }}><td colSpan={10 + mesesVisibles.length * 2} /></tr>}
           </tbody>
         </table>
       </div>
