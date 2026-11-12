@@ -260,6 +260,19 @@ Si un cambio toca otra app, dilo y no la modifiques desde este repo.
 2. **`gastos-sync` nunca se ha corrido.** Está desplegada; `iso3-gastos-zoho` no existe. Corre primero `{ muestra: true }`, que no escribe, y **verifica que los campos de Zoho se llamen como asume el código** antes de confiar en la clasificación. Si la salida real no anda cerca de 1.9 M por semana, la clasificación falló.
 3. **Los crons del flujo** (`supabase/cron-flujo.sql`): `gastos-zoho` y `contratado-anio` no existen. Sin ellos `iso3-contratado-2026` sigue congelado desde el 10-oct.
 
+### Dar de alta el ingreso desde el correo de BBVA · pendiente
+
+*12-nov-2026.* Fran: «tenemos el mail de isonotifies, cómo podemos hacer que si se recibe un mail como el que te adjunto, la app dé de alta el ingreso». Se dejó pendiente, pero lo medido ya no hace falta volver a descubrirlo:
+
+- **El correo no trae información nueva, trae ADELANTO.** El ingreso del ejemplo —4-nov, 82,585— ya está en `iso3-operaciones`. El correo llega el mismo día y el libro va días atrás (el 10-nov medimos Zoho al 9 contra el libro al 6). El valor es cerrar ese hueco, no capturar algo que falte.
+- **El Folio del correo ES la referencia del libro.** Folio 1981610 del correo = `referencia` 1981610 del movimiento. Ésa es la llave para deduplicar y para conciliar, y no hay que inventar ninguna otra.
+- **La cuenta «terminación 1526» es BBVA Dólares** (`4053294000015299607`). Importa porque **el correo NO dice la moneda**: pone «Importe: 82585.00» a secas, y son dólares. La moneda se deduce de la cuenta, así que una terminación que no esté mapeada no se adivina: se deja sin procesar.
+- **Un correo se falsifica.** Quien sepa la dirección del buzón puede imitar a BBVA y meter un ingreso inventado. Lo que llega por correo se PROPONE, no se asienta: entra como pendiente, y antes de eso la función tiene que leer las cabeceras de autenticación (SPF/DKIM/DMARC) y rechazar lo que no venga verificado del dominio real del banco.
+- **El correo no dice de qué obra es.** Trae el ordenante («CHARLES BROPHY CHRISTENSEN JR»); en el libro los ingresos buenos dicen la obra («CHILENO GE 26», «MISIONES 5»). Esa traducción es humana y se hace al confirmar.
+- **Falta un permiso que no es nuestro:** hoy la app de Graph solo ENVÍA por `isonotifies@`. Leer el buzón pide `Mail.Read` acotado a él, y lo da un administrador de Microsoft 365.
+- **Falta un dato para escribir el filtro:** el remitente real de esos correos. El buscador de Graph contestó 502 las tres veces que se intentó.
+- **Ojo con los importes chicos del mismo ordenante.** El 4-nov hay otro movimiento de 40036910012 por **35 USD, folio 1974542**: Fran confirmó que fue una **prueba de transferencia**. Está capturado como INGRESO y no lo es. El parser tiene que poder distinguirlos, y ese renglón conviene reclasificarlo.
+
 ### Decisiones pendientes de Fran
 
 4. **`aviso-sin-facturar` nunca ha mandado un correo.** Falta migrarlo al `send-mail` de Quote Creator, que ellos emitan la llave y den de alta `reporte:sinFacturar`, y después el cron (Fran pidió **diario**).
