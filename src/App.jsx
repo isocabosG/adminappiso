@@ -3122,6 +3122,17 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   // Quien no este en el blob cae al calculo viejo, para que un ano sin barrer
   // siga pintando algo; `contratadoDe` dice de donde salio cada numero.
   const [contratados, setContratados] = useState({});   // OV -> contratado con IVA
+  /* ARRIBA DEL `return <ProyectoDetalle/>` DE ESTE MISMO COMPONENTE.  [13-nov-2026]
+     Estaba declarado junto a `proponerCobros`, que vive bastante más abajo —y más
+     abajo que el return que abre un proyecto—. En la lista corrían todos los
+     hooks; al abrir un proyecto se tomaba ese return y corría UNO MENOS, que es
+     literalmente el error #300 de React: «se renderizaron menos hooks de los
+     esperados». La app se caía al entrar a cualquier proyecto.
+
+     Es la segunda vez en dos días: el 11-nov pasó lo mismo en ProyectoDetalle.
+     La regla, para no repetirla: un hook va arriba de TODOS los `return` de su
+     componente, no junto a la función que lo usa. */
+  const [proponiendo, setProponiendo] = useState(false);
   useEffect(() => {
     // Los anios se derivan de `sos` y NO de `anios`, que se declara despues del
     // return condicional de abajo y aqui todavia esta en zona muerta.
@@ -3278,8 +3289,6 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
      3. Lo que no tiene de dónde colgar una fecha nace SIN fecha y se queda en
         FALTA INFORMACIÓN, con su monto a la vista. Nunca se inventa un mes
         para que el renglón se vea completo. */
-  const [proponiendo, setProponiendo] = useState(false);
-
   const proponerCobros = async () => {
     if (proponiendo) return;
     setProponiendo(true);
