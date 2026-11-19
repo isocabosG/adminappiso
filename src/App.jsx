@@ -3004,6 +3004,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   const [feedHitos, setFeedHitos] = useState(null);
   const [soloCal, setSoloCal] = useState(false);   // chip: ver solo calendarizados
   const [cobF, setCobF] = useState("todos");      // cubo de antigüedad en Cobranza
+  const [cobEt, setCobEt] = useState("todos");    // [18-nov] etapa de cobro en Cobranza: embarque (<70%) / finiquito (>=70%) / calendarizados
 
   // Llegó una OV desde el MRP: se resuelve el número contra la lista y se abre.
   // Si todavía no cargan los proyectos, el efecto vuelve a correr cuando carguen.
@@ -3452,6 +3453,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     avance:  (p) => p !== null && p > 50 && p < 90,
     casi:    (p) => p !== null && p >= 90 && p < 100,
     liquidado: (p) => p !== null && p >= 100,
+    /* [18-nov-2026] Fran. El esquema es 60/30/10: con menos de 70% falta el EMBARQUE (aviso de
+       envio, el 30%); con 70% o mas solo falta el FINIQUITO (10%). Se cruzan con los otros rangos
+       a proposito: son la lectura por etapa de cobro, no por tramo de porcentaje. */
+    bajo70:  (p) => p !== null && p < 70,
+    sobre70: (p) => p !== null && p >= 70 && p < 100,
   };
   const pasaPct = (s) => pctSel === "todos" || (RANGOS[pctSel] || (() => true))(pctPagado(s));
 
@@ -3468,7 +3474,9 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   };
   // Toca revisarle el embarque: pagó la mitad o menos y YA hay algo en marcha.
   // El monto no se calcula a propósito — varía por contrato.
-  const tocaShip = (s) => { const p = pctPagado(s); return p !== null && p <= 50 && senales(s).length > 0; };
+  /* [18-nov-2026] Umbral 50% -> 70%. Con el 60% de anticipo del contrato estandar, el cliente que
+     ya dio su anticipo quedaba FUERA de este filtro, justo cuando toca cobrarle el embarque. */
+  const tocaShip = (s) => { const p = pctPagado(s); return p !== null && p < 70 && senales(s).length > 0; };
 
   const nCal = rows.reduce((a, s) => a + (calDe(s) ? 1 : 0), 0);   // calendarizados dentro de lo filtrado
   const nShip = rows.reduce((a, s) => a + (tocaShip(s) ? 1 : 0), 0);
@@ -3563,7 +3571,16 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     const CUBOS = [["d30", "0–30 días", "text-stone-600"], ["d60", "31–60", "text-amber-700"],
                    ["d90", "61–90", "text-orange-700"], ["d90x", "más de 90", "text-red-700"],
                    ["sinf", "sin factura", "text-stone-400"]];
-    const vistos = cobF === "todos" ? deudores : deudores.filter((d) => cubo(d) === cobF);
+    /* [18-nov-2026] Etapa de cobro. 60/30/10: <70% = falta el embarque, >=70% = falta el finiquito.
+       Calendarizados = con obra en el calendario de IS-PMT de hoy en adelante (mismo calDe que Proyectos). */
+    const ETAPAS = [
+      ["todos", "Todas", () => true],
+      ["emb", "Menos de 70% · embarque", (d) => d.pct != null && d.pct < 70],
+      ["fin", "70% o más · finiquito", (d) => d.pct != null && d.pct >= 70],
+      ["cal", "Calendarizados", (d) => !!calDe(d.s)],
+    ];
+    const pasaEt = (ETAPAS.find((e) => e[0] === cobEt) || ETAPAS[0])[2];
+    const vistos = deudores.filter((d) => (cobF === "todos" || cubo(d) === cobF) && pasaEt(d));
     const sumaUSD = (l) => l.reduce((a, d) => a + (d.cur === "USD" ? d.saldo : (tc > 0 ? d.saldo / tc : 0)), 0);
 
     return (
@@ -3609,6 +3626,21 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-stone-400 mr-1">Etapa:</span>
+          {ETAPAS.map(([k, t, f]) => {
+            const n = k === "todos" ? deudores.length : deudores.filter(f).length;
+            const off = k === "cal" && !!feedErr;
+            return (
+              <button key={k} onClick={() => !off && setCobEt(k)} disabled={off}
+                title={off ? "Sin feed de IS-PMT no se sabe qué está calendarizado" : undefined}
+                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${cobEt === k ? (k === "cal" ? "bg-violet-600 text-white border-violet-600" : "bg-emerald-600 text-white border-emerald-600") : (k === "cal" ? "bg-white text-violet-700 border-violet-300 hover:border-violet-500" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400")} ${off ? "opacity-40 cursor-not-allowed" : ""}`}>
+                {t}{off ? "" : ` (${n})`}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-stone-400 mr-1">Antigüedad:</span>
           {[["todos", "Todas"], ...CUBOS.map(([k, t]) => [k, t])].map(([k, t]) => (
             <button key={k} onClick={() => setCobF(k)}
@@ -3646,6 +3678,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
                       </span>
                     )}
                     <span className="block text-xs text-stone-600">{d.s.reference_number || "—"}</span>
+                    {calDe(d.s) && <span className="block text-[10px] text-violet-700">obra calendarizada {calDe(d.s).fecha_instalacion}</span>}
                   </td>
                   <td className="px-3 py-2 text-xs text-stone-600">{d.s.customer_name || d.s.company_name || "—"}</td>
                   <td className="px-3 py-2 text-right font-mono text-xs text-stone-500">${mx0(d.total)} <span className="text-[9px] text-stone-400">{d.cur}</span></td>
@@ -3665,7 +3698,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
                   </td>
                 </tr>
               ))}
-              {!vistos.length && <tr><td colSpan="7" className="px-3 py-6 text-center text-sm text-stone-400">Nada en ese rango.</td></tr>}
+              {!vistos.length && <tr><td colSpan="7" className="px-3 py-6 text-center text-sm text-stone-400">Nada con esos filtros.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -3858,11 +3891,13 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           <option value="avance">51–89%</option>
           <option value="casi">90–99%</option>
           <option value="liquidado">Liquidado (100%)</option>
+          <option value="bajo70">Menos de 70% · falta embarque</option>
+          <option value="sobre70">70% o más · falta finiquito</option>
         </select>
         {/* Embarque: pagó la mitad o menos y ya hay material en camino o fecha
             de obra. Es una señal para revisar el contrato, no un monto. */}
         <button onClick={() => setSoloShip((v) => !v)} disabled={!envio}
-          title={!envio ? "Cargando material en camino…" : "Pagaron 50% o menos y ya tienen material en camino u obra calendarizada: revisar si toca cobrar el embarque"}
+          title={!envio ? "Cargando material en camino…" : "Pagaron menos de 70% y ya tienen material en camino u obra calendarizada: revisar si toca cobrar el embarque"}
           className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${soloShip ? "bg-amber-600 text-white border-amber-600" : "bg-white text-amber-700 border-amber-300 hover:border-amber-500"} ${!envio ? "opacity-40 cursor-not-allowed" : ""}`}>
           Cobrar embarque{envio && nShip > 0 ? ` (${nShip})` : ""}
         </button>
