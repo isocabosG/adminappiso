@@ -5411,10 +5411,10 @@ ${porPagar >= 0
 function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fletes, saveFletes, setAviso }) {
   const [modo, setModo] = useState("lista"); // lista | nueva | fletes | ped:<id>
   if (modo === "nueva")
-    return <NuevaImportacion {...{ fletes, catalogo, onCancel: () => setModo("lista"), onSave: (p) => { savePedimentos([p, ...pedimentos]); setModo("lista"); setAviso({ t: "ok", m: `Pedimento ${p.numero} guardado como provisional.` }); } }} />;
+    return <NuevaImportacion {...{ fletes, catalogo, pedimentos, onCancel: () => setModo("lista"), onSave: (p) => { savePedimentos([p, ...pedimentos]); setModo("lista"); setAviso({ t: "ok", m: `Pedimento ${p.numero} guardado como provisional.` }); } }} />;
   if (modo.startsWith("editar:")) {
     const pe = pedimentos.find((p) => p.id === modo.slice(7));
-    if (pe) return <NuevaImportacion {...{ fletes, catalogo, pedInicial: pe, onCancel: () => setModo("ped:" + pe.id), onSave: (p) => { savePedimentos(pedimentos.map((x) => (x.id === p.id ? p : x))); setModo("ped:" + p.id); setAviso({ t: "ok", m: `Importación ${p.numero} actualizada.` }); } }} />;
+    if (pe) return <NuevaImportacion {...{ fletes, catalogo, pedimentos, pedInicial: pe, onCancel: () => setModo("ped:" + pe.id), onSave: (p) => { savePedimentos(pedimentos.map((x) => (x.id === p.id ? p : x))); setModo("ped:" + p.id); setAviso({ t: "ok", m: `Importación ${p.numero} actualizada.` }); } }} />;
   }
   if (modo === "fletes")
     return (
@@ -5446,7 +5446,7 @@ function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fle
             return (
               <button key={p.id} onClick={() => setModo("ped:" + p.id)} className="w-full bg-white border border-stone-200 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 hover:border-stone-400 text-left">
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-sm font-semibold">{p.numero}</span>
+                  <span className="font-mono text-sm font-semibold">{fmtPedimento(p.numero)}</span>
                   <span className="text-xs text-stone-500">{p.fecha}</span>
                   <EstadoBadge estado={st} />
                 </div>
@@ -5615,9 +5615,35 @@ function ProrrateoDetalle({ pedNumero, lineas, incs, tc, catalogo, setPartidas, 
 // Los PDF NO se guardan: son megas de base64 y volver a arrastrarlos cuesta un
 // segundo. Lo caro de reponer es lo tecleado, y eso es lo que se respalda; se
 // guardan los NOMBRES de los archivos para saber cuales volver a soltar.
+// EL NUMERO DE PEDIMENTO: QUINCE DIGITOS, SIEMPRE LOS MISMOS.  [19-nov-2026]
+//
+// El SAT lo imprime en cuatro bloques —ano, aduana, patente, consecutivo— y
+// cada quien lo teclea o lo extrae como le toca. En la base quedaron los cinco
+// de las dos formas: «26 40 3965 6004109» con espacios y «264039656002798»
+// pegado. Jesus lo noto antes que nadie: «porque algunos vienen pegados y
+// otros separados?». Era eso, nada mas — pero no es inocente, porque mientras
+// el numero sea una cadena libre, dos capturas del MISMO pedimento no se
+// parecen entre si y el duplicado pasa de largo.
+//
+// Y uno de los cinco trae DIECISIETE digitos (26403965006004655): la
+// extraccion le metio dos ceros de mas. Por eso la longitud se avisa pero no
+// se bloquea: el numero es lo que diga el papel, y un aviso que impida guardar
+// obliga a inventar un numero para poder avanzar.
+const digitosPed = (s) => String(s || "").replace(/\D/g, "");
+const fmtPedimento = (s) => {
+  const d = digitosPed(s);
+  return d.length === 15 ? `${d.slice(0, 2)} ${d.slice(2, 4)} ${d.slice(4, 8)} ${d.slice(8)}` : String(s || "").trim();
+};
+// Dos pedimentos son el mismo si sus digitos coinciden, aunque uno vaya con
+// espacios y el otro pegado.
+const mismoPedimento = (a, b) => {
+  const x = digitosPed(a), y = digitosPed(b);
+  return !!x && x === y;
+};
+
 const BORRADOR_IMP = "iso3-importacion-borrador";
 
-function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
+function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedimentos = [] }) {
   const editando = !!pedInicial;
   const [ped, setPed] = useState(pedInicial ? { numero: pedInicial.numero || "", fecha: pedInicial.fecha || hoy(), tc: String(pedInicial.tc || ""), proveedorExt: pedInicial.proveedorExt || "", ocZoho: pedInicial.ocZoho || "" } : { numero: "", fecha: hoy(), tc: "", proveedorExt: "", ocZoho: "" });
   const [partidas, setPartidas] = useState(pedInicial?.partidas?.length ? pedInicial.partidas.map((p) => ({ id: uid(), oc: p.oc || "", factura: p.factura || "", sku: p.sku || "", desc: p.desc || "", categoria: p.categoria || "Batería", cantidad: p.cantidad || "", fobUnit: p.fobUnit || "", pesoKg: p.pesoKg || "", pesoPartida: p.pesoPartida || "" })) : [{ id: uid(), oc: "", sku: "", desc: "", categoria: "Batería", cantidad: "", fobUnit: "", pesoPartida: "" }]);
@@ -5935,6 +5961,27 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
     setExtrayendo(false);
   };
 
+  // ── NO SE CARGA DOS VECES EL MISMO PEDIMENTO.  [19-nov-2026] ───────────
+  //
+  // El 6002798 de Renon esta capturado DOS VECES, y las dos copias no dicen lo
+  // mismo: una trae PO-02618/02645/02646/02653/02660 —que en Zoho son de GCM y
+  // de Diseno Eolico, de julio— y la otra PO-0215/2053/2054/2055, que son las
+  // de Renon del 15-ene con un cero perdido. Las mismas cinco facturas Renon en
+  // las dos, asi que es el mismo embarque capturado dos veces.
+  //
+  // Nadie lo noto porque la lista los enseña iguales y el numero se comparaba
+  // —cuando se comparaba— como texto: «26 40 3965 6002798» y «264039656002798»
+  // son cadenas distintas. Se compara por digitos.
+  //
+  // El aviso sale EN CUANTO se teclea el numero, no al guardar: capturar diez
+  // partidas para que al final te digan que ya estaba es la peor forma de
+  // avisarlo.
+  const yaExiste = useMemo(
+    () => (pedimentos || []).find((x) => x.id !== pedInicial?.id && mismoPedimento(x.numero, ped.numero)) || null,
+    [pedimentos, pedInicial?.id, ped.numero]);
+  const nDigitos = digitosPed(ped.numero).length;
+  const largoRaro = nDigitos > 0 && nDigitos !== 15;
+
   // OCs que amparan la importación (únicas, de todos los renglones)
   const ocsAmparan = [...new Set(partidas.map((p) => (p.oc || "").trim()).filter(Boolean))];
   // Falta OC si hay facturas agrupadas sin OC, o si no hay ninguna OC capturada
@@ -5942,9 +5989,11 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
 
   const guardar = () => {
     if (!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC) return;
+    if (yaExiste) return;   // el boton ya esta apagado; esto es el cinturon
     // Guardado en firme: el borrador ya cumplio su trabajo.
     if (!editando) window.storage?.set(BORRADOR_IMP, JSON.stringify({})).catch(() => {});
-    onSave({ id: pedInicial?.id || uid(), ...ped, ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
+    // El numero se guarda SIEMPRE en la forma del SAT, venga como venga.
+    onSave({ id: pedInicial?.id || uid(), ...ped, numero: fmtPedimento(ped.numero), ocsAmparan, tc, partidas, incrementables: incs.map((i) => ({ ...i, monto: +i.monto || 0 })), adjuntos, cerrado: false, provisional: calc.lineas.map((l) => ({ sku: l.sku, qty: l.cant, unit: l.unit })) });
   };
 
   // Embarque mixto solo importa si HAY IGI que capturar (categorías con IGI distinto)
@@ -6038,7 +6087,20 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
 
       <Section n="1" t="Pedimento">
         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Field l="Número"><input className={inp + " font-mono"} value={ped.numero} onChange={(e) => setPed({ ...ped, numero: e.target.value })} placeholder="26 40 3965 …" /></Field>
+          <Field l="Número">
+            <input className={inp + " font-mono"} value={ped.numero} onChange={(e) => setPed({ ...ped, numero: e.target.value })} placeholder="26 40 3965 …" />
+            {yaExiste && (
+              <p className="mt-1 text-[11px] text-red-700 leading-snug">
+                Este pedimento <b>ya está cargado</b> ({fmtPedimento(yaExiste.numero)} · {yaExiste.fecha} · {yaExiste.partidas?.length || 0} partida{(yaExiste.partidas?.length || 0) === 1 ? "" : "s"}).
+                No se puede guardar otra vez: ábrelo y edítalo desde la lista.
+              </p>
+            )}
+            {!yaExiste && largoRaro && (
+              <p className="mt-1 text-[11px] text-amber-700 leading-snug">
+                Van {nDigitos} dígitos; un pedimento trae 15 (año, aduana, patente, consecutivo). Revísalo contra el papel.
+              </p>
+            )}
+          </Field>
           <Field l="Fecha de pago"><input type="date" className={inp} value={ped.fecha} onChange={(e) => setPed({ ...ped, fecha: e.target.value })} /></Field>
           <Field l="Tipo de cambio"><input type="number" step="0.0001" className={inp + " font-mono"} value={ped.tc} onChange={(e) => setPed({ ...ped, tc: e.target.value })} placeholder="17.4030" /></Field>
           <Field l="OC(s) en Zoho que amparan"><input className={inp + " font-mono bg-stone-50 text-stone-600"} value={ocsAmparan.join(", ")} readOnly placeholder="Se cargan en la sección 2b (una por factura)" /></Field>
@@ -6222,7 +6284,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial }) {
           </div>
         )}
         <div className="p-4 border-t border-stone-200 flex gap-2">
-          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC} className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Guardar como provisional"}</button>
+          <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC || !!yaExiste} className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Guardar como provisional"}</button>
           <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
           {faltanOC && <span className="text-xs text-amber-700">⚠ Falta capturar la OC de cada factura (sección 2b) antes de guardar.</span>}
         </div>
