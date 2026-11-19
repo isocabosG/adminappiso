@@ -141,6 +141,16 @@ window.sincronizar = async (nombre, cuerpo = {}) => {
   return data
 }
 
+// REPORTE DE COBRANZA POR CORREO. [18-nov-2026] Va a la Edge Function
+// `reporte-cobranza`, que valida la sesion y manda por isonotifies a la lista
+// `reporte:cobranza`. No se traga el error: si el correo no salio, se dice.
+window.reporteCobranza = async (payload) => {
+  const { data, error } = await supabase.functions.invoke('reporte-cobranza', { body: payload })
+  if (error) throw new Error(await detalleError(error))
+  if (!data || data.ok === false) throw new Error(textoError(data?.error) || 'El correo no salio.')
+  return data
+}
+
 // PAGO A PROVEEDOR EN ZOHO. Va a la Edge Function `pago-proveedor`, que es la
 // unica que puede crear un pago: valida proveedor, saldos y duplicados antes de
 // escribir. Aqui NO se traga el error — si un pago no se registro, quien lo

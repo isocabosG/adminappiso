@@ -3008,6 +3008,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   const [cobCal, setCobCal] = useState(false);    // [18-nov] solo calendarizados — se SUMA a los demas filtros
   const [cobTipo, setCobTipo] = useState("todos"); // [18-nov] todos / obra (normales) / pv (postventa)
   const [cobOrd, setCobOrd] = useState({ k: "edad", dir: "desc" }); // [18-nov] orden por columna, clic = invierte
+  const [cobEnv, setCobEnv] = useState(null);     // [18-nov] estado del boton «Reportar lo que se ve»: null | "enviando" | {ok, m}
 
   // Llegó una OV desde el MRP: se resuelve el número contra la lista y se abre.
   // Si todavía no cargan los proyectos, el efecto vuelve a correr cuando carguen.
@@ -3618,6 +3619,49 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     const ordenaPor = (k) => setCobOrd((o) => (o.k === k ? { k, dir: o.dir === "asc" ? "desc" : "asc" } : { k, dir: "asc" }));
     const flecha = (k) => (cobOrd.k === k ? (cobOrd.dir === "asc" ? " ▲" : " ▼") : "");
     const vistos = deudores.filter(pasaSin(null)).sort(cmpOrd);
+    /* [18-nov-2026] «Reportar lo que se ve»: manda por correo EXACTAMENTE esta tabla — los
+       mismos renglones, en el mismo orden, con los filtros escritos arriba del correo.
+       Las cifras salen de los mismos campos que pinta la pantalla (d.total, d.pct, d.saldo,
+       d.edad), no de una formula aparte. */
+    const reportar = async () => {
+      if (!vistos.length || cobEnv === "enviando") return;
+      const nombreDe = (lista, k) => ((lista.find((e) => e[0] === k) || [])[1] || "");
+      const filtrosTxt = [
+        cobEt !== "todos" && `Etapa: ${nombreDe(ETAPAS, cobEt)}`,
+        cobTipo !== "todos" && `Tipo: ${nombreDe(TIPOS, cobTipo)}`,
+        cobCal && "Solo calendarizados",
+        cobF !== "todos" && `Antigüedad: ${nombreDe(CUBOS, cobF)}`,
+        busca && `Búsqueda: «${busca}»`,
+        `Orden: ${({ ov: "OV", cli: "Cliente", total: "Contratado", pct: "Pagado", saldo: "Por cobrar", edad: "Antigüedad", atraso: "Vencida" })[cobOrd.k] || cobOrd.k} ${cobOrd.dir === "asc" ? "de menor a mayor" : "de mayor a menor"}`,
+      ].filter(Boolean).join(" · ");
+      const sum = (c) => vistos.filter((d) => d.cur === c).reduce((a, d) => a + d.saldo, 0);
+      const totalesTxt = [sum("USD") > 0.5 && `$${mx0(sum("USD"))} USD`, sum("MXN") > 0.5 && `$${mx0(sum("MXN"))} MXN`].filter(Boolean).join(" y ") + " por cobrar";
+      const filas = vistos.map((d) => {
+        const c = calDe(d.s);
+        return [
+          d.s.salesorder_number + (d.pv ? " · POSTVENTA" : ""),
+          d.s.reference_number || "—",
+          d.s.customer_name || d.s.company_name || "—",
+          `$${mx0(d.total)} ${d.cur}`,
+          d.pct == null ? "—" : `${d.pct}%`,
+          `$${mx0(d.saldo)} ${d.cur}`,
+          d.edad == null ? "sin factura" : `${d.edad} d`,
+          d.atraso == null ? "—" : d.atraso > 0 ? `${d.atraso} d` : "al corriente",
+          c ? c.fecha_instalacion : "—",
+        ];
+      });
+      setCobEnv("enviando");
+      try {
+        const r = await window.reporteCobranza({
+          filtros: filtrosTxt, totales: totalesTxt,
+          columnas: ["OV", "Proyecto", "Cliente", "Contratado", "Pagado", "Por cobrar", "Antig.", "Vencida", "Obra"],
+          filas,
+        });
+        setCobEnv({ ok: true, m: `Enviado a ${(r.to || []).length || "la lista de cobranza"}${(r.to || []).length ? " personas: " + r.to.join(", ") : ""}` });
+      } catch (e) {
+        setCobEnv({ ok: false, m: String(e?.message || e) });
+      }
+    };
     const chip = (on, color = "emerald") => `px-2.5 py-1 text-xs rounded-full border transition-colors ${on
       ? (color === "violet" ? "bg-violet-600 text-white border-violet-600" : color === "sky" ? "bg-sky-600 text-white border-sky-600" : "bg-emerald-600 text-white border-emerald-600")
       : (color === "violet" ? "bg-white text-violet-700 border-violet-300 hover:border-violet-500" : color === "sky" ? "bg-white text-sky-700 border-sky-300 hover:border-sky-500" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400")}`;
@@ -3663,7 +3707,19 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
             placeholder="Buscar cliente, OV o proyecto…"
             className="px-3 py-1.5 text-xs border border-stone-300 rounded-full w-64 focus:outline-none focus:border-emerald-500" />
           {busca && <button onClick={() => setBusca("")} className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">quitar la búsqueda</button>}
+          <button onClick={() => { if (window.confirm(`¿Mandar por correo los ${vistos.length} proyectos que estás viendo, en este orden, a la lista de cobranza (Constanza, Jesús, client.care y Fran)?`)) reportar(); }}
+            disabled={!vistos.length || cobEnv === "enviando"}
+            title="Manda por isonotifies esta misma tabla, con los filtros y el orden que tienes puestos"
+            className={`ml-auto px-3 py-1.5 text-xs font-medium rounded-full border bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800 ${(!vistos.length || cobEnv === "enviando") ? "opacity-40 cursor-not-allowed" : ""}`}>
+            {cobEnv === "enviando" ? "Enviando…" : `✉ Reportar lo que se ve (${vistos.length})`}
+          </button>
         </div>
+        {cobEnv && cobEnv !== "enviando" && (
+          <p className={`text-[11px] rounded px-2.5 py-1.5 border ${cobEnv.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`}>
+            {cobEnv.ok ? "✓ " : "✗ "}{cobEnv.m}
+            <button onClick={() => setCobEnv(null)} className="ml-2 underline opacity-70">cerrar</button>
+          </p>
+        )}
 
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-stone-400 mr-1">Etapa:</span>
