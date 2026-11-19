@@ -3004,7 +3004,10 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
   const [feedHitos, setFeedHitos] = useState(null);
   const [soloCal, setSoloCal] = useState(false);   // chip: ver solo calendarizados
   const [cobF, setCobF] = useState("todos");      // cubo de antigüedad en Cobranza
-  const [cobEt, setCobEt] = useState("todos");    // [18-nov] etapa de cobro en Cobranza: embarque (<70%) / finiquito (>=70%) / calendarizados
+  const [cobEt, setCobEt] = useState("todos");    // [18-nov] etapa de cobro en Cobranza: embarque (<70%) / finiquito (>=70%)
+  const [cobCal, setCobCal] = useState(false);    // [18-nov] solo calendarizados — se SUMA a los demas filtros
+  const [cobTipo, setCobTipo] = useState("todos"); // [18-nov] todos / obra (normales) / pv (postventa)
+  const [cobOrd, setCobOrd] = useState({ k: "edad", dir: "desc" }); // [18-nov] orden por columna, clic = invierte
 
   // Llegó una OV desde el MRP: se resuelve el número contra la lista y se abre.
   // Si todavía no cargan los proyectos, el efecto vuelve a correr cuando carguen.
@@ -3571,16 +3574,53 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
     const CUBOS = [["d30", "0–30 días", "text-stone-600"], ["d60", "31–60", "text-amber-700"],
                    ["d90", "61–90", "text-orange-700"], ["d90x", "más de 90", "text-red-700"],
                    ["sinf", "sin factura", "text-stone-400"]];
-    /* [18-nov-2026] Etapa de cobro. 60/30/10: <70% = falta el embarque, >=70% = falta el finiquito.
-       Calendarizados = con obra en el calendario de IS-PMT de hoy en adelante (mismo calDe que Proyectos). */
+    /* [18-nov-2026] Filtros de Cobranza. Cuatro grupos que SE SUMAN (Fran: «sumar filtro, por ejemplo
+       calendarizados y POSTVENTA y normales»): etapa de cobro, calendarizados, tipo y antigüedad.
+       Etapa: 60/30/10 -> <70% falta el embarque, >=70% falta el finiquito.
+       Cada conteo se calcula con los OTROS grupos aplicados: el número del botón es lo que vas a ver. */
     const ETAPAS = [
       ["todos", "Todas", () => true],
       ["emb", "Menos de 70% · embarque", (d) => d.pct != null && d.pct < 70],
       ["fin", "70% o más · finiquito", (d) => d.pct != null && d.pct >= 70],
-      ["cal", "Calendarizados", (d) => !!calDe(d.s)],
     ];
-    const pasaEt = (ETAPAS.find((e) => e[0] === cobEt) || ETAPAS[0])[2];
-    const vistos = deudores.filter((d) => (cobF === "todos" || cubo(d) === cobF) && pasaEt(d));
+    const TIPOS = [
+      ["todos", "Todos", () => true],
+      ["obra", "Normales", (d) => !d.pv],
+      ["pv", "Postventa", (d) => d.pv],
+    ];
+    const fEt = (ETAPAS.find((e) => e[0] === cobEt) || ETAPAS[0])[2];
+    const fTipo = (TIPOS.find((e) => e[0] === cobTipo) || TIPOS[0])[2];
+    const fCal = (d) => !cobCal || !!calDe(d.s);
+    const fAnt = (d) => cobF === "todos" || cubo(d) === cobF;
+    const pasaSin = (sin) => (d) => (sin === "et" || fEt(d)) && (sin === "tipo" || fTipo(d)) && (sin === "cal" || fCal(d)) && (sin === "ant" || fAnt(d));
+    const cuenta = (sin, f) => deudores.filter((d) => pasaSin(sin)(d) && f(d)).length;
+    // Orden por columna. El dinero se compara en dólares (los pesos al TC del día): ordenar saldos
+    // de dos monedas por su número crudo pondría 100,000 MXN arriba de 50,000 USD.
+    const usdEq = (n, cur) => (cur === "USD" ? n : (tc > 0 ? n / tc : n));
+    const CLAVES = {
+      ov:     (d) => String(d.s.salesorder_number || ""),
+      cli:    (d) => String(d.s.customer_name || d.s.company_name || "").toLowerCase(),
+      total:  (d) => usdEq(d.total, d.cur),
+      pct:    (d) => d.pct,
+      saldo:  (d) => usdEq(d.saldo, d.cur),
+      edad:   (d) => d.edad,
+      atraso: (d) => d.atraso,
+      obra:   (d) => (calDe(d.s) ? calDe(d.s).fecha_instalacion : null),
+    };
+    const cmpOrd = (a, b) => {
+      const f = CLAVES[cobOrd.k] || CLAVES.edad, x = f(a), y = f(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;            // sin dato siempre al final, en los dos sentidos
+      if (y == null) return -1;
+      const c = typeof x === "string" ? x.localeCompare(y, undefined, { numeric: true }) : x - y;
+      return cobOrd.dir === "asc" ? c : -c;
+    };
+    const ordenaPor = (k) => setCobOrd((o) => (o.k === k ? { k, dir: o.dir === "asc" ? "desc" : "asc" } : { k, dir: "asc" }));
+    const flecha = (k) => (cobOrd.k === k ? (cobOrd.dir === "asc" ? " ▲" : " ▼") : "");
+    const vistos = deudores.filter(pasaSin(null)).sort(cmpOrd);
+    const chip = (on, color = "emerald") => `px-2.5 py-1 text-xs rounded-full border transition-colors ${on
+      ? (color === "violet" ? "bg-violet-600 text-white border-violet-600" : color === "sky" ? "bg-sky-600 text-white border-sky-600" : "bg-emerald-600 text-white border-emerald-600")
+      : (color === "violet" ? "bg-white text-violet-700 border-violet-300 hover:border-violet-500" : color === "sky" ? "bg-white text-sky-700 border-sky-300 hover:border-sky-500" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400")}`;
     const sumaUSD = (l) => l.reduce((a, d) => a + (d.cur === "USD" ? d.saldo : (tc > 0 ? d.saldo / tc : 0)), 0);
 
     return (
@@ -3600,7 +3640,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
             {CUBOS.map(([k, t]) => {
-              const l = deudores.filter((d) => cubo(d) === k);
+              const l = deudores.filter((d) => cubo(d) === k);   // la tarjeta resumen sigue siendo de TODO lo que se debe
               return (
                 <div key={k} className={`rounded-lg px-2.5 py-2 ${k === "d90x" ? "bg-red-500/30 ring-1 ring-red-200/50" : "bg-white/10"}`}>
                   <p className="text-[10px] uppercase tracking-widest text-emerald-100">{t}</p>
@@ -3627,17 +3667,22 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
 
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-stone-400 mr-1">Etapa:</span>
-          {ETAPAS.map(([k, t, f]) => {
-            const n = k === "todos" ? deudores.length : deudores.filter(f).length;
-            const off = k === "cal" && !!feedErr;
-            return (
-              <button key={k} onClick={() => !off && setCobEt(k)} disabled={off}
-                title={off ? "Sin feed de IS-PMT no se sabe qué está calendarizado" : undefined}
-                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${cobEt === k ? (k === "cal" ? "bg-violet-600 text-white border-violet-600" : "bg-emerald-600 text-white border-emerald-600") : (k === "cal" ? "bg-white text-violet-700 border-violet-300 hover:border-violet-500" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400")} ${off ? "opacity-40 cursor-not-allowed" : ""}`}>
-                {t}{off ? "" : ` (${n})`}
-              </button>
-            );
-          })}
+          {ETAPAS.map(([k, t, f]) => (
+            <button key={k} onClick={() => setCobEt(k)} className={chip(cobEt === k)}>{t} ({cuenta("et", f)})</button>
+          ))}
+          <span className="text-[11px] text-stone-400 ml-2 mr-1">Tipo:</span>
+          {TIPOS.map(([k, t, f]) => (
+            <button key={k} onClick={() => setCobTipo(k)} className={chip(cobTipo === k, k === "pv" ? "sky" : "emerald")}>{t} ({cuenta("tipo", f)})</button>
+          ))}
+          <button onClick={() => !feedErr && setCobCal((v) => !v)} disabled={!!feedErr}
+            title={feedErr ? "Sin feed de IS-PMT no se sabe qué está calendarizado" : "Se suma a los demás filtros: solo obras calendarizadas de hoy en adelante"}
+            className={`${chip(cobCal, "violet")} ml-2 ${feedErr ? "opacity-40 cursor-not-allowed" : ""}`}>
+            Calendarizados{feedErr ? "" : ` (${cuenta("cal", (d) => !!calDe(d.s))})`}
+          </button>
+          {(cobEt !== "todos" || cobTipo !== "todos" || cobCal || cobF !== "todos") && (
+            <button onClick={() => { setCobEt("todos"); setCobTipo("todos"); setCobCal(false); setCobF("todos"); }}
+              className="px-2 py-1 text-[11px] text-stone-400 hover:text-stone-700 underline">limpiar</button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -3645,7 +3690,7 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
           {[["todos", "Todas"], ...CUBOS.map(([k, t]) => [k, t])].map(([k, t]) => (
             <button key={k} onClick={() => setCobF(k)}
               className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${cobF === k ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-stone-600 border-stone-300 hover:border-emerald-400"}`}>
-              {t}
+              {t} ({cuenta("ant", k === "todos" ? () => true : (d) => cubo(d) === k)})
             </button>
           ))}
         </div>
@@ -3653,13 +3698,11 @@ function Proyectos({ proyData, saveProyData, setAviso, catalogo, tcFix, irOV, se
         <div className="bg-white border border-stone-200 rounded-lg overflow-x-auto">
           <table className="w-full min-w-[920px] text-sm">
             <thead className="bg-stone-50 border-b border-stone-200"><tr className="text-[10px] uppercase tracking-widest text-stone-500">
-              <th className="text-left px-3 py-2">OV · proyecto</th>
-              <th className="text-left px-3 py-2">Cliente</th>
-              <th className="text-right px-3 py-2">Contratado</th>
-              <th className="text-right px-3 py-2">Pagado</th>
-              <th className="text-right px-3 py-2">Por cobrar</th>
-              <th className="text-right px-3 py-2">Antigüedad</th>
-              <th className="text-right px-3 py-2">Vencida</th>
+              {[["ov", "OV · proyecto", "left"], ["cli", "Cliente", "left"], ["total", "Contratado", "right"], ["pct", "Pagado", "right"],
+                ["saldo", "Por cobrar", "right"], ["edad", "Antigüedad", "right"], ["atraso", "Vencida", "right"]].map(([k, t, al]) => (
+                <th key={k} onClick={() => ordenaPor(k)} title="Clic para ordenar; otro clic invierte"
+                  className={`text-${al} px-3 py-2 cursor-pointer select-none hover:text-emerald-700 ${cobOrd.k === k ? "text-emerald-700" : ""}`}>{t}{flecha(k)}</th>
+              ))}
             </tr></thead>
             <tbody>
               {vistos.map((d) => (
