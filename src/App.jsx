@@ -290,9 +290,10 @@ Reglas:
 - pesoBrutoKg = el PESO BRUTO impreso en el ENCABEZADO del pedimento (ej. "PESO BRUTO: 19,824.220"). Son los kilos de TODO el embarque, no de una partida.
 - oc = número de la orden de compra (ej. PO-02601) si viene ese PDF; si no, "".
 - fleteInternacionalMXN = renglón FLETES del pedimento — SIEMPRE EN PESOS, nunca en dólares. dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento (pesos).
-- ICC (cuenta de gastos americana): búscalo PRIMERO en la cotización Perezgrovas, renglón "Cuenta de Gastos Americana (ICC)", que es lo que de verdad se desembolsó. Solo si ahí no viene, usa "OTROS INCREMENTABLES" del pedimento, que es el valor declarado y puede diferir por el tipo de cambio. Igual que el flete de cruce, ese renglón trae columnas Dlls y Pesos: toma el importe DE LA COLUMNA DONDE ESTÉ ESCRITO, sin convertir — en Pesos va a iccMXN, en Dlls va a iccUsd, y la otra queda en null.
+- LAS COTIZACIONES PEREZGROVAS SE LEEN SIEMPRE EN LA COLUMNA DE PESOS. Traen dos columnas, Dlls y Pesos, y muchos renglones vienen llenos en las dos. La de Pesos es la que se desembolsa y es la que manda SIEMPRE: aunque el renglón traiga importe en Dlls, toma el de Pesos, deja el campo de dólares en null y NUNCA conviertas. Un campo que termina en "Usd" se llena SOLO cuando ese renglón no trae NADA en Pesos (celda vacía, "-" o $0); si se llena el de pesos, el de dólares va en null, y al revés. Nunca los dos.
+- ICC (cuenta de gastos americana): búscalo PRIMERO en la cotización Perezgrovas, renglón "Cuenta de Gastos Americana (ICC)", que es lo que de verdad se desembolsó, y toma su importe EN PESOS → iccMXN. Solo si ahí no viene, usa "OTROS INCREMENTABLES" del pedimento, que es el valor declarado y puede diferir por el tipo de cambio.
 - honorariosMXN = de la cotización Perezgrovas, el renglón "Total de Honorarios mas Servicios Complementarios" —el último del cuadro, suele venir marcado como "3er deposito"— EN PESOS. Es el TOTAL del bloque, no la suma de sus renglones sueltos (Honorarios Agente Aduanal, Servicios Complementarios, Validacion, Generacion de Cove, Prevalidacion, Reconocimiento Aduanero) ni el "Total Pagos a Terceros", que es otro bloque. Si solo encuentras los renglones sueltos y no el total, súmalos.
-- "Flete de San Diego a Tijuana" de la cotización: la cotización trae DOS columnas, Dlls y Pesos, y ese renglón viene unas veces en una y otras en la otra. TOMA EL IMPORTE DE LA COLUMNA DONDE ESTÉ ESCRITO Y NO LO CONVIERTAS: si está en Dlls ponlo en cruceSDTJusd y deja cruceSDTJmxn en null; si está en Pesos ponlo en cruceSDTJmxn y deja cruceSDTJusd en null. Nunca llenes los dos. Una columna con "-", vacía o en $0 no es el importe: busca en la otra.
+- "Flete de San Diego a Tijuana" de la cotización → cruceSDTJmxn, EN PESOS, por la regla de arriba. Ese renglón casi siempre trae los dos importes, el de Dlls y el de Pesos: el que vale es el de Pesos. cruceSDTJusd se llena Únicamente si ese renglón no trae nada en la columna de Pesos.
 - Responde solo el JSON.`;
 
 /* ---------- Semilla: costos vigentes hoy en Zoho (MXN, landed) ---------- */
@@ -6134,11 +6135,30 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
         ["cruce San Diego → Tijuana", (p.cruceSDTJmxn ?? p.cruceSDTJusd)],
         ["cuenta de gastos americana (ICC)", (p.iccMXN ?? p.iccUsd)],
       ].filter(([, v]) => !(+v > 0)).map(([n]) => n);
+      // LA COTIZACION SE LEE EN PESOS. SI LLEGA EN DOLARES, SE DICE. [20-nov-2026]
+      //
+      // Fran: «todo de la cotizacion debe leer la columna de pesos». El renglon
+      // trae las dos columnas, Dlls y Pesos, y casi siempre las dos llenas, asi
+      // que un importe que llega en dolares significa una de dos: ese renglon de
+      // verdad no traia pesos, o se leyo la columna equivocada. Las dos se ven
+      // IGUAL en pantalla —un numero y un selector que dice USD— y la segunda
+      // multiplica el costo por el tipo de cambio. Paso en el 6004880 con el
+      // cruce.
+      const enDolares = [
+        ["cruce San Diego → Tijuana", p.cruceSDTJmxn, p.cruceSDTJusd],
+        ["cuenta de gastos americana (ICC)", p.iccMXN, p.iccUsd],
+      ].filter(([, mxn, usd]) => !(+mxn > 0) && +usd > 0).map(([n]) => n);
+
+      const avisos = [];
       if (!pdfCots.length) {
-        setErrExtrac("Se leyó el pedimento. No subiste la cotización de Perezgrovas, así que honorarios, cruce San Diego–Tijuana e ICC se quedan en cero — súbela y vuelve a extraer, o captúralos a mano.");
+        avisos.push("No subiste la cotización de Perezgrovas, así que honorarios, cruce San Diego–Tijuana e ICC se quedan en cero — súbela y vuelve a extraer, o captúralos a mano.");
       } else if (deCotiz.length) {
-        setErrExtrac("Se leyó el pedimento y " + (pdfCots.length === 1 ? "la cotización" : "las " + pdfCots.length + " cotizaciones") + ", pero de ahí no salió: " + deCotiz.join(", ") + ". Revísalo contra el papel y captúralo a mano si hace falta.");
+        avisos.push("Se leyó " + (pdfCots.length === 1 ? "la cotización" : "las " + pdfCots.length + " cotizaciones") + ", pero de ahí no salió: " + deCotiz.join(", ") + ". Revísalo contra el papel y captúralo a mano si hace falta.");
       }
+      if (enDolares.length) {
+        avisos.push("OJO: " + enDolares.join(" y ") + " llegó en DÓLARES. De la cotización se lee la columna de PESOS — si ese renglón sí trae pesos en el papel, corrige el importe y la moneda a mano antes de seguir, porque guardado en dólares se multiplica por el tipo de cambio.");
+      }
+      if (avisos.length) setErrExtrac("Se leyó el pedimento. " + avisos.join(" · "));
 
       setExtraido(true);
     } catch (e) {

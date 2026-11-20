@@ -122,7 +122,12 @@ hereda.
 **6003534 quedó mal costeado.** Los 3 SARK30K se costearon en **151,139.90**
 cuando el aterrizado real es **165,257.90**: faltan 14,118 por pieza, 42,354 en
 total. Diluido en las 82 piezas del promedio, son 516.51 por pieza — el vigente
-pasaría de 161,588.36 a **162,104.88**. Pendiente de decidir si se reescribe.
+pasaría de 161,588.36 a **162,104.88**.
+
+**Decisión de Fran (20-nov-2026): se deja así.** No se reescribe el histórico;
+la regla nueva aplica al próximo que entre. Es el mismo criterio que ya tomó en
+octubre con la familia de paneles (sección 10, punto 6): se corrige conforme
+entre cada importación, no de golpe.
 
 ### El pedimento trae su propio checksum
 
@@ -169,8 +174,27 @@ paneles.
 4. **Validar el archivo antes de extraer:** el extractor debe rechazar un PDF que no traiga encabezado de pedimento y decirlo, en vez de tronar.
 5. **Defenderse del pedimento duplicado** — ver sección 2.
 6. **Revisar toda la familia de paneles.** PSP7460 iba 2.1× abajo; **PSP7455 está en 808.61** (43.9 USD para un panel de 455W), mismo patrón. **Decisión de Fran (28-oct): se corrigen conforme entre cada importación**, no todos de golpe. Mientras tanto el inventario de esos SKUs está subvaluado; con 504 piezas de PSP7455 en libros, del orden de 400 mil pesos.
-7. **Reescribir el costo de SARK30K** por el IGI huérfano del 6003534 — ver sección 11.
-8. **Programar el checksum del IVA** en la captura: si el IVA declarado no es el 16% de (FOB + flete internacional + DTA + ICC + IGI), avisar y decir cuánto falta. Habría cachado los dos IGI huérfanos el día que se capturaron.
-9. **El margen del panel NO es una alarma.** Quote Creator jala el costo y le mete un indirecto encima; el 1,750 de Zoho no es precio de venta al cliente.
+7. **Programar el checksum del IVA** en la captura: si el IVA declarado no es el 16% de (FOB + flete internacional + DTA + ICC + IGI), avisar y decir cuánto falta. Habría cachado los dos IGI huérfanos el día que se capturaron.
+8. **El margen del panel NO es una alarma.** Quote Creator jala el costo y le mete un indirecto encima; el 1,750 de Zoho no es precio de venta al cliente.
 
 _Corregido el 04-nov: la escritura del costo a Zoho ya NO es simulada (sección 9), y la llave basura `iso3-catalogo-respaldo-psp7460-20261024` ya se borró._
+
+## 13. De la cotización, la columna de PESOS (20-nov-2026)
+
+Fran: «todo de la cotización debe leer la columna de pesos».
+
+Las cotizaciones de Perezgrovas traen dos columnas, Dlls y Pesos, y casi siempre
+las dos llenas en el mismo renglón. **La de Pesos es la que manda**, porque es la
+que se desembolsa — la misma razón por la que el ICC del 6004655 se costea con
+los 20,349 de la cotización y no con los 20,023 declarados (sección 3).
+
+El extractor leía «la columna donde estuviera escrito». Con las dos llenas eso es
+una moneda al aire: en el 6004880 se trajo el cruce San Diego–Tijuana en dólares
+cuando venía en pesos. Guardado así se multiplica por el tipo de cambio.
+
+Ahora:
+- El prompt dice que de la cotización **siempre** se lee Pesos, y que un campo
+  `...Usd` se llena **sólo** si ese renglón no trae nada en la columna de Pesos.
+- Si de todos modos llega un importe en dólares, la app **lo dice** al terminar
+  de extraer, nombrando el concepto: un número con el selector en USD se ve igual
+  que uno correcto.
