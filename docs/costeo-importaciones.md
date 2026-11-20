@@ -225,6 +225,12 @@ medición, que es peor, porque es el de un solo embarque.
 El cierre avisa cuando la existencia es mayor que las piezas medidas, para que
 se vea de dónde sale el promedio y no se confunda con el inventario.
 
+**Y el cierre ya no le suma piezas a la existencia.** El material se recibe en
+Zoho cuando llega al almacén; el pedimento se costea después. Sumarle ahí las
+piezas del pedimento las contaba dos veces —una al recibirlas, otra al cerrar el
+costo—, y eso fue lo que infló el PTBG485 a 1,872 cuando la OC era de 936. El
+reparto queda así: **Zoho cuenta piezas, esta app mide costos.**
+
 **Por qué no es el promedio simple.** (2,441.27 + 2,071.62) ÷ 2 = 2,256.45
 valuaría los 936 paneles en 2,111,032 contra los 1,992,274 que costaron:
 118,758 pesos de valor sin desembolso detrás. El promedio simple sólo sería

@@ -6759,8 +6759,6 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
       const prov = ped.provisional?.find((x) => x.sku === l.sku)?.unit;
       if (prov != null && Math.abs(l.unit - prov) / (prov || 1) > UMBRAL) alertas.push(`${sku}: real difiere ${((l.unit - prov) / prov * 100).toFixed(1)}% del provisional`);
       const exist = a.existencia || 0;
-      const nuevoQty = exist + l.cant;
-      // El promedio NO usa `exist`: ver la nota de abajo.
 
       // ── LA PRIMERA IMPORTACION MEDIDA FIJA; LAS SIGUIENTES PROMEDIAN ──────
       //
@@ -6828,11 +6826,22 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
         alertas.push(`${sku}: primera importación medida — se fija en $${mx(l.unit)} y se deja de usar el costo heredado de $${mx(+a.costoVigente || 0)}`);
       }
       if (exist > qtyMedida) {
-        alertas.push(`${sku}: el promedio se armó con las ${mx0(qtyMedida)} piezas que esta app ha medido; la existencia dice ${mx0(nuevoQty)} y esa diferencia ya no afecta el costo`);
+        alertas.push(`${sku}: el promedio se armó con las ${mx0(qtyMedida)} piezas que esta app ha medido; la existencia dice ${mx0(exist)} y esa diferencia ya no afecta el costo`);
       }
+      // ── EL CIERRE YA NO LE SUMA PIEZAS A LA EXISTENCIA. [20-nov-2026] ─────
+      //
+      // Fran: «quitar la suma de la existencia + lo que estamos importando».
+      //
+      // El material se recibe en Zoho cuando llega al almacen; el pedimento se
+      // costea despues. Sumarle aqui las piezas del pedimento las cuenta DOS
+      // VECES: una cuando Zoho las recibio y otra cuando se cierra el costo.
+      // Eso fue lo que inflo al PTBG485 a 1,872 cuando la OC era de 936.
+      //
+      // Reparto de trabajo, y queda asi: **Zoho cuenta piezas, esta app mide
+      // costos**. El cierre ya no toca `existencia` — y como el promedio
+      // tampoco la usa, un numero viejo en ese campo ya no puede ensuciar nada.
       c[sku] = {
         ...a,
-        existencia: nuevoQty,
         promedioPendiente: nuevoProm,
         // Queda escrito desde cuando la app costea este SKU: a partir de aqui
         // el promedio se construye solo con mediciones.
