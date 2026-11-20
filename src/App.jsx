@@ -273,7 +273,7 @@ function matchRenonSku(modelo, desc) {
 const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes varios PDFs: (1) un PEDIMENTO de importación, (2) si vienen, UNA O VARIAS COTIZACIONES de la Agencia Aduanal Perezgrovas —suelen ser dos, una de IMPUESTOS y otra de OTROS gastos, y los conceptos de abajo pueden estar repartidos entre ellas: búscalos en todas— y (3) si viene, la ORDEN DE COMPRA de Innovación Solar, que es el único documento donde el SKU viene escrito. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
 
 Esquema exacto:
-{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","pesoBrutoKg":0,"oc":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"igiMXN":0,"sku":""}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0,"cruceSDTJmxn":0}
+{"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","pesoBrutoKg":0,"oc":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"igiMXN":0,"sku":""}],"fleteInternacionalMXN":0,"iccMXN":0,"iccUsd":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0,"cruceSDTJmxn":0}
 
 Reglas:
 - numero, fecha, aduana: del PEDIMENTO. tc = TIPO DE CAMBIO oficial del PEDIMENTO (NO el de la cotización, que suele ser distinto).
@@ -289,7 +289,8 @@ Reglas:
    · desc = descripción CORTA (máximo 40 caracteres, sin repetir texto).
 - pesoBrutoKg = el PESO BRUTO impreso en el ENCABEZADO del pedimento (ej. "PESO BRUTO: 19,824.220"). Son los kilos de TODO el embarque, no de una partida.
 - oc = número de la orden de compra (ej. PO-02601) si viene ese PDF; si no, "".
-- fleteInternacionalMXN = renglón FLETES del pedimento — SIEMPRE EN PESOS, nunca en dólares. iccMXN = OTROS INCREMENTABLES del pedimento (pesos). dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento (pesos).
+- fleteInternacionalMXN = renglón FLETES del pedimento — SIEMPRE EN PESOS, nunca en dólares. dtaMXN, prvMXN, ivaMXN = del cuadro de liquidación del pedimento (pesos).
+- ICC (cuenta de gastos americana): búscalo PRIMERO en la cotización Perezgrovas, renglón "Cuenta de Gastos Americana (ICC)", que es lo que de verdad se desembolsó. Solo si ahí no viene, usa "OTROS INCREMENTABLES" del pedimento, que es el valor declarado y puede diferir por el tipo de cambio. Igual que el flete de cruce, ese renglón trae columnas Dlls y Pesos: toma el importe DE LA COLUMNA DONDE ESTÉ ESCRITO, sin convertir — en Pesos va a iccMXN, en Dlls va a iccUsd, y la otra queda en null.
 - honorariosMXN = de la cotización Perezgrovas, el renglón "Total de Honorarios mas Servicios Complementarios" —el último del cuadro, suele venir marcado como "3er deposito"— EN PESOS. Es el TOTAL del bloque, no la suma de sus renglones sueltos (Honorarios Agente Aduanal, Servicios Complementarios, Validacion, Generacion de Cove, Prevalidacion, Reconocimiento Aduanero) ni el "Total Pagos a Terceros", que es otro bloque. Si solo encuentras los renglones sueltos y no el total, súmalos.
 - "Flete de San Diego a Tijuana" de la cotización: la cotización trae DOS columnas, Dlls y Pesos, y ese renglón viene unas veces en una y otras en la otra. TOMA EL IMPORTE DE LA COLUMNA DONDE ESTÉ ESCRITO Y NO LO CONVIERTAS: si está en Dlls ponlo en cruceSDTJusd y deja cruceSDTJmxn en null; si está en Pesos ponlo en cruceSDTJmxn y deja cruceSDTJusd en null. Nunca llenes los dos. Una columna con "-", vacía o en $0 no es el importe: busca en la otra.
 - Responde solo el JSON.`;
@@ -6011,7 +6012,11 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
       if (p.dtaMXN != null) setInc("dta", "monto", p.dtaMXN, "final");
       if (p.prvMXN != null) setInc("prevalidación", "monto", p.prvMXN, "final");
       if (p.ivaMXN != null) setInc("iva", "monto", p.ivaMXN, "final");
-      if (p.iccMXN != null) setIncFull("icc", { monto: p.iccMXN, moneda: "MXN" }, "final");
+      // El ICC tambien cambia de columna. Mismo caso que el cruce: la cotizacion
+      // de la 6004711 lo trae como $4,865 en pesos y 254.50 en dolares, y el
+      // campo se volcaba siempre como MXN.
+      if (p.iccMXN != null && +p.iccMXN > 0) setIncFull("icc", { monto: p.iccMXN, moneda: "MXN" }, "final");
+      else if (p.iccUsd != null && +p.iccUsd > 0) setIncFull("icc", { monto: p.iccUsd, moneda: "USD" }, "final");
       if (p.honorariosMXN != null) setInc("honorarios", "monto", p.honorariosMXN, p.honorariosMXN ? "cotizacion" : "estimado");
 
       // IGI manual por partida (se asigna tras recrear partidas)
@@ -6043,7 +6048,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
       const deCotiz = [
         ["honorarios + servicios del agente", p.honorariosMXN],
         ["cruce San Diego → Tijuana", (p.cruceSDTJmxn ?? p.cruceSDTJusd)],
-        ["cuenta de gastos americana (ICC)", p.iccMXN],
+        ["cuenta de gastos americana (ICC)", (p.iccMXN ?? p.iccUsd)],
       ].filter(([, v]) => !(+v > 0)).map(([n]) => n);
       if (!pdfCots.length) {
         setErrExtrac("Se leyó el pedimento. No subiste la cotización de Perezgrovas, así que honorarios, cruce San Diego–Tijuana e ICC se quedan en cero — súbela y vuelve a extraer, o captúralos a mano.");
