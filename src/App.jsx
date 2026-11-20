@@ -105,8 +105,19 @@ const adivinaTipoPDF = (nombre = "") => {
   return "factura";   // lo mas comun, y lo menos danino si se equivoca
 };
 
-// Un pedimento y una cotizacion como maximo: si llegan dos, uno se queda con el
-// puesto y el otro pasa a factura, que es el cajon sin limite.
+// UN PEDIMENTO. LAS COTIZACIONES, LAS QUE HAGAN FALTA.  [20-nov-2026]
+//
+// El limite era «un pedimento y una cotizacion». La segunda mitad estaba mal y
+// se vio en la importacion 6004711: Perezgrovas manda DOS cotizaciones —
+// «COTIZACION INNOVACION IMPUESTOS» y «COTIZACION INNOVACION OTROS»— y las dos
+// traen datos que la app usa. Con el limite se empujaban: marcar una convertia
+// la otra en factura, y al reves. Fran: «le picamos cotizacion y cambia el de
+// arriba a factura y viceversa».
+//
+// Un pedimento SI es uno solo por importacion, y ese limite se queda. Las
+// cotizaciones pasan al cajon sin limite, como las facturas, y la extraccion
+// las lee TODAS: antes `pdfCot` tomaba la primera que encontrara, asi que aun
+// subiendo las dos solo se leia una.
 //
 // GANA EL QUE LA PERSONA ACABA DE ESCOGER.  [20-nov-2026]
 //
@@ -125,7 +136,7 @@ const adivinaTipoPDF = (nombre = "") => {
 // exactamente igual de confuso.
 const unoSolo = (lista, preferido = null) => {
   let out = lista;
-  for (const t of ["pedimento", "cotizacion"]) {
+  for (const t of ["pedimento"]) {
     const ids = out.filter((a) => a.tipo === t).map((a) => a.id);
     if (ids.length > 1) {
       const ganador = (preferido && ids.includes(preferido)) ? preferido : ids[ids.length - 1];
@@ -206,7 +217,7 @@ function ZonaPDFs({ archivos, setArchivos, onCambio }) {
 
       {desplazado && (
         <p className="mt-2 text-[11px] text-amber-700">
-          Solo cabe {desplazado.tipo === "pedimento" ? "un pedimento" : "una cotización"}, así que <b>{desplazado.nombre}</b> pasó a Factura. Si ésa era la buena, cámbiala tú y la otra se moverá.
+          Solo cabe un pedimento por importación, así que <b>{desplazado.nombre}</b> pasó a Factura. Si ésa era la buena, cámbiala tú y la otra se moverá.
         </p>
       )}
       {ignorados.length > 0 && (
@@ -259,7 +270,7 @@ function matchRenonSku(modelo, desc) {
   return null;
 }
 
-const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes de uno a tres PDFs: (1) un PEDIMENTO de importación, (2) si viene, una COTIZACIÓN de la Agencia Aduanal Perezgrovas y (3) si viene, la ORDEN DE COMPRA de Innovación Solar, que es el único documento donde el SKU viene escrito. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
+const PROMPT_EXTRACCION = `Eres un extractor de datos de comercio exterior mexicano. Recibes varios PDFs: (1) un PEDIMENTO de importación, (2) si vienen, UNA O VARIAS COTIZACIONES de la Agencia Aduanal Perezgrovas —suelen ser dos, una de IMPUESTOS y otra de OTROS gastos, y los conceptos de abajo pueden estar repartidos entre ellas: búscalos en todas— y (3) si viene, la ORDEN DE COMPRA de Innovación Solar, que es el único documento donde el SKU viene escrito. Extrae los datos y responde ÚNICAMENTE con JSON compacto, sin markdown, sin explicaciones. Usa números sin comas ni símbolos. Si un dato no aparece, usa null.
 
 Esquema exacto:
 {"numero":"","fecha":"YYYY-MM-DD","tc":0,"aduana":"","proveedorExt":"","pesoBrutoKg":0,"oc":"","partidas":[{"desc":"","cantidad":0,"fobUnitUSD":0,"pesoPartidaKg":0,"igiMXN":0,"sku":""}],"fleteInternacionalMXN":0,"iccMXN":0,"dtaMXN":0,"prvMXN":0,"ivaMXN":0,"honorariosMXN":0,"cruceSDTJusd":0}
@@ -5708,7 +5719,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
     setBorrador(null);
   };
   const pdfPed = useMemo(() => archivos.find((a) => a.tipo === "pedimento")?.b64 || null, [archivos]);
-  const pdfCot = useMemo(() => archivos.find((a) => a.tipo === "cotizacion")?.b64 || null, [archivos]);
+  // TODAS las cotizaciones, no la primera: Perezgrovas manda la de impuestos y
+  // la de otros, y cada una trae su parte de los incrementables.
+  const pdfCots = useMemo(() => archivos.filter((a) => a.tipo === "cotizacion").map((a) => a.b64), [archivos]);
   const pdfOc = useMemo(() => archivos.find((a) => a.tipo === "oc")?.b64 || null, [archivos]);
   const pdfFacturas = useMemo(() => archivos.filter((a) => a.tipo === "factura").map((a) => a.b64), [archivos]);
   const [extrayendo, setExtrayendo] = useState(false);
@@ -5938,7 +5951,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
     setExtrayendo(true); setErrExtrac(null);
     try {
       const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfPed } }];
-      if (pdfCot) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfCot } });
+      for (const c of pdfCots) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: c } });
       // La OC es el unico documento que trae el SKU escrito. La factura del
       // proveedor dice "Monocrystalline module 460W"; la OC dice "SKU: PSP7460".
       if (pdfOc) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfOc } });
