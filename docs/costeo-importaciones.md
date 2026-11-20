@@ -141,13 +141,25 @@ ICC + IGI). Cuadra en los cinco pedimentos con diferencias de centavos:
 | 6004109 | 4,187.42 | 4,187 | 0.42 |
 | 6004655 | 217,707.37 | 217,707 | 0.37 |
 | 6004711 | 55,596.52 | 55,584 | 12.52 |
+| 6004840 | 50,534.20 | 50,521 | 13.20 |
 
 Despejando al revés sale el IGI implícito, y da el capturado (42,353.95 contra
 42,354; 176,250.68 contra 176,253) o cero cuando no se pagó (−8.93, −2.66).
 
+**Ya está programado** (commit del 20-nov): la banda sale en el pie de
+Incrementables mientras se captura, en el resumen y en el detalle del pedimento.
+Cuando cuadra lo dice en verde; cuando no, dice cuánta base falta y que casi
+siempre es el IGI. La tolerancia es `max(100, 0.25% del IVA)`, que cubre el
+redondeo del papel —el peor de los seis fue 13.20 pesos— sin tapar un concepto
+faltante, que nunca es de centavos. Probado contra los seis pedimentos: pasa los
+cinco buenos y marca el 6003534 pidiendo 42,353.95 de base, que son los 42,354
+del IGI.
+
 Sirve para dos cosas: **confirma que un IGI huérfano sí se pagó** (así se
-comprobó el de 6003534, sin abrir el PDF) y **detectaría la falta en la captura**,
-con números que ya están en pantalla. El ICC del 6004655 enseña el otro lado:
+comprobó el de 6003534, sin abrir el PDF) y **caza la falta en la captura**,
+con números que ya están en pantalla. Alcanza donde el aviso de huérfano no
+llega: si el IGI de plano no se capturó, no hay nada huérfano que lo delate —
+el único que sabe es el IVA. El ICC del 6004655 enseña el otro lado:
 cuadra exacto con 20,023, que es el declarado a TC 18.42 — el costo usa los
 20,349 desembolsados, que es la regla de la sección 3. El checksum valida el
 pedimento, no el desembolso.
@@ -179,7 +191,25 @@ paneles.
 
 _Corregido el 04-nov: la escritura del costo a Zoho ya NO es simulada (sección 9), y la llave basura `iso3-catalogo-respaldo-psp7460-20261024` ya se borró._
 
-## 13. De la cotización, la columna de PESOS (20-nov-2026)
+## 13. El resumen vive en la captura, y el pedimento cerrado no lo tenía (20-nov-2026)
+
+El precio por watt salió primero sólo en la sección 6, que vive en la pantalla
+de **captura**. Un pedimento ya cerrado abre en otra pantalla —`DetallePedimento`,
+que sólo traía las facturas de incrementables y el costo landed— así que el
+número no aparecía donde se va a buscar después. Fran, del 6004840: «no salió el
+$/watt». No faltaba el cálculo, faltaba la pantalla.
+
+Ahora el detalle del pedimento trae su propia sección de resumen: precio por
+watt, la banda del checksum del IVA y, si hay, el aviso de huérfano — también
+para los ya cerrados, diciendo que ese dinero no entró al costo con el que se
+cerró.
+
+**6004840** (4-nov, 144 × PTBG485): 69.84 kWp, landed 2,441.27 por panel,
+**5.03 MXN/W · 0.268 USD/W**. Contra los 3.76 MXN/W del 6004655: el FOB es más
+alto (67.90 contra 56.12) y los 83,818 de flete internacional se reparten entre
+144 paneles en vez de 864 — 582 por panel contra 303.
+
+## 14. De la cotización, la columna de PESOS (20-nov-2026)
 
 Fran: «todo de la cotización debe leer la columna de pesos».
 

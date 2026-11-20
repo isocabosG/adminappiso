@@ -5768,6 +5768,117 @@ const potenciaModulo = (...textos) => {
 };
 const wDeLinea = (l, catalogo) => potenciaModulo(catalogo?.[String(l.sku || "").trim().toUpperCase()]?.descripcion, l.desc, l.sku);
 
+/* ---------------------------------------------------------------------------
+   EL PEDIMENTO TRAE SU PROPIO CHECKSUM. [20-nov-2026]
+
+   El IVA de importacion declarado ES el 16% de (equipos FOB en pesos + flete
+   internacional + DTA + ICC + IGI). No es una aproximacion: cuadra en los cinco
+   pedimentos cerrados con diferencias de 0.01, 0.37, 0.42, 1.43 y 12.52 pesos.
+
+   Eso vuelve al IVA un testigo. Si lo capturado no da el IVA del papel, falta
+   (o sobra) base — y la diferencia entre 0.16 dice CUANTO. Asi se comprobo que
+   el IGI huerfano del 6003534 si se habia pagado, sin abrir el PDF: el IVA
+   declarado pedia 42,354 de base que no estaban en ninguna partida.
+
+   Sirve para lo que el aviso de huerfano no alcanza: cuando el IGI de plano no
+   se capturo, no hay nada huerfano que delatarlo. El unico que sabe es el IVA.
+
+   El flete de cruce San Diego-Tijuana NO entra: no es incrementable declarado,
+   es flete en territorio ajeno que cobra el agente. Los honorarios y el flete
+   nacional tampoco. Se comprobo despejando los cinco.
+--------------------------------------------------------------------------- */
+const CHK_TASA = 0.16;
+const checksumIva = (lineas, incs, tc) => {
+  const t = +tc || 0;
+  const ls = lineas || [], cs = incs || [];
+  const mxn = (c) => {
+    if (!c) return 0;
+    if (c.metodo === "manual") return manualVivo(c, ls);
+    const v = +c.monto || 0;
+    return c.moneda === "USD" ? v * t : v;
+  };
+  const busca = (re) => cs.find((c) => re.test(String(c.concepto || "")));
+  const iva = busca(/iva/i);
+  const fob = ls.reduce((a, l) => a + (+l.fobUnit || 0) * (+l.cant || 0), 0) * t;
+  const declarado = mxn(iva);
+  if (!t || !(fob > 0) || !(declarado > 0)) return null;
+  const partes = [
+    ["equipos (FOB)", fob],
+    ["flete internacional", mxn(busca(/internacional/i))],
+    ["DTA", mxn(busca(/\bdta\b/i))],
+    ["ICC", mxn(busca(/icc|gastos americana/i))],
+    ["IGI", mxn(busca(/igi/i))],
+  ];
+  const base = partes.reduce((a, [, v]) => a + v, 0);
+  const esperado = base * CHK_TASA;
+  const dif = declarado - esperado;
+  // La tolerancia cubre el redondeo del pedimento (el peor de los cinco fue
+  // 12.52 pesos sobre un IVA de 55,584) sin tapar un concepto faltante, que
+  // nunca es de centavos.
+  const tol = Math.max(100, declarado * 0.0025);
+  return { base, esperado, declarado, dif, falta: dif / CHK_TASA, cuadra: Math.abs(dif) <= tol, partes };
+};
+
+function BandaChecksum({ lineas, incs, tc }) {
+  const chk = checksumIva(lineas, incs, tc);
+  if (!chk) return null;
+  const faltan = chk.falta > 0;
+  return (
+    <div className={`text-[11px] rounded p-2 border ${chk.cuadra ? "bg-teal-50 border-teal-300 text-teal-900" : "bg-red-50 border-red-300 text-red-800"}`}>
+      {chk.cuadra ? (
+        <>✓ <strong>El IVA cuadra.</strong> El 16% de ${mx0(chk.base)} (equipos FOB + flete internacional + DTA + ICC + IGI) son ${mx0(chk.esperado)}, y el papel declara ${mx0(chk.declarado)}. Lo capturado concuerda con lo que se pagó en la aduana.</>
+      ) : (
+        <>⚠ <strong>El IVA no cuadra.</strong> El papel declara <strong>${mx0(chk.declarado)}</strong> y con lo capturado deberían salir ${mx0(chk.esperado)} (16% de ${mx0(chk.base)}).
+          {faltan
+            ? <> Faltan <strong>${mx0(chk.falta)}</strong> de base por capturar — casi siempre es el <strong>IGI</strong>, o un IGI que quedó huérfano.</>
+            : <> Hay <strong>${mx0(-chk.falta)}</strong> de base de más: algo está capturado dos veces o no debería entrar.</>}
+          {" "}Revísalo contra el cuadro de liquidación antes de cerrar.</>
+      )}
+    </div>
+  );
+}
+
+/* Precio por watt. Mismo cuadro en el resumen de la captura y en el detalle. */
+function PrecioPorWatt({ lineas, catalogo, tc }) {
+  const mods = (lineas || []).map((l) => ({ l, w: wDeLinea(l, catalogo) })).filter((x) => x.w > 0);
+  if (!mods.length) return null;
+  const wTot = mods.reduce((a, x) => a + x.w * x.l.cant, 0);
+  const mxnMods = mods.reduce((a, x) => a + x.l.total, 0);
+  const t = +tc || 0;
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Precio por watt · aterrizado del módulo entre su potencia</p>
+      <p className="text-sm font-semibold font-mono mb-1">{mx(wTot / 1000)} kWp · ${(mxnMods / wTot).toFixed(2)} MXN/W{t ? ` · $${(mxnMods / wTot / t).toFixed(3)} USD/W` : ""}</p>
+      <table className="w-full text-xs">
+        <thead><tr className="text-[10px] uppercase tracking-widest text-stone-400 text-left"><th className="py-1">SKU</th><th className="text-right">Potencia</th><th className="text-right">Pzas</th><th className="text-right">Landed c/u</th><th className="text-right">$/W MXN</th><th className="text-right">$/W USD</th></tr></thead>
+        <tbody>
+          {mods.map((x) => (
+            <tr key={x.l.id} className="border-b border-stone-100">
+              <td className="py-1 font-mono">{x.l.sku}</td>
+              <td className="text-right font-mono">{x.w} W</td>
+              <td className="text-right font-mono">{mx0(x.l.cant)}</td>
+              <td className="text-right font-mono">${mx(x.l.unit)}</td>
+              <td className="text-right font-mono font-semibold">${(x.l.unit / x.w).toFixed(2)}</td>
+              <td className="text-right font-mono">{t ? "$" + (x.l.unit / x.w / t).toFixed(3) : "—"}</td>
+            </tr>
+          ))}
+          {mods.length > 1 && (
+            <tr className="border-t-2 border-stone-200 font-semibold">
+              <td className="py-1.5">Promedio del embarque</td>
+              <td className="text-right font-mono">{mx0(wTot / 1000)} kWp</td>
+              <td className="text-right font-mono">{mx0(mods.reduce((a, x) => a + x.l.cant, 0))}</td>
+              <td className="text-right font-mono">—</td>
+              <td className="text-right font-mono">${(mxnMods / wTot).toFixed(2)}</td>
+              <td className="text-right font-mono">{t ? "$" + (mxnMods / wTot / t).toFixed(3) : "—"}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <p className="mt-1 text-[10px] text-stone-400">La potencia se lee del nombre del artículo o de la descripción de la factura. Si un módulo no la trae escrita, no aparece aquí.</p>
+    </div>
+  );
+}
+
 const BORRADOR_IMP = "iso3-importacion-borrador";
 
 function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedimentos = [] }) {
@@ -6476,6 +6587,9 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
             </div>
           ))}
         </div>
+        <div className="px-3 pt-3">
+          <BandaChecksum lineas={calc.lineas} incs={incs} tc={tc} />
+        </div>
         <div className="px-3 py-3 border-t border-stone-200 flex flex-wrap items-center gap-4">
           <button onClick={() => setIncs((s) => [...s, { id: uid(), concepto: "", proveedor: "", monto: "", moneda: "MXN", metodo: "valor", capitaliza: true, estadoDoc: "estimado", manual: {}, extra: true, adjunto: "" }])}
             className="text-xs font-medium text-teal-700">+ Agregar costo extra (maniobra, flete adicional, otro)</button>
@@ -6587,37 +6701,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
                   </p>
                 )}
               </div>
-              {wTot > 0 && (
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Precio por watt · aterrizado del módulo entre su potencia</p>
-                  <table className="w-full text-xs">
-                    <thead><tr className="text-[10px] uppercase tracking-widest text-stone-400 text-left"><th className="py-1">SKU</th><th className="text-right">Potencia</th><th className="text-right">Pzas</th><th className="text-right">Landed c/u</th><th className="text-right">$/W MXN</th><th className="text-right">$/W USD</th></tr></thead>
-                    <tbody>
-                      {mods.map((x) => (
-                        <tr key={x.l.id} className="border-b border-stone-100">
-                          <td className="py-1 font-mono">{x.l.sku}</td>
-                          <td className="text-right font-mono">{x.w} W</td>
-                          <td className="text-right font-mono">{mx0(x.l.cant)}</td>
-                          <td className="text-right font-mono">${mx(x.l.unit)}</td>
-                          <td className="text-right font-mono font-semibold">${(x.l.unit / x.w).toFixed(2)}</td>
-                          <td className="text-right font-mono">{tc ? "$" + (x.l.unit / x.w / tc).toFixed(3) : "—"}</td>
-                        </tr>
-                      ))}
-                      {mods.length > 1 && (
-                        <tr className="border-t-2 border-stone-200 font-semibold">
-                          <td className="py-1.5">Promedio del embarque</td>
-                          <td className="text-right font-mono">{mx0(wTot / 1000)} kWp</td>
-                          <td className="text-right font-mono">{mx0(mods.reduce((a, x) => a + x.l.cant, 0))}</td>
-                          <td className="text-right font-mono">—</td>
-                          <td className="text-right font-mono">${(mxnMods / wTot).toFixed(2)}</td>
-                          <td className="text-right font-mono">{tc ? "$" + (mxnMods / wTot / tc).toFixed(3) : "—"}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                  <p className="mt-1 text-[10px] text-stone-400">La potencia se lee del nombre del artículo o de la descripción de la factura. Si un módulo no la trae escrita, no aparece aquí.</p>
-                </div>
-              )}
+              <PrecioPorWatt lineas={calc.lineas} catalogo={catalogo} tc={tc} />
+              <BandaChecksum lineas={calc.lineas} incs={incs} tc={tc} />
             </div>
           );
         })()}
@@ -6763,6 +6848,22 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
               </div>
             </div>
           ))}
+        </div>
+      </Section>
+
+      <Section n="·" t="Resumen" r="Precio por watt y revisión contra el IVA del papel">
+        <div className="p-4 space-y-3">
+          <PrecioPorWatt lineas={calc.lineas} catalogo={catalogo} tc={ped.tc} />
+          <BandaChecksum lineas={calc.lineas} incs={ped.incrementables} tc={ped.tc} />
+          {(() => {
+            const h = (ped.incrementables || []).map((i) => ({ c: i.concepto, ...manualHuerfano(i, calc.lineas) })).filter((x) => x.monto > 0);
+            if (!h.length) return null;
+            return (
+              <p className="text-[11px] bg-red-50 border border-red-300 rounded p-2 text-red-800">
+                ⚠ <strong>${mx(h.reduce((a, b) => a + b.monto, 0))}</strong> de {h.map((x) => x.c || "manual").join(", ")} quedaron <strong>huérfanos</strong>: anclados a partidas que ya no existen, así que no entraron al costo{ped.cerrado ? " con el que se cerró" : ""}.
+              </p>
+            );
+          })()}
         </div>
       </Section>
 
