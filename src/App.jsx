@@ -6147,7 +6147,15 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
       <Section n="1" t="Pedimento">
         <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
           <Field l="Número">
-            <input className={inp + " font-mono"} value={ped.numero} onChange={(e) => setPed({ ...ped, numero: e.target.value })} placeholder="26 40 3965 …" />
+            {/* Al salir del campo el numero se acomoda solo en los cuatro
+                bloques del SAT. La extraccion lo saca pegado y quien captura lo
+                venia separando a mano; no hace falta, pero sin verlo no hay
+                forma de saberlo. Se acomoda al SALIR y no en cada tecla, que
+                pelearia con quien esta escribiendo. */}
+            <input className={inp + " font-mono"} value={ped.numero}
+              onChange={(e) => setPed({ ...ped, numero: e.target.value })}
+              onBlur={(e) => { const f = fmtPedimento(e.target.value); if (f !== e.target.value) setPed((x) => ({ ...x, numero: f })); }}
+              placeholder="26 40 3965 …" />
             {yaExiste && (
               <p className="mt-1 text-[11px] text-red-700 leading-snug">
                 Este pedimento <b>ya está cargado</b> ({fmtPedimento(yaExiste.numero)} · {yaExiste.fecha} · {yaExiste.partidas?.length || 0} partida{(yaExiste.partidas?.length || 0) === 1 ? "" : "s"}).
