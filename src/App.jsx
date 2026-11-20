@@ -105,14 +105,30 @@ const adivinaTipoPDF = (nombre = "") => {
   return "factura";   // lo mas comun, y lo menos danino si se equivoca
 };
 
-// Un pedimento y una cotizacion como maximo: si llegan dos, el ultimo se queda
-// con el puesto y el anterior pasa a factura, que es el cajon sin limite.
-const unoSolo = (lista) => {
+// Un pedimento y una cotizacion como maximo: si llegan dos, uno se queda con el
+// puesto y el otro pasa a factura, que es el cajon sin limite.
+//
+// GANA EL QUE LA PERSONA ACABA DE ESCOGER.  [20-nov-2026]
+//
+// El ganador era siempre `ids[ids.length - 1]`, el ultimo EN ORDEN DE LISTA. Al
+// soltar archivos eso esta bien —gana el mas nuevo—, pero al cambiar el tipo a
+// mano estaba al reves: si ya habia una cotizacion mas abajo en la lista,
+// marcar otra como cotizacion la convertia a ella en factura. Desde afuera se
+// ve como si la app se negara a aceptarla.
+//
+// Fran, 20-nov: «la cotizacion de impuestos no nos deja meterla como
+// cotizacion, se auto-cambia a factura». No era que no la dejara: la aceptaba y
+// en el mismo instante se la quitaba.
+//
+// `preferido` es el archivo que la persona acaba de tocar. Si lo hay, gana el;
+// y el aviso lo dice, porque un cambio silencioso en OTRO renglon es
+// exactamente igual de confuso.
+const unoSolo = (lista, preferido = null) => {
   let out = lista;
   for (const t of ["pedimento", "cotizacion"]) {
     const ids = out.filter((a) => a.tipo === t).map((a) => a.id);
     if (ids.length > 1) {
-      const ganador = ids[ids.length - 1];
+      const ganador = (preferido && ids.includes(preferido)) ? preferido : ids[ids.length - 1];
       out = out.map((a) => (a.tipo === t && a.id !== ganador ? { ...a, tipo: "factura" } : a));
     }
   }
@@ -157,7 +173,15 @@ function ZonaPDFs({ archivos, setArchivos, onCambio }) {
     } finally { setLeyendo(0); }
   };
 
-  const cambiarTipo = (id, tipo) => setArchivos((prev) => unoSolo(prev.map((a) => (a.id === id ? { ...a, tipo } : a))));
+  const [desplazado, setDesplazado] = useState(null);   // a quien se le quito el puesto
+  const cambiarTipo = (id, tipo) => setArchivos((prev) => {
+    const marcado = prev.map((a) => (a.id === id ? { ...a, tipo } : a));
+    const out = unoSolo(marcado, id);
+    // Si al escoger este se le cambio el tipo a otro, se dice en voz alta.
+    const movido = out.find((a) => a.id !== id && a.tipo !== marcado.find((x) => x.id === a.id)?.tipo);
+    setDesplazado(movido ? { nombre: movido.nombre, tipo } : null);
+    return out;
+  });
   const quitar = (id) => setArchivos((prev) => prev.filter((a) => a.id !== id));
 
   const nPed = archivos.filter((a) => a.tipo === "pedimento").length;
@@ -180,6 +204,11 @@ function ZonaPDFs({ archivos, setArchivos, onCambio }) {
           onChange={(e) => { agregar(e.target.files); e.target.value = ""; }} />
       </div>
 
+      {desplazado && (
+        <p className="mt-2 text-[11px] text-amber-700">
+          Solo cabe {desplazado.tipo === "pedimento" ? "un pedimento" : "una cotización"}, así que <b>{desplazado.nombre}</b> pasó a Factura. Si ésa era la buena, cámbiala tú y la otra se moverá.
+        </p>
+      )}
       {ignorados.length > 0 && (
         <p className="mt-2 text-[11px] text-amber-700">No se agrego: {ignorados.join(", ")} — aqui solo entran PDF.</p>
       )}
