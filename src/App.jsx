@@ -2716,11 +2716,33 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
       // Zoho confirmo estos costos, asi que ya sabemos que hay alla. Sin esto,
       // la comparacion sigue usando el catalogo que bajo el cron a las 5:00 y el
       // boton seguiria pidiendo empujar algo que ya se empujo.
-      if (n) setZohoRates((z) => {
-        const rates = { ...(z?.rates || {}) };
-        for (const x of res) if (x.ok) rates[x.sku] = +x.costo;
-        return { fecha: z?.fecha || null, rates };
-      });
+      //
+      // Y SE GUARDA, NO SOLO EN PANTALLA.  [20-nov-2026]
+      //
+      // Esto parchaba `zohoRates` en memoria y nada mas. El renglon guardado
+      // —`iso3-catalogo-zoho`, que baja el cron a las 5:00— seguia con los
+      // valores viejos, asi que al recargar la pagina el boton volvia a pedir
+      // los mismos. Fran, 20-nov: «empujamos estos pero sigue saliendo empujar
+      // 7, no se reseteo al picarle». Si se reseteo; se desreseteaba al
+      // recargar.
+      if (n) {
+        setZohoRates((z) => {
+          const rates = { ...(z?.rates || {}) };
+          for (const x of res) if (x.ok) rates[x.sku] = +x.costo;
+          return { fecha: z?.fecha || null, rates };
+        });
+        // El mismo parche sobre el guardado, para que sobreviva a la recarga.
+        (async () => {
+          try {
+            const r = await window.storage?.get("iso3-catalogo-zoho");
+            if (!r?.value) return;
+            const z = JSON.parse(r.value);
+            const items = { ...(z.items || {}) };
+            for (const x of res) if (x.ok && items[x.sku]) items[x.sku] = { ...items[x.sku], rate: +x.costo };
+            await window.storage?.set("iso3-catalogo-zoho", JSON.stringify({ ...z, items }));
+          } catch { /* si no se pudo, el cron de las 5:00 lo corrige solo */ }
+        })();
+      }
       const fallos = res.filter((x) => !x.ok);
       if (fallos.length) {
         setAviso({
