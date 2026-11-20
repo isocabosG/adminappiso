@@ -2606,6 +2606,11 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
       } catch {}
 
       const c = { ...catalogo };
+      // Fran, 20-nov: «que diga los que son nuevos». El boton anunciaba un
+      // numero y el aviso otro: 99 articulos nuevos y, callado, 1,073 costos
+      // reescritos con los de Zoho. Ahora el aviso nombra los nuevos y dice
+      // las tres cosas que hace.
+      const nuevosSkus = [];
       let nuevos = 0, marcados = 0, adoptados = 0;
       for (const [skuRaw, x] of Object.entries(z.items || {})) {
         const sku = String(skuRaw).toUpperCase();
@@ -2620,6 +2625,7 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
             bajaZoho: !x.activo,
           };
           nuevos++;
+          nuevosSkus.push(sku);
         } else {
           // QUIEN MANDA EN EL COSTO (14-oct-2026)
           // Zoho es la fuente de verdad. La app conserva el costo SOLO de los
@@ -2653,10 +2659,13 @@ function Articulos({ catalogo, saveCatalogo, setAviso }) {
       if (!nuevos && !marcados && !adoptados) { setAviso({ t: "ok", m: "El catalogo ya estaba al dia." }); return; }
       saveCatalogo(c);
       const partes = [];
-      if (nuevos) partes.push(`${nuevos} articulo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"}`);
-      if (adoptados) partes.push(`${adoptados} costo${adoptados === 1 ? "" : "s"} adoptado${adoptados === 1 ? "" : "s"} de Zoho`);
+      if (nuevos) {
+        const lista = nuevosSkus.slice(0, 25).join(", ");
+        partes.push(`${nuevos} artículo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} (${lista}${nuevos > 25 ? ` y ${nuevos - 25} más` : ""})`);
+      }
+      if (adoptados) partes.push(`${adoptados} costo${adoptados === 1 ? "" : "s"} que adoptó el de Zoho (SKU que esta app nunca ha costeado)`);
       if (marcados) partes.push(`${marcados} marcado${marcados === 1 ? "" : "s"} de baja`);
-      setAviso({ t: "ok", m: `${partes.join(", ")}.${nuevos ? " Revisa su categoria." : ""}` });
+      setAviso({ t: "ok", m: `${partes.join(" · ")}.${nuevos ? " Revisa su categoría." : ""}` });
     } catch (e) {
       setAviso({ t: "err", m: "No se pudo sincronizar: " + (e?.message || e) });
     } finally { setSincronizando(false); }
