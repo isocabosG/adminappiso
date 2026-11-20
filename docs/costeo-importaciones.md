@@ -109,6 +109,44 @@ Desde el commit `150cfe8`:
 **Regla:** si se rearman las partidas, el IGI se vuelve a capturar. No se
 hereda.
 
+### Revisión de los cinco pedimentos cerrados (20-nov-2026)
+
+| Pedimento | IGI capturado | ¿Anclado? | ¿Entró al costo? |
+|---|---|---|---|
+| 6002798 · 22-jun | — | — | correcto: ese pedimento **no pagó IGI** |
+| 6003534 · 5-ago | 42,354 (3 × 14,118) | **los tres huérfanos** | **NO — se perdió** |
+| 6004109 · 23-sep | — | — | correcto: **no pagó IGI** |
+| 6004655 · 22-oct | 176,253 | 1 vivo + 2 copias muertas | sí (las copias ya se limpiaron) |
+| 6004711 · 2-nov | 31,354 | vivo | sí |
+
+**6003534 quedó mal costeado.** Los 3 SARK30K se costearon en **151,139.90**
+cuando el aterrizado real es **165,257.90**: faltan 14,118 por pieza, 42,354 en
+total. Diluido en las 82 piezas del promedio, son 516.51 por pieza — el vigente
+pasaría de 161,588.36 a **162,104.88**. Pendiente de decidir si se reescribe.
+
+### El pedimento trae su propio checksum
+
+El IVA declarado **es** el 16% de (FOB en pesos + flete internacional + DTA +
+ICC + IGI). Cuadra en los cinco pedimentos con diferencias de centavos:
+
+| Pedimento | IVA calculado | IVA declarado | dif |
+|---|---|---|---|
+| 6002798 | 806,292.43 | 806,291 | 1.43 |
+| 6003534 | 75,087.01 | 75,087 | 0.01 |
+| 6004109 | 4,187.42 | 4,187 | 0.42 |
+| 6004655 | 217,707.37 | 217,707 | 0.37 |
+| 6004711 | 55,596.52 | 55,584 | 12.52 |
+
+Despejando al revés sale el IGI implícito, y da el capturado (42,353.95 contra
+42,354; 176,250.68 contra 176,253) o cero cuando no se pagó (−8.93, −2.66).
+
+Sirve para dos cosas: **confirma que un IGI huérfano sí se pagó** (así se
+comprobó el de 6003534, sin abrir el PDF) y **detectaría la falta en la captura**,
+con números que ya están en pantalla. El ICC del 6004655 enseña el otro lado:
+cuadra exacto con 20,023, que es el declarado a TC 18.42 — el costo usa los
+20,349 desembolsados, que es la regla de la sección 3. El checksum valida el
+pedimento, no el desembolso.
+
 ## 12. Precio por watt (20-nov-2026)
 
 El resumen de la importación trae el **aterrizado del módulo entre su potencia**,
@@ -131,6 +169,8 @@ paneles.
 4. **Validar el archivo antes de extraer:** el extractor debe rechazar un PDF que no traiga encabezado de pedimento y decirlo, en vez de tronar.
 5. **Defenderse del pedimento duplicado** — ver sección 2.
 6. **Revisar toda la familia de paneles.** PSP7460 iba 2.1× abajo; **PSP7455 está en 808.61** (43.9 USD para un panel de 455W), mismo patrón. **Decisión de Fran (28-oct): se corrigen conforme entre cada importación**, no todos de golpe. Mientras tanto el inventario de esos SKUs está subvaluado; con 504 piezas de PSP7455 en libros, del orden de 400 mil pesos.
-7. **El margen del panel NO es una alarma.** Quote Creator jala el costo y le mete un indirecto encima; el 1,750 de Zoho no es precio de venta al cliente.
+7. **Reescribir el costo de SARK30K** por el IGI huérfano del 6003534 — ver sección 11.
+8. **Programar el checksum del IVA** en la captura: si el IVA declarado no es el 16% de (FOB + flete internacional + DTA + ICC + IGI), avisar y decir cuánto falta. Habría cachado los dos IGI huérfanos el día que se capturaron.
+9. **El margen del panel NO es una alarma.** Quote Creator jala el costo y le mete un indirecto encima; el 1,750 de Zoho no es precio de venta al cliente.
 
 _Corregido el 04-nov: la escritura del costo a Zoho ya NO es simulada (sección 9), y la llave basura `iso3-catalogo-respaldo-psp7460-20261024` ya se borró._
