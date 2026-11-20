@@ -5658,6 +5658,20 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
   const [archivos, setArchivos] = useState([]);
   const [borrador, setBorrador] = useState(null);     // borrador encontrado al abrir
   const [restaurado, setRestaurado] = useState(false);
+  // LOS NOMBRES DE LOS PDF SOBREVIVEN AL RETOMAR.  [20-nov-2026]
+  //
+  // El borrador guarda los NOMBRES de los archivos justamente para poder decir
+  // cuales volver a soltar —los PDF no se guardan, son megas de base64—. Pero
+  // al retomar la pantalla arranca sin archivos, y el primer autoguardado de
+  // ahi en adelante pisaba esa lista con una vacia: se borraba solo el dato
+  // que servia para recuperarla.
+  //
+  // Jesus, 19-nov: su borrador del pedimento 6004711 tenia la partida, el FOB,
+  // el peso, el IGI y los nueve incrementables... y `archivos: []`. Sin PDF,
+  // «Desglosar por factura» queda apagado, ningun renglon recibe su factura,
+  // la seccion 2b no existe y guardar le pedia la OC. El aviso de «vuelve a
+  // arrastrar» no salia porque la lista ya estaba vacia.
+  const [archivosPrevios, setArchivosPrevios] = useState([]);
 
 
   const descartarBorrador = () => {
@@ -5703,12 +5717,16 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
     const t = setTimeout(() => {
       const v = {
         ts: Date.now(), ped, partidas, incs, guiaEmbarque, adjuntos,
-        archivos: archivos.map((a) => ({ nombre: a.nombre, tipo: a.tipo })),
+        // Si ahora no hay archivos cargados pero antes los hubo, se conserva la
+        // lista anterior: es la unica pista para volver a soltarlos.
+        archivos: archivos.length
+          ? archivos.map((a) => ({ nombre: a.nombre, tipo: a.tipo }))
+          : archivosPrevios,
       };
       window.storage?.set(BORRADOR_IMP, JSON.stringify(v)).catch(() => {});
     }, 1500);
     return () => clearTimeout(t);
-  }, [editando, ped, partidas, incs, guiaEmbarque, adjuntos, archivos]);
+  }, [editando, ped, partidas, incs, guiaEmbarque, adjuntos, archivos, archivosPrevios]);
 
   const retomarBorrador = () => {
     if (!borrador) return;
@@ -5717,6 +5735,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
     if (borrador.incs?.length) setIncs(borrador.incs);
     if (borrador.guiaEmbarque) setGuiaEmbarque(borrador.guiaEmbarque);
     if (borrador.adjuntos?.length) setAdjuntos(borrador.adjuntos);
+    setArchivosPrevios(borrador.archivos || []);
     setRestaurado(true);
     setBorrador(null);
   };
@@ -6066,9 +6085,20 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
               <button onClick={descartarBorrador} className="px-3 py-1.5 border border-amber-400 text-amber-800 text-xs font-medium rounded hover:bg-amber-100">Empezar de cero</button>
             </div>
           )}
-          {restaurado && (
-            <p className="text-[11px] text-teal-700">Captura recuperada. Los PDF no se guardan — vuelve a arrastrarlos si necesitas desglosar por factura.</p>
-          )}
+          {restaurado && (() => {
+            // Los que todavia no vuelve a soltar. El aviso se queda hasta que
+            // esten todos: desaparece cuando ya no hace falta, no antes.
+            const faltan = archivosPrevios.filter((a) => !archivos.some((x) => x.nombre === a.nombre));
+            return faltan.length ? (
+              <div className="rounded-lg border border-teal-300 bg-teal-50 px-3 py-2">
+                <p className="text-[11px] font-semibold text-teal-900">Captura recuperada. Falta volver a arrastrar {faltan.length === 1 ? "este PDF" : "estos PDF"}:</p>
+                <p className="text-[11px] text-teal-800 font-mono mt-0.5">{faltan.map((a) => a.nombre).join(" · ")}</p>
+                <p className="text-[10px] text-teal-700 mt-0.5">Los PDF no se guardan en el borrador. Sin ellos no se puede desglosar por factura, y sin eso no hay dónde capturar la OC.</p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-teal-700">Captura recuperada.</p>
+            );
+          })()}
           <ZonaPDFs archivos={archivos} setArchivos={setArchivos} onCambio={() => setErrExtrac(null)} />
           <p className="text-[10px] text-stone-400">Las facturas del proveedor (Renon) traen el modelo real de cada equipo — sirven para que la app empate mejor los SKU.</p>
           <div className="flex items-center gap-3">
