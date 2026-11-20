@@ -6485,6 +6485,23 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
   const cerrar = () => {
     const c = { ...catalogo };
     const alertas = [];
+    // UN PEDIMENTO NO SE CIERRA DOS VECES.  [20-nov-2026]
+    //
+    // El 6002798 estaba cargado dos veces y se cerro dos veces, asi que cada
+    // SKU del contenedor Renon quedo con su movimiento repetido en la historia:
+    // 72 baterias contadas 144, el ECUBE60 contado CUATRO veces. Eso inflo las
+    // existencias y metio el mismo costo al promedio tantas veces como se
+    // cerro. `docs/costeo-importaciones.md` ya lo traia anotado como pendiente.
+    //
+    // El candado de carga duplicada (19-nov) evita que vuelva a entrar dos
+    // veces; esto evita que un mismo pedimento sume dos veces aunque ya este
+    // adentro.
+    const yaCerrado = Object.values(c).some((a) => (a?.historia || []).some(
+      (h) => digitosPed(h.pedimento) && digitosPed(h.pedimento) === digitosPed(ped.numero)));
+    if (yaCerrado) {
+      setAviso({ t: "err", m: `El pedimento ${fmtPedimento(ped.numero)} ya está en la historia de costos: cerrarlo otra vez contaría su material dos veces. No se hizo nada.` });
+      return;
+    }
     calc.lineas.forEach((l) => {
       const sku = l.sku.trim().toUpperCase();
       const a = c[sku] || { descripcion: l.desc, categoria: l.categoria, existencia: 0, costoVigente: l.unit, historia: [] };
@@ -6492,15 +6509,51 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
       if (prov != null && Math.abs(l.unit - prov) / (prov || 1) > UMBRAL) alertas.push(`${sku}: real difiere ${((l.unit - prov) / prov * 100).toFixed(1)}% del provisional`);
       const exist = a.existencia || 0;
       const nuevoQty = exist + l.cant;
-      // Si ya hay un promedio calculado y aún no aprobado, encadena sobre ese —
-      // no sobre costoVigente (el de Zoho), que todavía no se ha actualizado.
+
+      // ── LA PRIMERA IMPORTACION MEDIDA FIJA; LAS SIGUIENTES PROMEDIAN ──────
+      //
+      // Decision de Fran, 20-nov-2026: «que lo empiece a promediar no en lo
+      // historico que esta en Zoho anterior, sino a partir de los movimientos
+      // y costos» que la app si midio.
+      //
+      // Hasta hoy el promedio se encadenaba sobre `costoVigente`, que para un
+      // SKU que la app nunca habia costeado es un numero HEREDADO: lo que
+      // alguien capturo a mano en Zoho, o la semilla del catalogo. Mezclarlo
+      // con un aterrizado medido no da un promedio, da un numero sin dueño.
+      //
+      // Paso tal cual con SARK12K: Zoho traia 93,000 estimados a mano, la
+      // semilla del catalogo traia 66,042, y el aterrizado medido de la
+      // importacion 6004711 fue 77,850.54. Se promedio contra los 66,042 y
+      // salio 68,403.94 — ni el estimado, ni la medicion, ni nada que alguien
+      // pudiera defender. Son 25 piezas de inventario.
+      //
+      // Es la misma regla que Fran ya habia aplicado en octubre con los paneles
+      // PSP7460 (`docs/costeo-importaciones.md`, seccion 7): el costo previo
+      // era un FOB viejo capturado a mano, y promediarlo «habria metido
+      // basura». Ahora es regla, no decision caso por caso.
+      //
+      // `yaMedido` mira la HISTORIA, no el costo: lo que importa es si esta app
+      // llego a costear este SKU con documentos alguna vez.
+      const yaMedido = (a.historia || []).length > 0 || a.promedioPendiente != null;
       const costoBase = a.promedioPendiente != null ? a.promedioPendiente : a.costoVigente;
-      const nuevoProm = nuevoQty ? (exist * costoBase + l.total) / nuevoQty : l.unit;
+      const nuevoProm = !yaMedido
+        ? l.unit                                                      // primera medicion: manda ella
+        : (nuevoQty ? (exist * costoBase + l.total) / nuevoQty : l.unit);
+      if (!yaMedido && exist > 0 && Math.abs(l.unit - (+a.costoVigente || 0)) > 0.01) {
+        alertas.push(`${sku}: primera importación medida — se fija en $${mx(l.unit)} y se deja de usar el costo heredado de $${mx(+a.costoVigente || 0)}`);
+      }
       c[sku] = {
         ...a,
         existencia: nuevoQty,
         promedioPendiente: nuevoProm,
-        historia: [...(a.historia || []), { fecha: ped.fecha, pedimento: ped.numero, qty: l.cant, unitCost: l.unit, avgResult: nuevoProm, estado: "final" }],
+        // Queda escrito desde cuando la app costea este SKU: a partir de aqui
+        // el promedio se construye solo con mediciones.
+        ...(yaMedido ? {} : { costeaDesde: ped.fecha }),
+        historia: [...(a.historia || []), {
+          fecha: ped.fecha, pedimento: ped.numero, qty: l.cant, unitCost: l.unit,
+          avgResult: nuevoProm, estado: "final",
+          ...(yaMedido ? {} : { fija: true, heredado: +a.costoVigente || 0 }),
+        }],
       };
     });
     saveCatalogo(c);
