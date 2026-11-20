@@ -191,7 +191,47 @@ paneles.
 
 _Corregido el 04-nov: la escritura del costo a Zoho ya NO es simulada (sección 9), y la llave basura `iso3-catalogo-respaldo-psp7460-20261024` ya se borró._
 
-## 13. El resumen vive en la captura, y el pedimento cerrado no lo tenía (20-nov-2026)
+## 13. El promedio se arma sólo con lo medido (20-nov-2026)
+
+Fran: «el error es considerar la existencia + lo que estamos importando».
+
+Hasta hoy el promedio ponderaba con `existencia`, que **no es un inventario**:
+es una foto de Zoho del 31-jul-2026 escrita a mano en la semilla del catálogo
+(`CAT_ROWS`, primer commit de la app), más cada pedimento cerrado desde
+entonces. No le resta una venta, no le suma una compra nacional y nunca le
+vuelve a preguntar a Zoho.
+
+Se vio con PTBG485. La OC era de **936 paneles en dos embarques**: 144 en el
+pedimento 6004840 (4-nov) y 792 en el 6004712 (2-nov). La app sumó esas piezas
+encima de los 936 que ya traía y ponderó con 1,080, a las que además les había
+estampado el costo del embarque chico. Salió **2,284.88** cuando los 936
+paneles costaron 1,992,274 — **2,128.50** cada uno. 156.38 de más por panel, y
+eso ya se había empujado a Zoho.
+
+Regla nueva: `promedio = Σ(piezas medidas × landed) ÷ Σ(piezas medidas)` sobre
+la historia de importaciones de esta app, incluida la que se cierra. Arregla
+tres cosas de un golpe:
+
+1. **Amarra con el banco.** El valor del inventario es lo que se desembolsó.
+2. **El orden deja de importar.** Con la regla vieja, cerrar el 4712 primero
+   daba 2,100.06 y al revés 2,284.88. Ahora da 2,128.50 en cualquier orden.
+3. **Una existencia equivocada ya no mueve el costo** — inflada, vieja o
+   contada dos veces.
+
+Lo que se deja atrás: las piezas que la app nunca midió adoptan el promedio
+medido. Hoy tampoco tenían costo propio: tenían el que les estampó la primera
+medición, que es peor, porque es el de un solo embarque.
+
+El cierre avisa cuando la existencia es mayor que las piezas medidas, para que
+se vea de dónde sale el promedio y no se confunda con el inventario.
+
+**Por qué no es el promedio simple.** (2,441.27 + 2,071.62) ÷ 2 = 2,256.45
+valuaría los 936 paneles en 2,111,032 contra los 1,992,274 que costaron:
+118,758 pesos de valor sin desembolso detrás. El promedio simple sólo sería
+correcto con embarques del mismo tamaño; aquí el 85% de los paneles entró al
+precio bajo.
+
+## 14. El resumen vive en la captura, y el pedimento cerrado no lo tenía (20-nov-2026)
 
 El precio por watt salió primero sólo en la sección 6, que vive en la pantalla
 de **captura**. Un pedimento ya cerrado abre en otra pantalla —`DetallePedimento`,
@@ -209,7 +249,7 @@ cerró.
 alto (67.90 contra 56.12) y los 83,818 de flete internacional se reparten entre
 144 paneles en vez de 864 — 582 por panel contra 303.
 
-## 14. De la cotización, la columna de PESOS (20-nov-2026)
+## 15. De la cotización, la columna de PESOS (20-nov-2026)
 
 Fran: «todo de la cotización debe leer la columna de pesos».
 

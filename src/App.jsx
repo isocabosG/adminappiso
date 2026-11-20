@@ -6760,6 +6760,7 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
       if (prov != null && Math.abs(l.unit - prov) / (prov || 1) > UMBRAL) alertas.push(`${sku}: real difiere ${((l.unit - prov) / prov * 100).toFixed(1)}% del provisional`);
       const exist = a.existencia || 0;
       const nuevoQty = exist + l.cant;
+      // El promedio NO usa `exist`: ver la nota de abajo.
 
       // ── LA PRIMERA IMPORTACION MEDIDA FIJA; LAS SIGUIENTES PROMEDIAN ──────
       //
@@ -6785,13 +6786,49 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
       //
       // `yaMedido` mira la HISTORIA, no el costo: lo que importa es si esta app
       // llego a costear este SKU con documentos alguna vez.
-      const yaMedido = (a.historia || []).length > 0 || a.promedioPendiente != null;
-      const costoBase = a.promedioPendiente != null ? a.promedioPendiente : a.costoVigente;
-      const nuevoProm = !yaMedido
-        ? l.unit                                                      // primera medicion: manda ella
-        : (nuevoQty ? (exist * costoBase + l.total) / nuevoQty : l.unit);
-      if (!yaMedido && exist > 0 && Math.abs(l.unit - (+a.costoVigente || 0)) > 0.01) {
+      // ── EL PROMEDIO SE ARMA SOLO CON LO MEDIDO. [20-nov-2026] ─────────────
+      //
+      // Fran: «el error es considerar la existencia + lo que estamos
+      // importando».
+      //
+      // Hasta hoy el promedio ponderaba con `existencia`, que NO es un
+      // inventario: es una foto de Zoho del 31-jul-2026 escrita a mano en la
+      // semilla del catalogo, mas cada pedimento cerrado desde entonces. No le
+      // resta una venta, no le suma una compra nacional y nunca le vuelve a
+      // preguntar a Zoho. Ponderar un costo con ese numero es ponderar con un
+      // contador, no con piezas.
+      //
+      // Pasó con PTBG485: la OC era de 936 paneles que entraron en dos
+      // embarques, 144 (ped. 6004840) y 792 (ped. 6004712). La app los sumo
+      // ENCIMA de los 936 que ya traia y ponderó con 1,080 piezas a las que
+      // ademas les habia estampado el costo del embarque chico. Salio 2,284.88
+      // cuando los 936 paneles costaron 1,992,274 — 2,128.50 cada uno.
+      //
+      // Ahora: promedio = Σ(piezas medidas × landed) / Σ(piezas medidas),
+      // sobre la historia de importaciones de ESTA app, incluida la que se esta
+      // cerrando. Tres cosas se arreglan solas:
+      //   · el resultado amarra con el dinero que salio del banco;
+      //   · da lo mismo el ORDEN en que se cierren los pedimentos (antes, cerrar
+      //     el 4712 primero daba 2,100.06 y al reves 2,284.88);
+      //   · una existencia equivocada —inflada, vieja o contada dos veces— ya no
+      //     puede mover el costo.
+      //
+      // Lo que se deja atras: las piezas que la app nunca midio adoptan el
+      // promedio medido. Hoy tampoco tenian costo propio — tenian el que les
+      // estampo la primera medicion, que es peor: el de UN solo embarque.
+      const medidos = [
+        ...(a.historia || []).filter((h) => (+h.qty || 0) > 0 && (+h.unitCost || 0) > 0),
+        { qty: l.cant, unitCost: l.unit },
+      ];
+      const qtyMedida = medidos.reduce((x, h) => x + (+h.qty || 0), 0);
+      const valMedido = medidos.reduce((x, h) => x + (+h.qty || 0) * (+h.unitCost || 0), 0);
+      const nuevoProm = qtyMedida ? valMedido / qtyMedida : l.unit;
+      const yaMedido = (a.historia || []).length > 0;
+      if (!yaMedido && Math.abs(l.unit - (+a.costoVigente || 0)) > 0.01) {
         alertas.push(`${sku}: primera importación medida — se fija en $${mx(l.unit)} y se deja de usar el costo heredado de $${mx(+a.costoVigente || 0)}`);
+      }
+      if (exist > qtyMedida) {
+        alertas.push(`${sku}: el promedio se armó con las ${mx0(qtyMedida)} piezas que esta app ha medido; la existencia dice ${mx0(nuevoQty)} y esa diferencia ya no afecta el costo`);
       }
       c[sku] = {
         ...a,
@@ -6803,6 +6840,8 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
         historia: [...(a.historia || []), {
           fecha: ped.fecha, pedimento: ped.numero, qty: l.cant, unitCost: l.unit,
           avgResult: nuevoProm, estado: "final",
+          // Con que se armo el promedio, para poder rehacerlo sin adivinar.
+          baseQty: qtyMedida, baseVal: Math.round(valMedido * 100) / 100,
           ...(yaMedido ? {} : { fija: true, heredado: +a.costoVigente || 0 }),
         }],
       };
