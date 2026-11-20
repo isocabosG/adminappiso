@@ -5705,6 +5705,68 @@ const mismoPedimento = (a, b) => {
   return !!x && x === y;
 };
 
+/* ---------------------------------------------------------------------------
+   UN IGI CAPTURADO CONTRA PARTIDAS QUE YA NO EXISTEN. [20-nov-2026]
+
+   El IGI es el unico incrementable que se captura partida por partida: el
+   prorrateo lo lee de `c.manual[idDeLaPartida]`. Si las partidas se rearman
+   (se vuelve a desglosar la factura, se borra y se recaptura un renglon), los
+   ids cambian y el mapa se queda apuntando a ids muertos.
+
+   Paso en el 6004655: el IGI estaba capturado contra `aud6wr8` y `k7vvoqx`, y
+   la partida viva era `q2e3my5`. En la pantalla el IGI se veia capturado y en
+   el resumen se veia sumado, pero el prorrateo le asignaba CERO: 1,527.50 por
+   panel en vez de 1,731.50. Son 176,253 pesos repartidos en 864 paneles que se
+   habrian perdido al cerrar, sin un solo campo en rojo.
+
+   Otra vez lo mismo de siempre: la pantalla se ve igual de llena con el dinero
+   anclado que con el dinero huerfano. Esto lo hace visible.
+--------------------------------------------------------------------------- */
+const manualHuerfano = (c, lineas) => {
+  if (!c || c.metodo !== "manual") return { monto: 0, ids: [] };
+  const vivos = new Set((lineas || []).map((l) => l.id));
+  const ids = Object.keys(c.manual || {}).filter((k) => !vivos.has(k) && (+c.manual[k] || 0) > 0);
+  return { monto: ids.reduce((a, k) => a + (+c.manual[k] || 0), 0), ids };
+};
+// Lo que SI se esta prorrateando de un manual: solo lo anclado a una partida viva.
+const manualVivo = (c, lineas) => {
+  if (!c || c.metodo !== "manual") return 0;
+  const vivos = new Set((lineas || []).map((l) => l.id));
+  return Object.entries(c.manual || {}).reduce((a, [k, v]) => a + (vivos.has(k) ? (+v || 0) : 0), 0);
+};
+
+/* ---------------------------------------------------------------------------
+   PRECIO POR WATT. [20-nov-2026]
+
+   Fran: «agrega al resumen de la importacion el precio por watt tomando el
+   precio final del panel entre su potencia». Es el numero con el que se
+   compara el mercado — nadie cotiza paneles por pieza.
+
+   La potencia no existe como campo en ningun lado: viene escrita en el nombre
+   del articulo («PANEL SOLAR SUNPOWER PERFORMANCE P7 460W») y a veces en la
+   descripcion de la factura del proveedor («Monocrystalline module 460W»). De
+   ahi se lee. Si no se puede leer, NO se inventa y no sale el renglon: mejor
+   que falte el dato que un $/W calculado contra una potencia adivinada.
+
+   El filtro de modulo es a proposito mas estrecho que la categoria "Panel" del
+   catalogo, que trae revuelto todo lo que dice "panel": combinadores
+   fotovoltaicos, disyuntores de montaje en panel y estructuras para N paneles.
+--------------------------------------------------------------------------- */
+const ES_MODULO = /panel\s+solar|m[o\u00f3]dulo\s+(?:solar|fotovolt|monocrist)|monocrystalline\s+module|photovoltaic\s+module|pv\s+module|solar\s+panel/i;
+const wattsDeTexto = (t) => {
+  const m = String(t || "").match(/(\d{3,4})\s*w(?:p|att)?\b/i);
+  const w = m ? +m[1] : 0;
+  return w >= 100 && w <= 1200 ? w : 0;
+};
+// textos en orden de confianza: primero el nombre del catalogo, luego el de la factura.
+const potenciaModulo = (...textos) => {
+  const t = textos.filter(Boolean).join(" \u00b7 ");
+  if (!ES_MODULO.test(t)) return 0;
+  for (const x of textos) { const w = wattsDeTexto(x); if (w) return w; }
+  return 0;
+};
+const wDeLinea = (l, catalogo) => potenciaModulo(catalogo?.[String(l.sku || "").trim().toUpperCase()]?.descripcion, l.desc, l.sku);
+
 const BORRADOR_IMP = "iso3-importacion-borrador";
 
 function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedimentos = [] }) {
@@ -6370,6 +6432,18 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
               {c.metodo === "manual" && calc.lineas.length > 0 && (
                 <div className="md:col-span-12 pl-2 border-l-2 border-amber-400 mt-1">
                   <p className="text-[10px] uppercase tracking-widest text-stone-500 mb-1">IGI por partida (del cuadro de liquidación)</p>
+                  {(() => {
+                    const h = manualHuerfano(c, calc.lineas);
+                    if (!h.monto) return null;
+                    const vivos = new Set(calc.lineas.map((l) => l.id));
+                    return (
+                      <div className="mb-2 text-[11px] bg-red-50 border border-red-300 rounded p-2 text-red-800">
+                        ⚠ <strong>${mx(h.monto)}</strong> de {c.concepto || "este concepto"} quedaron <strong>huérfanos</strong>: están capturados contra {h.ids.length} partida(s) que ya no existen (se volvieron a armar las partidas), así que <strong>no se están prorrateando</strong> — valen cero en el costo. Vuelve a capturarlos en los campos de abajo.
+                        <button onClick={() => setIncs((s) => s.map((x) => (x.id === c.id ? { ...x, manual: Object.fromEntries(Object.entries(x.manual || {}).filter(([k]) => vivos.has(k))) } : x)))}
+                          className="ml-2 underline font-medium">quitar lo huérfano</button>
+                      </div>
+                    );
+                  })()}
                   <div className="flex flex-wrap gap-2">
                     {calc.lineas.map((l) => (
                       <div key={l.id} className="w-36"><span className="block text-[11px] font-mono text-stone-500 truncate">{l.sku}</span>
@@ -6450,7 +6524,13 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
       <Section n="6" t="Resumen de la importación" r="Totales de lo gastado">
         {(() => {
           const fobUSD = calc.lineas.reduce((a, l) => a + (+l.fobUnit || 0) * l.cant, 0);
-          const incsRes = incs.map((c) => ({ concepto: c.concepto, mxn: c.metodo === "manual" ? Object.values(c.manual || {}).reduce((a, b) => a + (+b || 0), 0) : (c.moneda === "USD" ? (+c.monto || 0) * tc : (+c.monto || 0)), cap: c.capitaliza })).filter((x) => x.mxn > 0);
+          // Suma lo ANCLADO, no lo capturado: si el resumen suma un IGI huerfano,
+          // el total cuadra en pantalla y el costo por pieza sale bajo. [20-nov-2026]
+          const incsRes = incs.map((c) => ({ concepto: c.concepto, mxn: c.metodo === "manual" ? manualVivo(c, calc.lineas) : (c.moneda === "USD" ? (+c.monto || 0) * tc : (+c.monto || 0)), cap: c.capitaliza })).filter((x) => x.mxn > 0);
+          const huerfanos = incs.map((c) => ({ concepto: c.concepto, ...manualHuerfano(c, calc.lineas) })).filter((x) => x.monto > 0);
+          const mods = calc.lineas.map((l) => ({ l, w: wDeLinea(l, catalogo) })).filter((x) => x.w > 0);
+          const wTot = mods.reduce((a, x) => a + x.w * x.l.cant, 0);
+          const mxnMods = mods.reduce((a, x) => a + x.l.total, 0);
           const capMXN = incsRes.filter((x) => x.cap).reduce((a, b) => a + b.mxn, 0);
           const noCapMXN = incsRes.filter((x) => !x.cap).reduce((a, b) => a + b.mxn, 0);
           const landed = calc.lineas.reduce((a, l) => a + l.total, 0);
@@ -6467,6 +6547,8 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
                 {kpi("Costo landed total (MXN)", "$" + mx0(landed))}
                 {kpi("Costo landed total (USD)", tc ? "$" + mx0(landed / tc) : "—")}
                 {kpi("OC que amparan", ocsAmparan.length || "—")}
+                {wTot > 0 && kpi("Potencia importada (kWp)", mx(wTot / 1000))}
+                {wTot > 0 && kpi("Panel · costo por watt", "$" + (mxnMods / wTot).toFixed(2) + " MXN" + (tc ? " · $" + (mxnMods / wTot / tc).toFixed(3) + " USD" : ""))}
               </div>
               <div>
                 <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Desglose de lo gastado (MXN)</p>
@@ -6479,7 +6561,43 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
                   </tbody>
                 </table>
                 {ocsAmparan.length > 0 && <p className="mt-2 text-[11px] text-stone-500">OC que amparan: <span className="font-mono">{ocsAmparan.join(", ")}</span></p>}
+                {huerfanos.length > 0 && (
+                  <p className="mt-2 text-[11px] bg-red-50 border border-red-300 rounded p-2 text-red-800">
+                    ⚠ Además hay <strong>${mx(huerfanos.reduce((a, b) => a + b.monto, 0))}</strong> capturados en {huerfanos.map((x) => x.concepto || "manual").join(", ")} que <strong>no están en estos totales</strong> porque quedaron anclados a partidas que ya no existen. Arriba, en Incrementables, dice cuáles.
+                  </p>
+                )}
               </div>
+              {wTot > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">Precio por watt · aterrizado del módulo entre su potencia</p>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-[10px] uppercase tracking-widest text-stone-400 text-left"><th className="py-1">SKU</th><th className="text-right">Potencia</th><th className="text-right">Pzas</th><th className="text-right">Landed c/u</th><th className="text-right">$/W MXN</th><th className="text-right">$/W USD</th></tr></thead>
+                    <tbody>
+                      {mods.map((x) => (
+                        <tr key={x.l.id} className="border-b border-stone-100">
+                          <td className="py-1 font-mono">{x.l.sku}</td>
+                          <td className="text-right font-mono">{x.w} W</td>
+                          <td className="text-right font-mono">{mx0(x.l.cant)}</td>
+                          <td className="text-right font-mono">${mx(x.l.unit)}</td>
+                          <td className="text-right font-mono font-semibold">${(x.l.unit / x.w).toFixed(2)}</td>
+                          <td className="text-right font-mono">{tc ? "$" + (x.l.unit / x.w / tc).toFixed(3) : "—"}</td>
+                        </tr>
+                      ))}
+                      {mods.length > 1 && (
+                        <tr className="border-t-2 border-stone-200 font-semibold">
+                          <td className="py-1.5">Promedio del embarque</td>
+                          <td className="text-right font-mono">{mx0(wTot / 1000)} kWp</td>
+                          <td className="text-right font-mono">{mx0(mods.reduce((a, x) => a + x.l.cant, 0))}</td>
+                          <td className="text-right font-mono">—</td>
+                          <td className="text-right font-mono">${(mxnMods / wTot).toFixed(2)}</td>
+                          <td className="text-right font-mono">{tc ? "$" + (mxnMods / wTot / tc).toFixed(3) : "—"}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                  <p className="mt-1 text-[10px] text-stone-400">La potencia se lee del nombre del artículo o de la descripción de la factura. Si un módulo no la trae escrita, no aparece aquí.</p>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -6524,6 +6642,12 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
       setAviso({ t: "err", m: `El pedimento ${fmtPedimento(ped.numero)} ya está en la historia de costos: cerrarlo otra vez contaría su material dos veces. No se hizo nada.` });
       return;
     }
+    // Dinero capturado contra partidas muertas: avisar antes de que el cierre
+    // lo entierre en el promedio. [20-nov-2026]
+    (ped.incrementables || []).forEach((i) => {
+      const h = manualHuerfano(i, calc.lineas);
+      if (h.monto > 0) alertas.push(`${i.concepto || "manual"}: $${mx(h.monto)} quedaron HUÉRFANOS (anclados a partidas que ya no existen) y NO se prorratearon — el costo salió más bajo de lo real`);
+    });
     calc.lineas.forEach((l) => {
       const sku = l.sku.trim().toUpperCase();
       const a = c[sku] || { descripcion: l.desc, categoria: l.categoria, existencia: 0, costoVigente: l.unit, historia: [] };
@@ -6627,12 +6751,14 @@ function DetallePedimento({ ped, catalogo, saveCatalogo, pedimentos, savePedimen
           {calc.lineas.map((l) => {
             const prov = ped.provisional?.find((x) => x.sku === l.sku)?.unit;
             const d = prov != null ? (l.unit - prov) / prov : 0;
+            const w = wDeLinea(l, catalogo);
             return (
               <div key={l.id} className="px-4 py-2 flex flex-wrap items-baseline justify-between gap-2 text-sm">
                 <span><span className="font-mono font-semibold">{l.sku}</span><span className="ml-2 text-xs text-stone-500">{l.desc}</span></span>
                 <span className="font-mono text-xs text-stone-500">
                   {prov != null && <span className="mr-3">prov ${mx(prov)}</span>}
                   <span className="text-sm font-semibold text-amber-700">${mx(l.unit)}</span>
+                  {w > 0 && <span className="ml-2 text-emerald-700">${(l.unit / w).toFixed(2)}/W{ped.tc ? ` · $${(l.unit / w / ped.tc).toFixed(3)} USD/W` : ""}</span>}
                   {prov != null && Math.abs(d) > 0.0001 && <span className={`ml-2 ${Math.abs(d) > UMBRAL ? "text-red-600" : "text-stone-400"}`}>{d > 0 ? "+" : ""}{(d * 100).toFixed(1)}%</span>}
                 </span>
               </div>
