@@ -83,6 +83,47 @@ No está dentro de Importaciones, y por eso cuesta encontrarlo:
 2. Se va a la pantalla de **Catálogo**, donde aparece el SKU con su costo pendiente y el delta contra el vigente.
 3. Desde ahí se manda a Zoho. **Esa escritura es real** — pega al Edge Function `zoho-write`. Al confirmar Zoho, el pendiente pasa a vigente y queda sellado el "Último envío a Zoho" con fecha y monto.
 
+## 11. El IGI se ancla a la partida, y se puede quedar huérfano (20-nov-2026)
+
+El IGI es el **único** incrementable que no se captura como un monto: se
+captura partida por partida, y el prorrateo lo lee de `incrementable.manual[idDePartida]`.
+Ese id es el de la partida, no el SKU.
+
+Si las partidas se vuelven a armar —se desglosa otra vez la factura, se borra
+y se recaptura un renglón— los ids cambian y el mapa queda apuntando a ids que
+ya no existen. Entonces: el campo **se ve capturado**, el resumen **lo suma**, y
+el prorrateo **le asigna cero**.
+
+Pasó en el 6004655. El IGI de 176,253 estaba anclado a `aud6wr8` y `k7vvoqx`, y
+la partida viva era `q2e3my5`. Cerrarlo así habría costeado el panel en
+**1,527.50 en vez de 1,731.50** — 204 pesos menos en cada uno de 864 paneles,
+los 176,253 completos, sin un solo campo en rojo. Se reancló a mano en `adm_kv`
+antes de cerrar.
+
+Desde el commit `150cfe8`:
+- La captura del IGI **avisa en rojo** cuánto quedó huérfano y ofrece quitarlo.
+- El resumen suma **sólo lo anclado** (antes sumaba todo y cuadraba de mentiras)
+  y avisa aparte de lo que no entró al costo.
+- El cierre levanta un aviso antes de enterrarlo en el promedio.
+
+**Regla:** si se rearman las partidas, el IGI se vuelve a capturar. No se
+hereda.
+
+## 12. Precio por watt (20-nov-2026)
+
+El resumen de la importación trae el **aterrizado del módulo entre su potencia**,
+en MXN y USD, por SKU y promedio del embarque, más la potencia importada en kWp.
+Es el número con el que se compara el mercado: nadie cotiza paneles por pieza.
+En el 6004655: 397.44 kWp, **3.76 MXN/W · 0.204 USD/W**.
+
+La potencia **no existe como campo** en ningún lado. Se lee del nombre del
+artículo del catálogo (`PANEL SOLAR SUNPOWER PERFORMANCE P7 460W`) o de la
+descripción de la factura del proveedor (`Monocrystalline module 460W`). Si no se
+puede leer, no se inventa: el renglón no aparece. El filtro de módulo es a
+propósito más estrecho que la categoría `Panel` del catálogo, que trae revueltos
+combinadores fotovoltaicos, disyuntores de montaje en panel y estructuras para N
+paneles.
+
 ## 10. Pendientes de este frente
 1. Definir/dar de alta **ECUBE60** en Zoho si aplica (vs usar ECLITE60).
 2. **Lectura de OCs desde Books** (Edge Function) para llenar la OC automáticamente en vez de a mano.
