@@ -6103,7 +6103,7 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
           </Field>
           <Field l="Fecha de pago"><input type="date" className={inp} value={ped.fecha} onChange={(e) => setPed({ ...ped, fecha: e.target.value })} /></Field>
           <Field l="Tipo de cambio"><input type="number" step="0.0001" className={inp + " font-mono"} value={ped.tc} onChange={(e) => setPed({ ...ped, tc: e.target.value })} placeholder="17.4030" /></Field>
-          <Field l="OC(s) en Zoho que amparan"><input className={inp + " font-mono bg-stone-50 text-stone-600"} value={ocsAmparan.join(", ")} readOnly placeholder="Se cargan en la sección 2b (una por factura)" /></Field>
+          <Field l="OC(s) en Zoho que amparan"><input className={inp + " font-mono bg-stone-50 text-stone-600"} value={ocsAmparan.join(", ")} readOnly placeholder="Salen de la sección 2b, una por factura" /></Field>
         </div>
       </Section>
 
@@ -6286,7 +6286,17 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
         <div className="p-4 border-t border-stone-200 flex gap-2">
           <button onClick={guardar} disabled={!ped.numero.trim() || !tc || !calc.lineas.length || faltanOC || !!yaExiste} className="px-4 py-2 bg-emerald-700 text-white text-sm font-medium rounded hover:bg-emerald-800 disabled:opacity-40">{editando ? "Guardar cambios" : "Guardar como provisional"}</button>
           <button onClick={onCancel} className="px-4 py-2 border border-stone-300 text-sm rounded">Cancelar</button>
-          {faltanOC && <span className="text-xs text-amber-700">⚠ Falta capturar la OC de cada factura (sección 2b) antes de guardar.</span>}
+          {/* EL AVISO TIENE QUE MANDAR A ALGO QUE ESTE EN PANTALLA.  [20-nov-2026]
+              Decia «captura la OC de cada factura (seccion 2b)» siempre — pero
+              la 2b solo existe si hay facturas cargadas, y sin facturas no hay
+              donde poner la OC ni forma de cumplirlo. Jesus, 19-nov: «no puedo
+              avanzar, no me aparece la seccion 2b». No le faltaba encontrarla:
+              no estaba. Cada factura es una OC de Books —`docs/costeo-
+              importaciones.md`— asi que lo que falta en ese caso son las
+              facturas, y eso es lo que se dice. */}
+          {faltanOC && (gruposFactura.length
+            ? <span className="text-xs text-amber-700">⚠ Falta la OC de cada factura. Captúralas en la <strong>sección 2b</strong>, abajo de Mercancía.</span>
+            : <span className="text-xs text-amber-700">⚠ Faltan las <strong>facturas del proveedor</strong>. Súbelas en el paso 1 y presiona <strong>🧩 Desglosar por factura</strong>: cada factura lleva su OC de Books, y esa liga es la que cuesta la importación.</span>)}
         </div>
       </Section>
 
