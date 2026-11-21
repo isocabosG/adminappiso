@@ -61,15 +61,33 @@ Zoho es por organización y por minuto, y lo comparten esta app, IS-PMT y los
 demás crons. Cron diario a las 5:20 (`costos-nacionales-520am`), y el botón
 **↻ Traer de Zoho** de la sección lo corre en el momento.
 
+## Dónde vive: en Costos, no en Importaciones
+
+Nació debajo de la lista de pedimentos y ahí duró medio día. Fran: «quizás no
+deba salir eso en importaciones sino en costos». Tiene razón: el costo de un
+SKU se decide en Costos —ahí están el vigente, el pendiente, la diferencia
+contra Zoho y el botón que escribe—, así que tenerlo en otra pestaña partía la
+misma pregunta en dos y obligaba a brincar para aprobar.
+
 ## Qué hace la pantalla
 
-Debajo de la lista de pedimentos, en Importaciones. Por SKU: cuántas compras,
-cuántas piezas, el promedio ponderado, el costo que tiene Zoho hoy y la
-diferencia. Al dar clic en la clave se abren los renglones que forman ese
-promedio, con fecha, OC, proveedor, piezas y precio.
+Cada renglón del catálogo de **Costos** se abre y enseña **todo lo que alguna
+vez dijo cuánto cuesta esa cosa**, en dos bloques, cada uno con su promedio
+ponderado y su propio botón:
+
+- **Histórico de importaciones** — fecha, pedimento, piezas, costo landed.
+- **Compras nacionales** — fecha, OC, proveedor, cantidad con su unidad, precio.
+
+Si las compras vienen en más de una unidad, lo dice en rojo antes de que
+propongas nada.
+
+El filtro **"Solo costeados aquí"** ahora cuenta también los SKU que sólo se
+compran nacional; antes se escondían para siempre porque sólo miraba la
+historia de importaciones.
 
 **Proponer este costo** no escribe en Zoho: deja el número como
-`promedioPendiente` con `origenPendiente: "nacional"`, y se aprueba en
-**Catálogo** con el mismo botón que ya se usa para las importaciones. Un solo
-escritor hacia Zoho, no dos. Si el SKU ya trae un pendiente de una importación
-sin enviar, no lo pisa: avisa.
+`promedioPendiente` con `origenPendiente: "nacional"`, y se manda con el botón
+**Enviar a Zoho** del mismo renglón. Un solo escritor hacia Zoho, no dos. Si el
+SKU ya trae un pendiente de una importación sin enviar, no lo pisa: avisa.
+
+El botón **↻ Compras nacionales**, arriba, corre el barrido en el momento.
