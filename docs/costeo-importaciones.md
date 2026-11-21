@@ -237,7 +237,32 @@ valuaría los 936 paneles en 2,111,032 contra los 1,992,274 que costaron:
 correcto con embarques del mismo tamaño; aquí el 85% de los paneles entró al
 precio bajo.
 
-## 14. El resumen vive en la captura, y el pedimento cerrado no lo tenía (20-nov-2026)
+## 14. El catálogo se aplica solo, y la existencia la dice Zoho (21-nov-2026)
+
+Fran: «asegura que se estén actualizando en el cron de todos los días».
+
+`catalogo-sync` baja la foto de Zoho a las 5:00 y ahí se quedaba. Dar de alta
+los artículos nuevos, adoptar costos y marcar bajas sólo pasaba cuando alguien
+se acordaba de picar el botón en Catálogo: así se juntaron **99 artículos sin
+dar de alta y 1,073 costos sin adoptar**. Un dato que sólo se actualiza si
+alguien se acuerda no es un dato actualizado.
+
+Ahora lo hace el Edge Function `catalogo-aplicar`, a las 6:05, con las mismas
+reglas del botón —correrlo a mano y correrlo de madrugada tienen que dar lo
+mismo—. No toca Zoho: lee dos blobs de `adm_kv` y escribe un tercero, así que
+no puede fallar por cuota.
+
+**Y la existencia ahora la dice Zoho.** Ese campo era un contador: la semilla
+del 31-jul-2026 escrita a mano en el código más lo que cada cierre le sumaba —
+decía 82 SARK30K donde el almacén tiene 1, y 1,872 PTBG485 donde hay 903. Desde
+que el costo dejó de ponderarse con él (sección 13), su único trabajo es decir
+cuánto hay, así que se lo pregunta a quien sabe: el `aMano` del inventario
+físico que deja `inventario-sync`.
+
+Orden de las sincronías: catálogo 5:00 → OC 5:10 → apartados 5:15 →
+costos nacionales 5:20 → inventario 5:40-5:58 → **aplicar 6:05**.
+
+## 15. El resumen vive en la captura, y el pedimento cerrado no lo tenía (20-nov-2026)
 
 El precio por watt salió primero sólo en la sección 6, que vive en la pantalla
 de **captura**. Un pedimento ya cerrado abre en otra pantalla —`DetallePedimento`,
@@ -255,7 +280,7 @@ cerró.
 alto (67.90 contra 56.12) y los 83,818 de flete internacional se reparten entre
 144 paneles en vez de 864 — 582 por panel contra 303.
 
-## 15. De la cotización, la columna de PESOS (20-nov-2026)
+## 16. De la cotización, la columna de PESOS (20-nov-2026)
 
 Fran: «todo de la cotización debe leer la columna de pesos».
 
