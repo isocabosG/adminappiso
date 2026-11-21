@@ -6505,7 +6505,19 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
   const largoRaro = nDigitos > 0 && nDigitos !== 15;
 
   // OCs que amparan la importación (únicas, de todos los renglones)
-  const ocsAmparan = [...new Set(partidas.map((p) => (p.oc || "").trim()).filter(Boolean))];
+  // LA CAPTURA SIN FACTURA TAMBIEN TIENE QUE PODER GUARDARSE. [21-nov-2026]
+  //
+  // Fran: «se debe guardar al picarle». El boton de Auto-asignar esta puesto
+  // para el caso en que no hay facturas del proveedor —solo el pedimento— y
+  // ofrecia un camino sin salida: asignaba los SKU y despues Guardar seguia
+  // apagado, porque la unica OC que se miraba era la de cada renglon y esas
+  // solo las llena el desglose por factura.
+  //
+  // Un pedimento sin facturas trae UNA orden de compra, no una por factura.
+  // Ese campo ya existia en el estado (`ocZoho`) desde la primera version, pero
+  // no estaba en la pantalla: se guardaba siempre vacio. Ahora se captura junto
+  // al aviso que estorba, y cuenta como OC que ampara.
+  const ocsAmparan = [...new Set([...partidas.map((p) => p.oc), ped.ocZoho].map((x) => (x || "").trim()).filter(Boolean))];
   // Falta OC si hay facturas agrupadas sin OC, o si no hay ninguna OC capturada
   const faltanOC = gruposFactura.length ? gruposFactura.some((g) => !(g.oc || "").trim()) : ocsAmparan.length === 0;
 
@@ -6852,7 +6864,14 @@ function NuevaImportacion({ fletes, catalogo, onCancel, onSave, pedInicial, pedi
               facturas, y eso es lo que se dice. */}
           {faltanOC && (gruposFactura.length
             ? <span className="text-xs text-amber-700">⚠ Falta la OC de cada factura. Captúralas en la <strong>sección 2b</strong>, abajo de Mercancía.</span>
-            : <span className="text-xs text-amber-700">⚠ Faltan las <strong>facturas del proveedor</strong>. Súbelas en el paso 1 y presiona <strong>🧩 Desglosar por factura</strong>: cada factura lleva su OC de Books, y esa liga es la que cuesta la importación.</span>)}
+            : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-amber-700">⚠ Falta la <strong>OC de Books</strong>. Lo normal es subir las <strong>facturas del proveedor</strong> en el paso 1 y presionar <strong>🧩 Desglosar por factura</strong>, porque cada factura lleva su OC y esa liga es la que cuesta la importación. Si esta importación va con una sola orden, captúrala aquí:</span>
+                <input value={ped.ocZoho || ""} onChange={(e) => setPed((o) => ({ ...o, ocZoho: e.target.value }))}
+                  placeholder="PO-02601"
+                  className="px-2 py-1 text-sm font-mono bg-white border border-amber-400 rounded w-36 focus:outline-none focus:ring-2 focus:ring-amber-500" />
+              </div>
+            ))}
         </div>
       </Section>
 
