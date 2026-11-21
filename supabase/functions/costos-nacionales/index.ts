@@ -102,10 +102,18 @@ Deno.serve(async (req) => {
     const desde = desdeFecha();
 
     // ── 1. Encabezados de la ventana ────────────────────────────────────────
+    //
+    // Mientras hay backfill pendiente se barre toda la ventana. Una vez al día
+    // —cuando ya no falta nada por leer— bastan las páginas más recientes: en
+    // un día no se levantan 300 órdenes. Así el barrido diario cuesta 3
+    // llamadas en vez de 30, que es lo que permite correr esto seguido sin
+    // comerse la cuota de Zoho, que es de toda la casa.
+    const alDia = Number(previo.faltanPorLeer ?? 1) === 0;
+    const topePaginas = alDia ? 3 : MAX_PAGINAS;
     const enVentana: Array<{ id: string; numero: string; fecha: string; prov: string; moneda: string }> = [];
     let page = 1, more = true, truncado = false;
     while (more) {
-      if (page > MAX_PAGINAS) { truncado = true; break; }
+      if (page > topePaginas) { truncado = !alDia; break; }
       const d = await z.get("/purchaseorders", {
         filter_by: "Status.All", per_page: "100", page: String(page),
         sort_column: "date", sort_order: "D", date_after: desde,
@@ -170,16 +178,19 @@ Deno.serve(async (req) => {
       if (lista.length) { compras[sku] = lista; skus++; } else delete compras[sku];
     }
 
+    // Cuando el barrido fue corto, `enVentana` no es la ventana completa: podar
+    // `vistas` contra ella haría olvidar todo lo ya leído y volver a pedirlo.
     const idsVentana = new Set(enVentana.map((p) => p.id));
     const valor = {
       fecha: hoyLocal(),
       desde,
       meses: MESES,
       compras,
-      vistas: Array.from(vistas).filter((id) => idsVentana.has(id)),
-      ocEnVentana: enVentana.length,
+      vistas: alDia ? Array.from(vistas) : Array.from(vistas).filter((id) => idsVentana.has(id)),
+      ocEnVentana: alDia ? (previo.ocEnVentana || enVentana.length) : enVentana.length,
       faltanPorLeer: Math.max(0, pendientes.length - leidas),
       truncado,
+      barridoCorto: alDia,
     };
 
     const r = await fetch(`${SB}/rest/v1/adm_kv`, {
