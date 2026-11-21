@@ -184,7 +184,8 @@ paneles.
 2. **Lectura de OCs desde Books** (Edge Function) para llenar la OC automáticamente en vez de a mano.
 3. Opcional: exporte nativo **.xlsx** (hoy es CSV, que Excel abre directo).
 4. **Validar el archivo antes de extraer:** el extractor debe rechazar un PDF que no traiga encabezado de pedimento y decirlo, en vez de tronar.
-5. **Defenderse del pedimento duplicado** — ver sección 2.
+5. **Defenderse del pedimento duplicado** — ver sección 2. *Hecho el 19-nov (candado de carga) y el 20-nov (candado de cierre).*
+   Los renglones que el doble cierre del 6002798 dejó en la historia **se quedan**: decisión de Fran (21-nov-2026), «los costos están ok». Con la regla de la sección 13 un renglón duplicado idéntico ya no mueve el promedio, así que el daño quedó acotado: el único que sí se desvía es ECUBE60, donde el duplicado le roba peso al embarque caro (242,529.27 contra 248,491.05 de lo medido).
 6. **Revisar toda la familia de paneles.** PSP7460 iba 2.1× abajo; **PSP7455 está en 808.61** (43.9 USD para un panel de 455W), mismo patrón. **Decisión de Fran (28-oct): se corrigen conforme entre cada importación**, no todos de golpe. Mientras tanto el inventario de esos SKUs está subvaluado; con 504 piezas de PSP7455 en libros, del orden de 400 mil pesos.
 7. **Programar el checksum del IVA** en la captura: si el IVA declarado no es el 16% de (FOB + flete internacional + DTA + ICC + IGI), avisar y decir cuánto falta. Habría cachado los dos IGI huérfanos el día que se capturaron.
 8. **El margen del panel NO es una alarma.** Quote Creator jala el costo y le mete un indirecto encima; el 1,750 de Zoho no es precio de venta al cliente.
