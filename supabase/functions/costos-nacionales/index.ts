@@ -44,7 +44,7 @@ const GAP_MS = 400;           // respiro entre llamadas
 const PRESUPUESTO_MS = 110000; // lo más que dura una corrida leyendo detalle
 const MAX_POR_SKU = 80;       // compras que se recuerdan de cada SKU
 
-type Compra = { f: string; po: string; q: number; u: number; prov: string };
+type Compra = { f: string; po: string; q: number; u: number; prov: string; un?: string };
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
@@ -138,7 +138,7 @@ Deno.serve(async (req) => {
 
     // ── 2. Renglones de las que todavía no se han leído ─────────────────────
     const pendientes = enVentana.filter((p) => !vistas.has(p.id));
-    let leidas = 0, renglones = 0, sinTipoCambio = 0;
+    let leidas = 0, renglones = 0, sinTipoCambio = 0, noInventario = 0;
     for (const po of pendientes) {
       if (leidas >= LOTE) break;
       if (Date.now() - arranque > PRESUPUESTO_MS) break;
@@ -151,13 +151,31 @@ Deno.serve(async (req) => {
         const tc = +det.exchange_rate || 0;
         const esMXN = String(det.currency_code || "MXN").toUpperCase() === "MXN";
         for (const li of (det.line_items || [])) {
+          // SOLO ARTICULOS DE INVENTARIO. [21-nov-2026]
+          //
+          // Fran, viendo la primera tabla: «se me hace que jalo solo ordenes de
+          // compra, no los SKU de Books». Exacto. Una OC no trae solo material:
+          // trae tambien servicios y cajones de gasto que compras usa de
+          // comodin —ENVIO "servicio de logistica", GASTOTR "otros gastos",
+          // AUTOM "unidad automotriz"—, y esos no son articulos de almacen. Su
+          // "precio por pieza" no significa nada: ENVIO encabezaba la tabla con
+          // 4,104 de promedio contra el 1.00 de relleno que trae en Zoho.
+          //
+          // El renglon de la OC lo dice solo: `item_type` es "inventory" para
+          // el material —y va contra la cuenta "Activo de inventario"— y otra
+          // cosa para servicios y gastos. Se filtra aqui, en el origen, para
+          // que la tabla no tenga que adivinar despues.
+          if (String(li.item_type || "") !== "inventory") { noInventario++; continue; }
           const sku = up(li.sku);
           const q = +li.quantity || 0;
           const r = +li.rate || 0;
           if (!sku || !(q > 0) || !(r > 0)) continue;
           if (!esMXN && !(tc > 0)) { sinTipoCambio++; continue; }
           const u = esMXN ? r : r * tc;
-          (compras[sku] ||= []).push({ f: po.fecha, po: po.numero, q, u, prov: po.prov });
+          // La unidad viaja con la compra: sin ella no se ve el cambalache de
+          // "pieza" contra "rollo" o "metro", que es la trampa clasica de un
+          // promedio de material electrico.
+          (compras[sku] ||= []).push({ f: po.fecha, po: po.numero, q, u, prov: po.prov, un: String(li.unit || "") });
           renglones++;
         }
       }
@@ -202,9 +220,9 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true, fecha: valor.fecha, desde,
-      ocEnVentana: enVentana.length, ocLeidasHoy: leidas,
+      ocEnVentana: valor.ocEnVentana, ocLeidasHoy: leidas,
       faltanPorLeer: valor.faltanPorLeer, renglones, skus,
-      sinTipoCambio, barridoTruncado: truncado,
+      sinTipoCambio, noInventario, barridoTruncado: truncado, barridoCorto: alDia,
       ocDeImportacionExcluidas: ocImportacion.size,
     });
   } catch (e) {

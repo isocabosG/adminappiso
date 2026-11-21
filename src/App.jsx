@@ -5698,7 +5698,7 @@ function CostosNacionales({ catalogo, saveCatalogo, setAviso }) {
                                 <td className="py-0.5 font-mono w-24">{x.f}</td>
                                 <td className="py-0.5 font-mono w-28">{x.po}</td>
                                 <td className="py-0.5 text-stone-500 truncate">{x.prov}</td>
-                                <td className="py-0.5 text-right font-mono w-20">{mx0(x.q)} pz</td>
+                                <td className="py-0.5 text-right font-mono w-24">{mx0(x.q)} {x.un || "pz"}</td>
                                 <td className="py-0.5 text-right font-mono w-28">${mx(x.u)}</td>
                               </tr>
                             ))}
@@ -5722,7 +5722,9 @@ function CostosNacionales({ catalogo, saveCatalogo, setAviso }) {
             </p>
           )}
           <p className="px-3 py-2 text-[11px] text-stone-500 border-t border-stone-100">
-            <b>Proponer</b> no escribe en Zoho: deja el costo como pendiente y lo apruebas en <b>Catálogo</b>, con el mismo botón que ya usas para las importaciones.
+            Sólo entran <b>artículos de inventario</b> de Books: los servicios y los cajones de gasto de una OC —fletes, "otros gastos", una camioneta— no son material y no se promedian.
+            Antes de proponer un costo, abre el renglón y revisa la <b>unidad</b>: si unas compras vienen por pieza y otras por rollo o por metro, el promedio no compara lo mismo.
+            <br /><b>Proponer</b> no escribe en Zoho: deja el costo como pendiente y lo apruebas en <b>Catálogo</b>, con el mismo botón que ya usas para las importaciones.
           </p>
         </div>
       )}

@@ -14,6 +14,24 @@ Todo lo que **no entró por pedimento**. No se adivina por moneda ni por nombre
 de proveedor: las OC que amparan una importación están escritas en las partidas
 de `iso3-pedimentos`, y ésas se excluyen. El resto es compra nacional.
 
+## Sólo artículos de inventario
+
+Una OC no trae sólo material: trae también servicios y cajones de gasto que
+compras usa de comodín. En la primera corrida la tabla la encabezaban **ENVIO**
+("servicio de logística", 46 compras), **GASTOTR** ("otros gastos", 34) y
+**AUTOM** ("unidad automotriz" — una camioneta, 535,258 "por pieza"). Nada de
+eso es un artículo de almacén y su precio por pieza no significa nada; salían
+hasta arriba porque se comparaban contra el $1.00 de relleno que traen en Zoho.
+
+El renglón de la OC lo dice solo: `item_type` es `inventory` para el material
+—y va contra la cuenta "Activo de inventario"— y otra cosa para servicios y
+gastos. Se filtra en el origen, no en la pantalla.
+
+**Ojo con la unidad.** Cada compra guarda la suya y se enseña en el detalle. Si
+unas vienen por pieza y otras por rollo o por metro, el promedio no compara lo
+mismo: CC16NEGR salía en 5.82 contra 85.00 de Zoho, que es justo ese cambalache.
+Por eso el promedio se propone de uno en uno y no se empuja en lote.
+
 ## De dónde sale el precio
 
 De la **orden de compra** (decisión de Fran, 20-nov-2026), no de la factura del
