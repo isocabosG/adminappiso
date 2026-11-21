@@ -5530,6 +5530,202 @@ function Importaciones({ pedimentos, savePedimentos, catalogo, saveCatalogo, fle
           })}
         </div>
       )}
+
+      <CostosNacionales catalogo={catalogo} saveCatalogo={saveCatalogo} setAviso={setAviso} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   COSTO PROMEDIO DE LAS COMPRAS NACIONALES. [20-nov-2026]
+
+   Fran: «todas las compras con proveedores nacionales, sacar el costo promedio
+   de sus SKU... abajo de las importaciones».
+
+   Mismo principio que acabamos de dejar escrito para las importaciones: el
+   promedio se arma con lo que DICEN LOS DOCUMENTOS, ponderado por piezas, y se
+   puede ver de donde sale. Nada de existencias, nada de costos heredados.
+
+   La fuente es la ORDEN DE COMPRA (decision de Fran): llega antes que la
+   factura y hay muchas mas capturadas. Lo junta el Edge Function
+   `costos-nacionales` de madrugada; aqui solo se promedia y se pinta, asi que
+   cambiar la ventana no cuesta una sola llamada a Zoho.
+
+   Nacional = lo que no entro por pedimento. No se adivina por moneda ni por
+   nombre del proveedor: las OC que amparan una importacion estan escritas en
+   las partidas de los pedimentos, y esas se excluyen.
+
+   El boton NO escribe en Zoho. Deja el numero como `promedioPendiente`, que es
+   lo que la pantalla de Catalogo ya sabe aprobar y mandar con su sello de
+   "ultimo envio". Un solo escritor hacia Zoho, no dos.
+--------------------------------------------------------------------------- */
+const KEY_NAC = "iso3-costos-nacionales";
+
+function CostosNacionales({ catalogo, saveCatalogo, setAviso }) {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [busca, setBusca] = useState("");
+  const [abierto, setAbierto] = useState(null);
+  const [sincro, setSincro] = useState(false);
+
+  const leer = async () => {
+    setCargando(true);
+    try {
+      const r = await window.storage?.get(KEY_NAC);
+      setDatos(r?.value ? JSON.parse(r.value) : null);
+    } catch { setDatos(null); }
+    setCargando(false);
+  };
+  useEffect(() => { leer(); }, []);
+
+  const traer = async () => {
+    if (typeof window.sincronizar !== "function") return setAviso({ t: "err", m: "Esta versión no puede sincronizar. Recarga la página." });
+    setSincro(true);
+    try { await window.sincronizar("costos-nacionales"); await leer(); setAviso({ t: "ok", m: "Compras nacionales actualizadas." }); }
+    catch (e) { setAviso({ t: "err", m: "No se pudo traer: " + (e?.message || e) }); }
+    setSincro(false);
+  };
+
+  const filas = useMemo(() => {
+    const c = datos?.compras || {};
+    const out = [];
+    for (const [sku, lista] of Object.entries(c)) {
+      const pzas = lista.reduce((a, x) => a + (+x.q || 0), 0);
+      const val = lista.reduce((a, x) => a + (+x.q || 0) * (+x.u || 0), 0);
+      if (!(pzas > 0)) continue;
+      const prom = val / pzas;
+      const a = catalogo[sku];
+      const vigente = +a?.costoVigente || 0;
+      out.push({
+        sku, lista, pzas, prom, n: lista.length,
+        desc: a?.descripcion || lista[0]?.prov || "",
+        enCatalogo: !!a,
+        vigente,
+        delta: vigente > 0 ? (prom - vigente) / vigente : null,
+        ult: lista[0],
+        pendiente: a?.promedioPendiente ?? null,
+      });
+    }
+    return out.sort((x, y) => Math.abs(y.delta ?? 0) - Math.abs(x.delta ?? 0));
+  }, [datos, catalogo]);
+
+  const q = busca.trim().toLowerCase();
+  const vista = (q ? filas.filter((f) => f.sku.toLowerCase().includes(q) || (f.desc || "").toLowerCase().includes(q)) : filas).slice(0, q ? 200 : 40);
+
+  const proponer = (f) => {
+    const a = catalogo[f.sku];
+    if (!a) return setAviso({ t: "err", m: `${f.sku} no está en el catálogo. Trae los artículos nuevos de Zoho primero.` });
+    if (a.promedioPendiente != null && Math.abs((+a.promedioPendiente || 0) - f.prom) > 0.01) {
+      return setAviso({ t: "err", m: `${f.sku} ya tiene un costo pendiente de $${mx(+a.promedioPendiente)} —de una importación— sin enviar. Resuélvelo en Catálogo antes de proponer otro.` });
+    }
+    saveCatalogo({ ...catalogo, [f.sku]: { ...a, promedioPendiente: f.prom, origenPendiente: "nacional" } });
+    setAviso({ t: "ok", m: `${f.sku}: $${mx(f.prom)} queda pendiente. Ve a Catálogo para enviarlo a Zoho.` });
+  };
+
+  return (
+    <div className="mt-6">
+      <div className="flex flex-wrap items-end justify-between gap-2 mb-2">
+        <div>
+          <h2 className="text-sm font-semibold">Costo promedio de compras nacionales</h2>
+          <p className="text-xs text-stone-500">
+            Promedio ponderado por piezas de lo que dicen las órdenes de compra de los últimos {datos?.meses || 12} meses. No entra lo que llegó por pedimento: eso se costea arriba.
+            {datos?.fecha ? ` · datos al ${datos.fecha}` : ""}
+            {datos?.faltanPorLeer > 0 ? ` · faltan ${mx0(datos.faltanPorLeer)} OC por leer, se completan solas en las próximas corridas` : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar SKU…"
+            className="px-2 py-1.5 text-sm bg-white border border-stone-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-600" />
+          <button onClick={traer} disabled={sincro}
+            className="px-3 py-2 border border-stone-300 text-stone-600 text-xs font-medium rounded hover:bg-stone-50 disabled:opacity-40">
+            {sincro ? "Trayendo…" : "↻ Traer de Zoho"}
+          </button>
+        </div>
+      </div>
+
+      {cargando ? (
+        <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">Leyendo compras nacionales…</div>
+      ) : !filas.length ? (
+        <div className="bg-white border border-stone-200 rounded-lg p-6 text-center text-sm text-stone-500">
+          Todavía no hay compras nacionales leídas. Dale <b>↻ Traer de Zoho</b> — la primera vez tarda, porque lee los renglones de cada orden.
+        </div>
+      ) : (
+        <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-stone-50 text-[10px] uppercase tracking-widest text-stone-400 text-left">
+              <tr>
+                <th className="px-3 py-2">SKU</th>
+                <th className="px-2 py-2">Artículo</th>
+                <th className="px-2 py-2 text-right">Compras</th>
+                <th className="px-2 py-2 text-right">Piezas</th>
+                <th className="px-2 py-2 text-right">Promedio</th>
+                <th className="px-2 py-2 text-right">En Zoho hoy</th>
+                <th className="px-2 py-2 text-right">Dif.</th>
+                <th className="px-2 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {vista.map((f) => (
+                <Fragment key={f.sku}>
+                  <tr className="border-t border-stone-100 hover:bg-stone-50/60">
+                    <td className="px-3 py-1.5 font-mono font-semibold">
+                      <button onClick={() => setAbierto(abierto === f.sku ? null : f.sku)} className="hover:underline">{f.sku}</button>
+                    </td>
+                    <td className="px-2 py-1.5 text-stone-500 truncate max-w-[18rem]">{f.desc}</td>
+                    <td className="px-2 py-1.5 text-right font-mono">{f.n}</td>
+                    <td className="px-2 py-1.5 text-right font-mono">{mx0(f.pzas)}</td>
+                    <td className="px-2 py-1.5 text-right font-mono font-semibold">${mx(f.prom)}</td>
+                    <td className="px-2 py-1.5 text-right font-mono text-stone-500">{f.vigente > 0 ? "$" + mx(f.vigente) : "—"}</td>
+                    <td className={`px-2 py-1.5 text-right font-mono ${f.delta == null ? "text-stone-400" : Math.abs(f.delta) > 0.1 ? "text-red-600 font-semibold" : "text-stone-500"}`}>
+                      {f.delta == null ? "—" : `${f.delta > 0 ? "+" : ""}${(f.delta * 100).toFixed(1)}%`}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      {f.pendiente != null
+                        ? <span className="text-[11px] text-amber-700">pendiente ${mx(+f.pendiente)}</span>
+                        : f.enCatalogo && f.delta != null && Math.abs(f.delta) > 0.0001
+                          ? <button onClick={() => proponer(f)} className="text-[11px] font-medium text-teal-700 hover:underline">proponer este costo</button>
+                          : !f.enCatalogo ? <span className="text-[11px] text-stone-400">no está en el catálogo</span> : null}
+                    </td>
+                  </tr>
+                  {abierto === f.sku && (
+                    <tr className="bg-stone-50">
+                      <td colSpan={8} className="px-3 py-2">
+                        <p className="text-[10px] uppercase tracking-widest text-stone-400 mb-1">De dónde sale el promedio</p>
+                        <table className="w-full text-[11px]">
+                          <tbody>
+                            {f.lista.map((x, i) => (
+                              <tr key={i} className="border-b border-stone-200/60">
+                                <td className="py-0.5 font-mono w-24">{x.f}</td>
+                                <td className="py-0.5 font-mono w-28">{x.po}</td>
+                                <td className="py-0.5 text-stone-500 truncate">{x.prov}</td>
+                                <td className="py-0.5 text-right font-mono w-20">{mx0(x.q)} pz</td>
+                                <td className="py-0.5 text-right font-mono w-28">${mx(x.u)}</td>
+                              </tr>
+                            ))}
+                            <tr className="font-semibold">
+                              <td className="py-1" colSpan={3}>Promedio ponderado</td>
+                              <td className="py-1 text-right font-mono">{mx0(f.pzas)} pz</td>
+                              <td className="py-1 text-right font-mono">${mx(f.prom)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          {!q && filas.length > vista.length && (
+            <p className="px-3 py-2 text-[11px] text-stone-400 border-t border-stone-100">
+              Se muestran los {vista.length} con mayor diferencia contra Zoho, de {mx0(filas.length)} SKU con compras. Busca por clave para ver cualquier otro.
+            </p>
+          )}
+          <p className="px-3 py-2 text-[11px] text-stone-500 border-t border-stone-100">
+            <b>Proponer</b> no escribe en Zoho: deja el costo como pendiente y lo apruebas en <b>Catálogo</b>, con el mismo botón que ya usas para las importaciones.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
